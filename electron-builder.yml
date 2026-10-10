@@ -1,0 +1,168 @@
+appId: fr.just-edit.filo
+productName: filo
+copyright: "Copyright © 2026 Just Edit"
+compression: normal
+asar: true
+
+# filo's own code compiles nothing: hash-wasm is WebAssembly, ssh2 and
+# basic-ftp are JavaScript. But ssh2 declares TWO optional native modules —
+# cpu-features and nan — and npm installs them whenever the machine has a
+# compiler, which every Mac with the Xcode command line tools does. That is
+# enough to break the Windows build from a Mac (node-gyp cannot cross-compile;
+# syncto learnt it). Nothing needs rebuilding, so the pass is off and the two
+# modules stay out of the package. ssh2 loads perfectly without them.
+npmRebuild: false
+
+# Nothing is ever uploaded by electron-builder (0.3.0). Noar publishes the
+# Releases on GitHub himself. Without this line electron-builder reads the
+# GitHub address in package.json, writes update files nobody uses
+# (latest-linux.yml, app-update.yml), and would upload the build to a draft
+# Release on its own if it ever ran with a GH_TOKEN in a CI environment.
+publish: null
+
+# Electron "fuses": switches burnt into the filo executable itself (0.2.0,
+# accepted by Noar). Without them, any other program on the computer could
+# start the signed filo binary as a plain Node.js (ELECTRON_RUN_AS_NODE) or
+# with a debugger (--inspect) and run its own code with filo's permissions
+# (folders, network volumes, keychain access). filo needs none of these: its
+# transfer threads are worker_threads, not process.fork.
+# electron-builder flips them right before signing.
+electronFuses:
+  runAsNode: false
+  enableNodeOptionsEnvironmentVariable: false
+  enableNodeCliInspectArguments: false
+  enableEmbeddedAsarIntegrityValidation: true
+  onlyLoadAppFromAsar: true
+  enableCookieEncryption: true
+  # An unsigned Mac test build must still start once the binary is changed.
+  resetAdHocDarwinSignature: true
+
+directories:
+  buildResources: build-resources
+files:
+  - src/**/*
+  - package.json
+  - version.json
+  - build-resources/*.ico
+  - build-resources/*.icns
+  - build-resources/*.plist
+  - build-resources/icon.png
+  - "LICENSE"
+  - "!node_modules/cpu-features/**"
+  - "!node_modules/nan/**"
+
+mac:
+  category: public.app-category.utilities
+  icon: build-resources/icon.icns
+  darkModeSupport: true
+  minimumSystemVersion: "11.0"
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build-resources/entitlements.mac.plist
+  entitlementsInherit: build-resources/entitlements.mac.plist
+  # macOS shows THESE sentences when it asks the user for access. Without one
+  # it shows a blank, alarming dialog — or refuses outright on recent releases.
+  extendInfo:
+    NSRemovableVolumesUsageDescription: "filo needs this to send and receive files on cards and external drives."
+    NSNetworkVolumesUsageDescription: "filo needs this to send and receive files on a NAS or a network share."
+    NSDesktopFolderUsageDescription: "filo needs this to send and receive files on your Desktop."
+    NSDocumentsFolderUsageDescription: "filo needs this to send and receive files in your Documents."
+    NSDownloadsFolderUsageDescription: "filo needs this to send and receive files in your Downloads."
+    NSAppleEventsUsageDescription: "filo needs this to shut this machine down or put it to sleep when the transfers are over, if you asked it to."
+    NSLocalNetworkUsageDescription: "filo needs this to reach servers and NAS on your local network."
+  target:
+    - target: dmg
+      arch:
+        - arm64
+
+dmg:
+  title: "filo ${version}"
+  writeUpdateInfo: false
+  icon: null
+  window:
+    width: 540
+    height: 400
+  contents:
+    - x: 150
+      y: 160
+      type: file
+    - x: 390
+      y: 160
+      type: link
+      path: /Applications
+    - x: 270
+      y: 320
+      type: file
+      path: "LICENSE"
+  artifactName: "filo-${version}-mac-${arch}.dmg"
+
+win:
+  icon: build-resources/icon.ico
+  requestedExecutionLevel: asInvoker
+  artifactName: "filo-${version}-win-${arch}.${ext}"
+  target:
+    - target: nsis
+      arch:
+        - x64
+    - target: zip
+      arch:
+        - x64
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowElevation: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: filo
+  artifactName: "filo-Setup-${version}.exe"
+
+# Built ON a Linux machine with scripts/build-linux.sh: a .deb produced on a
+# Mac is not valid (ingesto learnt it), so Linux has its own script and machine.
+linux:
+  icon: build-resources/icons
+  # Main category, then the more precise one (the menu spec allows both).
+  category: "Network;FileTransfer"
+  maintainer: "Just Edit <contact@just-edit.fr>"
+  vendor: "Just Edit"
+  synopsis: "FTP, FTPS and SFTP client"
+  description: "Transfer files with FTP, FTPS and SFTP servers: two panels, a resumable queue, parallel and segmented transfers, checksum verification."
+  executableName: filo
+  syncDesktopName: true
+  desktop:
+    entry:
+      Name: filo
+      Comment: FTP, FTPS and SFTP client
+      Terminal: "false"
+      Type: Application
+      Categories: "Network;FileTransfer;"
+      StartupWMClass: filo
+  artifactName: "filo-${version}-linux-${arch}.${ext}"
+  target:
+    - target: AppImage
+      arch:
+        - x64
+    - target: deb
+      arch:
+        - x64
+
+deb:
+  #   libsecret-1-0 — the desktop keyring. Without one filo refuses to
+  #                   remember a server password rather than write it down.
+  #   xdg-utils     — "Show in file manager" and opening a file.
+  depends:
+    - libgtk-3-0
+    - libnotify4
+    - libnss3
+    - libxss1
+    - libxtst6
+    - xdg-utils
+    - libatspi2.0-0
+    - libsecret-1-0
+  # Debian section ("net") instead of electron-builder's "default".
+  packageCategory: net
+  # electron-builder recommends libappindicator3-1 for tray icons; filo has
+  # none, and Ubuntu 24.04 replaced that library.
+  recommends: []
+  artifactName: "filo_${version}_${arch}.${ext}"

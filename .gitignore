@@ -1,0 +1,23 @@
+# Local settings of AI coding tools
+.claude/
+
+# Dependencies and build output
+node_modules/
+dist/
+
+# macOS / editors
+.DS_Store
+Icon?
+
+# Never in the repository: secrets and signing material
+.env
+.env.*
+*.p12
+*.pfx
+*.cer
+*.provisionprofile
+*.keychain-db
+
+# Logs
+*.log
+npm-debug.log*

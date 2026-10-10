@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+  <!-- No disable-library-validation: filo ships no native module
+       (electron-builder.yml sets npmRebuild:false and excludes cpu-features
+       and nan), so the hardened runtime has no reason to load an unsigned
+       library (same decision as syncto 0.8.0). -->
+  <key>com.apple.security.files.user-selected.read-write</key>
+  <true/>
+  <key>com.apple.security.network.client</key>
+  <true/>
+  <!-- Shutting down asks System Events to do it, which is an Apple event. An
+       app with the hardened runtime may not send one at all without this
+       entitlement: the request is refused before it leaves, with error -1743,
+       and the machine simply stays on. -->
+  <key>com.apple.security.automation.apple-events</key>
+  <true/>
+</dict>
+</plist>

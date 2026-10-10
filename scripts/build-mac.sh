@@ -1,0 +1,150 @@
+#!/bin/bash
+#
+# filo — FTP, FTPS and SFTP client
+# Copyright (C) 2026 Just Edit (Arnaud Augst)
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <https://www.gnu.org/licenses/>.
+#
+
+# ╔══════════════════════════════════════════════════════════╗
+# ║            filo — Build Script for macOS               ║
+# ║          Just double-click to build the app!             ║
+# ╚══════════════════════════════════════════════════════════╝
+
+set -e
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+PROJECT_DIR="$SCRIPT_DIR/.."
+cd "$PROJECT_DIR"
+
+VERSION=$(node -e "console.log(require('./package.json').version)" 2>/dev/null || echo "?")
+
+# shellcheck source=notarize-lib.sh
+. "$SCRIPT_DIR/notarize-lib.sh"
+
+echo ""
+echo -e "${BOLD}${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${BOLD}${CYAN}         filo v$VERSION — Build for macOS            ${NC}"
+echo -e "${BOLD}${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo ""
+
+# Never as root. A build run with sudo leaves every cache owned by root, and
+# every later build — the normal ones — then fails on permissions in a place
+# that has nothing to do with the cause.
+if [ "$(id -u)" = "0" ]; then
+  echo -e "${RED}✗ Do not run this build with sudo.${NC}"
+  echo "  It would leave the npm and Electron caches owned by root, and every"
+  echo "  later build would fail. If that has already happened, run once:"
+  echo "    sudo chown -R \$(whoami) ~/.npm ~/Library/Caches/electron ~/Library/Caches/electron-builder"
+  read -p "Press Enter to exit..."; exit 1
+fi
+
+# ── 1. Node.js ──────────────────────────────────────────────────
+echo -e "${BLUE}[1/5]${NC} Checking Node.js…"
+if ! command -v node &>/dev/null; then
+  echo -e "${RED}✗ Node.js not found. Install it from https://nodejs.org (the LTS button).${NC}"
+  read -p "Press Enter to exit..."; exit 1
+fi
+echo -e "${GREEN}✓ Node.js $(node --version)${NC}"
+
+# ── 2. Dependencies ─────────────────────────────────────────────
+# The FOLDER is not the question: an interrupted install, or a copy made from a
+# network share (which does not carry the symbolic links npm puts in .bin),
+# leaves a node_modules that exists and cannot build. Ask for the tool itself.
+echo -e "${BLUE}[2/5]${NC} Checking dependencies…"
+if [ ! -x "node_modules/.bin/electron-builder" ]; then
+  if [ -d "node_modules" ]; then
+    echo "      node_modules is there but incomplete — installing again…"
+  else
+    echo "      First run — downloading dependencies (2-3 minutes)…"
+  fi
+  npm install
+fi
+if [ ! -x "node_modules/.bin/electron-builder" ]; then
+  echo -e "${RED}✗ electron-builder is still missing after npm install.${NC}"
+  echo "  If this folder sits on a NAS or a network share, copy it to the"
+  echo "  internal disk and try again: npm cannot create its shortcuts there."
+  read -p "Press Enter to exit..."; exit 1
+fi
+echo -e "${GREEN}✓ Dependencies ready${NC}"
+
+# ── 3. Signature and notarization ───────────────────────────────
+# Everything happens here, in the build. There is no separate step to remember:
+# the first time it asks for two things, and never again.
+echo -e "${BLUE}[3/5]${NC} Signature and notarization…"
+prepare_signing
+
+# ── 4. Build ────────────────────────────────────────────────────
+echo -e "${BLUE}[4/5]${NC} Building the macOS app (Apple Silicon)…"
+if [ "$SIGN_MODE" = "notarized" ]; then
+  echo "      Signed, sent to Apple, stapled. Apple's side usually takes one to"
+  echo "      five minutes; a first submission can take longer. Nothing to do."
+fi
+
+# The .app is built first, the .dmg is wrapped around it afterwards. Those are
+# two very different things to fail at: if only the packaging into a disk image
+# went wrong, the application itself is finished and sitting in dist/ — so hand
+# it over as a zip rather than reporting a failed build and leaving the user
+# with nothing.
+if build_mac_target build:mac; then
+  echo -e "${GREEN}✓ Build finished${NC}"
+else
+  APP="dist/mac-arm64/filo.app"
+  if [ -d "$APP" ]; then
+    echo ""
+    echo -e "${YELLOW}The disk image could not be assembled, but the application itself is built.${NC}"
+    echo -e "${YELLOW}Packing it as a zip instead.${NC}"
+    VER=$(node -e "console.log(require('./package.json').version)" 2>/dev/null || echo "0")
+    ( cd dist/mac-arm64 && ditto -c -k --sequesterRsrc --keepParent filo.app "../filo-${VER}-mac-arm64.zip" )
+    echo -e "${GREEN}✓ dist/filo-${VER}-mac-arm64.zip${NC}"
+    echo "  Unzip it and drag filo.app into Applications."
+  else
+    echo -e "${RED}✗ The build failed before the application was produced.${NC}"
+    exit 1
+  fi
+fi
+
+# ── 5. Notarize the disk image, then say what a stranger's Mac will do ──
+echo -e "${BLUE}[5/5]${NC} Result:"
+DMG="dist/filo-$VERSION-mac-arm64.dmg"
+staple_dmg "$DMG"
+verify_result "dist/mac-arm64/filo.app" "$DMG"
+
+echo ""
+echo -e "  ${BOLD}Installer:${NC}  $DMG"
+echo ""
+echo -e "  Open the .dmg and drag ${BOLD}filo${NC} into Applications."
+case "$SIGN_MODE" in
+  notarized)
+    echo -e "  ${GREEN}Signed and notarized: it opens with a double-click on any Mac.${NC}" ;;
+  signed)
+    echo -e "  ${YELLOW}Signed but not notarized: another Mac will say Apple could not${NC}"
+    echo -e "  ${YELLOW}check it for malware. Right-click → Open gets past it.${NC}" ;;
+  *)
+    echo -e "  ${YELLOW}First launch (unsigned build): right-click filo → Open.${NC}" ;;
+esac
+echo ""
+
+if [ -t 0 ]; then
+  read -p "Open the dist/ folder now? [Y/n] " answer
+  if [ "$answer" != "n" ] && [ "$answer" != "N" ]; then open dist/ 2>/dev/null || true; fi
+fi

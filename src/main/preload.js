@@ -1,0 +1,103 @@
+/*
+ * filo — FTP, FTPS and SFTP client
+ * Copyright (C) 2026 Just Edit (Arnaud Augst)
+ * Licensed under the GNU General Public License v3.0 or later. See LICENSE.
+ */
+
+// The only door between the window and the rest. EVERY argument is passed
+// through explicitly: a bridge that drops one makes no noise at all (syncto's
+// automatic shutdown never worked until 0.7.3 because of exactly that). The
+// test suite compares the arity of each entry with its handler.
+//
+// No method here ever returns a password.
+
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
+
+const inv = (ch, ...a) => ipcRenderer.invoke(ch, ...a);
+
+const api = {
+  platform: process.platform,
+  init        : ()            => inv('init'),
+  saveUi      : (ui)          => inv('save-ui', ui),
+  settingsSave: (patch)       => inv('settings-save', patch),
+  afterSet    : (v)           => inv('after-action-set', v),
+  afterRun    : (action, clean) => inv('after-action-run', action, clean),
+  openExternal: (u)           => inv('open-external', u),
+  copyText    : (t)           => inv('copy-text', t),
+
+  ntfySave    : (patch)       => inv('ntfy-save', patch),
+  ntfyTest    : (patch)       => inv('ntfy-test', patch),
+
+  knownList   : ()            => inv('known-list'),
+  knownForget : (key)         => inv('known-forget', key),
+  trust       : (t)           => inv('trust', t),
+
+  localList   : (dir)         => inv('local-list', dir),
+  localRoots  : ()            => inv('local-roots'),
+  localMkdir  : (dir, name)   => inv('local-mkdir', dir, name),
+  localRename : (from, name)  => inv('local-rename', from, name),
+  localDelete : (paths)       => inv('local-delete', paths),
+  localReveal : (p)           => inv('local-reveal', p),
+  localOpen   : (p)           => inv('local-open', p),
+  pickFolder  : (start)       => inv('local-pick-folder', start),
+  pickKey     : ()            => inv('local-pick-key'),
+  localStatMany: (paths)      => inv('local-stat-many', paths),
+
+  connect     : (req)         => inv('connect', req),
+  disconnect  : ()            => inv('disconnect'),
+  quickClear  : ()            => inv('quick-clear'),
+  endpointPassword: (id, pw)  => inv('endpoint-password', id, pw),
+
+  remoteList  : (dir)         => inv('remote-list', dir),
+  remoteMkdir : (dir, name)   => inv('remote-mkdir', dir, name),
+  remoteRename: (from, name)  => inv('remote-rename', from, name),
+  remoteDelete: (items)       => inv('remote-delete', items),
+  remoteDeleteCancel: ()      => inv('remote-delete-cancel'),
+  remoteUrl   : (p)           => inv('remote-url', p),
+
+  queueAdd    : (req)         => inv('queue-add', req),
+  scanCancel  : ()            => inv('scan-cancel'),
+  queueStart  : ()            => inv('queue-start'),
+  queuePause  : ()            => inv('queue-pause'),
+  queueStopAll: ()            => inv('queue-stop-all'),
+  itemPause   : (ids)         => inv('queue-item-pause', ids),
+  itemResume  : (ids)         => inv('queue-item-resume', ids),
+  itemStop    : (ids)         => inv('queue-item-stop', ids),
+  queueRemove : (ids)         => inv('queue-remove', ids),
+  queueRetry  : (ids, mode)   => inv('queue-retry', ids, mode),
+  queueClear  : (tab)         => inv('queue-clear', tab),
+  queuePage   : (tab, offset, limit) => inv('queue-page', tab, offset, limit),
+  queueAnswer : (askId, rule, all)   => inv('queue-answer', askId, rule, all),
+  queueReveal : (id)          => inv('queue-reveal', id),
+
+  sitesList   : ()            => inv('sites-list'),
+  sitesSave   : (site, password, passphrase) => inv('sites-save', site, password, passphrase),
+  sitesDelete : (id)          => inv('sites-delete', id),
+  sitesArrange: (list, folderOrder) => inv('sites-arrange', list, folderOrder),
+  sitesDuplicate: (id)        => inv('sites-duplicate', id),
+  sitesFromQuick: (q, name)   => inv('sites-from-quick', q, name),
+  sitesImport : (withPasswords) => inv('sites-import', withPasswords),
+  sitesExport : (format, ids) => inv('sites-export', format, ids),
+
+  on: (channel, cb) => {
+    const allowed = ['queue-progress', 'queue-changed', 'queue-state', 'queue-ask', 'queue-ask-closed', 'queue-blocked',
+      'queue-finished', 'log', 'scan-progress', 'delete-progress', 'menu', 'update-available'];
+    if (!allowed.includes(channel)) throw new Error('Unknown channel ' + channel);
+    const h = (_, payload) => cb(payload);
+    ipcRenderer.on(channel, h);
+    return () => ipcRenderer.removeListener(channel, h);
+  },
+
+  winMinimize: () => ipcRenderer.send('win-minimize'),
+  winMaximize: () => ipcRenderer.send('win-maximize'),
+  winClose   : () => ipcRenderer.send('win-close'),
+
+  // Files dropped from the Finder / Explorer onto the window.
+  pathForFile: (file) => {
+    try { return webUtils ? webUtils.getPathForFile(file) : (file.path || ''); }
+    catch (_) { return file.path || ''; }
+  },
+};
+
+if (process.contextIsolated) contextBridge.exposeInMainWorld('filo', api);
+else window.filo = api;

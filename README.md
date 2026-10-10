@@ -1,0 +1,150 @@
+# filo
+### FTP, FTPS and SFTP client — by Just Edit
+
+A two-panel file transfer client for video professionals, built for one thing:
+moving large files to and from servers as fast as the line allows, and knowing
+they arrived intact.
+
+**macOS · Windows · Linux** (AppImage and `.deb`).
+
+Licensed under the **GNU General Public License v3.0** (see [`LICENSE`](./LICENSE)).
+
+---
+
+## Screenshots
+
+![filo 0.3.4 — connected to a site, three downloads, the first ones in segments](docs/screenshots/screenshot.png)
+
+| Site manager | Settings |
+|---|---|
+| ![Site manager: sites in folders, SFTP, FTPS and plain FTP](docs/screenshots/sites.png) | ![Settings: transfers, file management, verification, notifications](docs/screenshots/settings.png) |
+
+---
+
+## What it does
+
+| | |
+|---|---|
+| **Protocols** | SFTP, FTPS (explicit and implicit), plain FTP (flagged as not encrypted). FTP passive or active |
+| **Two panels** | local and server side by side; drag and drop between them, or from the Finder / Explorer; synchronized browsing |
+| **Queue** | parallel transfers, saved continuously: a crash or a power cut loses nothing. Pause, resume, stop or retry one file or the whole queue |
+| **Auto** | measures how many simultaneous transfers are fastest for each server (MB/s and files/s), and stays under a limit the server enforces |
+| **Segments** | a large file goes over several SFTP connections at once — the way past the per-connection limit on long-distance links |
+| **Resume** | a cut transfer starts again where it stopped; a segmented file keeps its finished segments |
+| **Checksums** | every file verified after its transfer — by the server (SHA-256, MD5…) when it can compute one, otherwise by reading the file back (xxHash64). On or off from the main window |
+| **Safe names** | written as `name.filopart`, renamed only once complete and verified |
+| **File already there** | ask, overwrite, overwrite if newer, if the size differs, resume, keep both, skip |
+| **Site manager** | folders (a tree that folds), notes, per-site connection limit; import and export, including FileZilla's `sitemanager.xml` |
+| **Passwords** | in the system keychain (Keychain, Windows Credential Manager, libsecret) — never in clear |
+| **Server identity** | SSH host keys and FTPS certificates are shown on first contact and pinned; a change is refused |
+| **When it finishes** | phone notification (ntfy), then quit, sleep or shut down — only if nothing failed |
+| **Speed limits** | per direction, for all transfers together |
+
+---
+
+## Download
+
+Ready-made builds are on the **[Releases](https://github.com/noar-justedit/filo/releases/latest)** page:
+
+| System | File | Notes |
+|---|---|---|
+| macOS (Apple Silicon) | `filo-<version>-mac-arm64.dmg` | signed and notarized |
+| Windows x64 | `filo-Setup-<version>.exe` or `filo-<version>-win-x64.zip` | not signed: SmartScreen asks once (*More info → Run anyway*) |
+| Linux x64 (Ubuntu, Debian, Pop!_OS, Mint…) | `filo_<version>_amd64.deb` | recommended on Linux |
+| Linux x64 (any distribution) | `filo-<version>-linux-x86_64.AppImage` | no installation |
+
+filo tells you when a newer version is out (it reads `version.json` from this
+repository); it never updates itself.
+
+### Linux
+
+- **`.deb`**: `sudo apt install ./filo_<version>_amd64.deb`. filo appears in the
+  applications menu (Network). Remove it with `sudo apt remove filo`.
+- **AppImage**: `chmod +x filo-*.AppImage && ./filo-*.AppImage`. It needs FUSE 2:
+  `sudo apt install libfuse2t64` (`libfuse2` on Ubuntu 22.04 and older).
+- **Ubuntu 24.04 and later**: AppArmor limits the sandbox Electron apps run in.
+  The `.deb` installs a profile for filo and just works; an AppImage cannot,
+  and on some machines it does not open. Prefer the `.deb` there.
+- **Passwords need a desktop keyring** (GNOME Keyring or KWallet, present on
+  every usual desktop). Without one, filo does not write a password down: it
+  asks for it at each connection.
+- "Shut down" and "Sleep" at the end of the queue use `systemctl`, as the
+  desktop's own menu does.
+
+---
+
+## Quick install (no coding knowledge required)
+
+1. Install **Node.js** from https://nodejs.org (the **LTS** button).
+2. Download filo: **Code → Download ZIP**, unzip it.
+3. Double-click **`build_mac.command`**. The first run takes a few minutes.
+   When it is done, open the `.dmg` in `dist/` and drag filo into Applications.
+
+For Windows, double-click **`build_windows.command`** — it builds from your Mac.
+The portable `.zip` needs nothing more; the `.exe` installer needs Wine once
+(`brew install --cask wine-stable`). The Windows build is not signed:
+SmartScreen warns on first launch (*More info → Run anyway*).
+
+On a Windows PC, double-click **`build_on_windows.bat`** instead: it builds the
+installer and the portable `.zip` there, with no Wine. Node.js (LTS) is the only
+thing to install first. If the build stops on a "symbolic link" / "privilege"
+error, turn on Developer Mode (Settings → System → For developers).
+
+### Linux
+
+Build Linux **on Linux** (Ubuntu, Debian, Pop!_OS…): in the folder, run
+
+```bash
+./build_linux.sh
+```
+
+as your own user, never with `sudo`. It checks Node.js (20.19 or newer; the
+`apt` one is too old, and the script says how to get a current one) and the
+packaging tools (`sudo apt install dpkg fakeroot`), then writes
+`dist/filo-<version>-linux-x86_64.AppImage` and `dist/filo_<version>_amd64.deb`.
+electron-builder can make an AppImage from a Mac, but the `.deb` it makes there
+is not valid, so the Linux packages come from a Linux machine. On Linux,
+`./build.sh` does the same.
+
+### Signing (macOS)
+
+With a *Developer ID Application* certificate in your keychain, the Mac build
+signs, notarizes and staples on its own. The first signed build asks once for
+your Apple ID and an app-specific password (or reuses the ones syncto stored),
+and keeps them in the keychain. `FILO_SKIP_SIGN=1 ./build.sh` builds unsigned.
+
+---
+
+## Development
+
+```bash
+npm install          # dependencies, once
+npm run dev          # run without building (uses your real profile)
+npm test             # engine test suite (~1 min, a real SFTP server in-process)
+```
+
+Real FTP / FTPS servers can be added to the tests with environment variables
+(see `test/run-tests.js`).
+
+## Publishing
+
+Unzip the release ZIP, then double-click `scripts/push_github.command` (macOS)
+or `scripts/push_github.bat` (Windows, needs Git for Windows) in the folder:
+GitHub becomes exactly that folder. See `AGENTS.md`, rule 7. Then
+create the Release for the tag `v<version>` and attach the builds; the text for
+it is in `docs/RELEASE-<version>.md`. Run `push_github.command` once more
+afterwards: it sends `version.json` last, so nobody is told about an update
+before its files can be downloaded.
+
+Contributions: see [`CONTRIBUTING.md`](./CONTRIBUTING.md). Security problems:
+see [`SECURITY.md`](./SECURITY.md).
+
+---
+
+## Credits
+
+filo shares its engine conventions, interface language and build scripts with
+**syncto** by the same author. It uses [ssh2](https://github.com/mscdex/ssh2)
+(MIT), [basic-ftp](https://github.com/patrickjuchli/basic-ftp) (MIT),
+[hash-wasm](https://github.com/Daninet/hash-wasm) (MIT),
+[Lucide](https://lucide.dev) icons (ISC) and Poppins (OFL).

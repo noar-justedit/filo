@@ -1,0 +1,36 @@
+{
+  "name": "filo",
+  "version": "0.3.4",
+  "desktopName": "filo.desktop",
+  "description": "FTP, FTPS and SFTP client for video professionals",
+  "main": "src/main/main.js",
+  "author": "Just Edit <contact@just-edit.fr>",
+  "license": "GPL-3.0-or-later",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/noar-justedit/filo.git"
+  },
+  "homepage": "https://github.com/noar-justedit/filo",
+  "bugs": {
+    "url": "https://github.com/noar-justedit/filo/issues"
+  },
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "test": "node test/run-tests.js",
+    "build:mac": "electron-builder --config electron-builder.yml --mac --arm64",
+    "build:mac-universal": "electron-builder --config electron-builder.yml --mac",
+    "build:win": "electron-builder --config electron-builder.yml --win --x64",
+    "build:linux": "bash scripts/build-linux.sh",
+    "pack": "electron-builder --config electron-builder.yml --dir"
+  },
+  "devDependencies": {
+    "electron": "^43.4.1",
+    "electron-builder": "^26.15.3"
+  },
+  "dependencies": {
+    "basic-ftp": "^6.2.3",
+    "hash-wasm": "^4.12.0",
+    "ssh2": "^1.15.0"
+  }
+}

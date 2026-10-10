@@ -1,0 +1,924 @@
+/*
+ * filo — engine test suite
+ * Copyright (C) 2026 Just Edit (Arnaud Augst)
+ * Licensed under the GNU General Public License v3.0 or later. See LICENSE.
+ *
+ * Plain `node test/run-tests.js` (or `npm test`). No Electron, no window, no
+ * network: a real SFTP server runs inside this process (test/sftp-server.js),
+ * on real files in a temporary folder.
+ *
+ * FTP / FTPS are tested against real servers only when they are given:
+ *   FILO_TEST_FTP=host:port FILO_TEST_FTPS=host:port FILO_TEST_FTP_USER=… FILO_TEST_FTP_PASS=…
+ * (see ETAT_PROJET.md, "Tests").
+ */
+
+'use strict';
+
+// Small segments, so a few-megabyte file is already split. Must be set before
+// core/transfer.js is loaded.
+process.env.FILO_TEST_SEGMENT_MB = process.env.FILO_TEST_SEGMENT_MB || '1';
+
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const crypto = require('crypto');
+
+const { startSftpServer } = require('./sftp-server');
+const proto = require('../src/main/proto');
+const { setHostKeyPolicy } = require('../src/main/proto/sftp');
+const { setCertPolicy, parseListDate, parseFtpTimestamp, formatFtpTimestamp } = require('../src/main/proto/ftp');
+const existing = require('../src/main/core/existing');
+const sites = require('../src/main/core/sites');
+const { safeLocalName } = require('../src/main/core/scan');
+const { AutoTuner, better } = require('../src/main/core/autotune');
+const { Limiter } = require('../src/main/core/throttle');
+const hash = require('../src/main/core/hash');
+const { RemoteError } = require('../src/main/core/errors');
+const { TransferQueue } = require('../src/main/core/queue');
+const transfer = require('../src/main/core/transfer');
+const { normalizeSettings } = require('../src/main/config');
+const notify = require('../src/main/notify');
+
+let passed = 0, failed = 0;
+const failures = [];
+let section = '';
+function ok(cond, label) {
+  if (cond) { passed++; process.stdout.write('.'); }
+  else { failed++; failures.push(`[${section}] ${label}`); process.stdout.write('x'); }
+}
+function eq(a, b, label) {
+  const same = JSON.stringify(a) === JSON.stringify(b);
+  if (same) { passed++; process.stdout.write('.'); }
+  else { failed++; failures.push(`[${section}] ${label}\n      expected ${JSON.stringify(b)}\n      got      ${JSON.stringify(a)}`); process.stdout.write('x'); }
+}
+
+const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'filo-test-'));
+let caseNo = 0;
+function scratch() { const d = path.join(ROOT, 'c' + (++caseNo)); fs.mkdirSync(d, { recursive: true }); return d; }
+// Non-repeating content: a test that passes on zeros proves nothing.
+function randomFile(p, size) { fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, crypto.randomBytes(size)); return p; }
+const sha = p => crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex');
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// Every server the tests start is trusted on first sight.
+const known = new Map();
+const trustAll = {
+  known: (k, h, p) => known.get(`${k}:${h}:${p}`) || null,
+  remember: (k, h, p, fp) => known.set(`${k}:${h}:${p}`, fp),
+};
+setHostKeyPolicy(trustAll);
+setCertPolicy(trustAll);
+
+async function connectTrusting(ep) {
+  let r = proto.createRemote(ep);
+  try { await r.connect(); return r; }
+  catch (e) {
+    if (e.code !== 'TRUST_NEEDED') throw e;
+    r = proto.createRemote(Object.assign({}, ep, { acceptFingerprint: e.trust.fingerprint }));
+    await r.connect();
+    return r;
+  }
+}
+
+const SETTINGS = {
+  concurrency: 3, autoMax: 10, retries: 3, existingUp: 'overwrite', existingDown: 'overwrite',
+  verify: true, serverHash: true, readBack: true, tempNames: true, segments: true, keepDates: true,
+  limitUp: 0, limitDown: 0,
+};
+
+function makeQueue(ep, settings, mode, extra) {
+  const logs = [];
+  const q = new TransferQueue(Object.assign({
+    laneMode: mode || 'inline',
+    getEndpoint: async () => Object.assign({}, ep, { known: { sftp: known.get(`sftp:${ep.host}:${ep.port}`) } }),
+    settings: () => settings,
+    log: (lv, m) => logs.push(`${lv} ${m}`),
+  }, extra || {}));
+  q.logs = logs;
+  return q;
+}
+function runQueue(q, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error('queue timeout\n' + q.logs.slice(-15).join('\n'))), timeoutMs || 60000);
+    q.once('finished', s => { clearTimeout(t); resolve(s); });
+    q.start();
+  });
+}
+
+// ══ Sections ═════════════════════════════════════════════════════════════
+const SECTIONS = [];
+const SEC = (name, fn) => SECTIONS.push([name, fn]);
+
+SEC('urls', () => {
+  const u = proto.parseUrl('sftp://noar@nas.local:2222/volume1/rushes');
+  eq([u.protocol, u.user, u.host, u.port, u.path], ['sftp', 'noar', 'nas.local', 2222, '/volume1/rushes'], 'sftp url');
+  eq(proto.parseUrl('ftpes://a:b%40c@h/').protocol, 'ftps', 'ftpes = explicit');
+  eq(proto.parseUrl('ftpes://a:b%40c@h/').password, 'b@c', 'password decoded');
+  eq(proto.parseUrl('ftps://h').protocol, 'ftps-implicit', 'ftps:// = implicit, like FileZilla');
+  eq(proto.parseUrl('ftps://h').port, 990, 'implicit default port');
+  eq(proto.parseUrl('sftp://[::1]:22/x').host, '::1', 'IPv6 host');
+  eq(proto.parseUrl('nas.local'), null, 'a bare host is not a URL');
+  eq(proto.describe({ protocol: 'sftp', host: 'h', port: 22, user: 'u', password: 'secret' }), 'sftp://u@h', 'describe never shows the password');
+  ok(!proto.describe({ protocol: 'ftp', host: 'h', port: 21, user: 'u', password: 'secret' }).includes('secret'), 'no password in ftp description');
+});
+
+SEC('ftp dates', () => {
+  const now = new Date(Date.UTC(2026, 9, 9, 12));
+  eq(parseListDate('Oct 08 12:30', now), { t: Date.UTC(2026, 9, 8, 12, 30), hasTime: true }, 'this year, with time');
+  eq(parseListDate('Dec 31 23:59', now).t, Date.UTC(2025, 11, 31, 23, 59), 'a future date is last year');
+  eq(parseListDate('Jan 05  2024', now), { t: Date.UTC(2024, 0, 5), hasTime: false }, 'older, no time');
+  eq(parseListDate('10-08-26 01:30PM', now).t, Date.UTC(2026, 9, 8, 13, 30), 'IIS format');
+  eq(parseListDate('nonsense').t, 0, 'unknown format');
+  const t = Date.UTC(2026, 2, 4, 5, 6, 7);
+  eq(parseFtpTimestamp(formatFtpTimestamp(t)), t, 'MDTM/MFMT round trip');
+  eq(parseFtpTimestamp('20260304050607.250'), t + 250, 'fractions');
+});
+
+SEC('existing', async () => {
+  const src = { size: 100, mtime: 10000 }, older = { size: 100, mtime: 1000 }, smaller = { size: 40, mtime: 20000 }, bigger = { size: 200, mtime: 1 };
+  eq(existing.resolve('overwrite', src, older), 'overwrite', 'overwrite');
+  eq(existing.resolve('skip', src, older), 'skip', 'skip');
+  eq(existing.resolve('newer', src, older), 'overwrite', 'newer: source newer');
+  eq(existing.resolve('newer', src, { size: 1, mtime: 9000 }), 'skip', 'newer: within 2 s slack is not newer');
+  eq(existing.resolve('newer', src, { size: 1, mtime: 0 }), 'overwrite', 'newer: unknown date → overwrite');
+  eq(existing.resolve('sizeDiffers', src, older), 'skip', 'same size');
+  eq(existing.resolve('sizeDiffers', src, smaller), 'overwrite', 'size differs');
+  eq(existing.resolve('resume', src, smaller), 'resume', 'resume a smaller target');
+  eq(existing.resolve('resume', src, older), 'skip', 'resume: same size = done');
+  eq(existing.resolve('resume', src, bigger), 'overwrite', 'resume: bigger target is not a partial copy');
+  const taken = new Set(['clip.mov', 'clip (1).mov']);
+  eq(await existing.freeName('clip.mov', async n => taken.has(n)), 'clip (2).mov', 'free name');
+  eq(await existing.freeName('README', async () => false), 'README (1)', 'no extension');
+});
+
+SEC('sites', () => {
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<FileZilla3 version="3.71.1" platform="mac">
+  <Servers>
+    <Server>
+      <Host>nas.local</Host><Port>2222</Port><Protocol>1</Protocol><Type>0</Type>
+      <User>noar</User><Pass encoding="base64">${Buffer.from('pä$$ <&>').toString('base64')}</Pass>
+      <Logontype>1</Logontype><PasvMode>MODE_DEFAULT</PasvMode><Name>NAS &amp; rushes</Name>
+      <RemoteDir>1 0 7 volume1 10 My Rushes</RemoteDir><LocalDir>/Users/noar/Rushes</LocalDir>
+    </Server>
+    <Folder expanded="1">Clients
+      <Server><Host>ftp.client.example</Host><Port>21</Port><Protocol>4</Protocol><Type>0</Type><User>x</User>
+        <Pass encoding="crypt" pubkey="abc">ZZZZ</Pass><Logontype>1</Logontype><PasvMode>MODE_ACTIVE</PasvMode>
+        <MaximumMultipleConnections>2</MaximumMultipleConnections><Name>Client X</Name></Server>
+      <Folder expanded="0">Old
+        <Server><Host>old.example</Host><Port>21</Port><Protocol>6</Protocol><Type>0</Type><User>w</User><Logontype>2</Logontype><Name>Old</Name></Server>
+      </Folder>
+    </Folder>
+    <Server><Host>k.example</Host><Port>22</Port><Protocol>1</Protocol><Type>0</Type><User>u</User><Keyfile>/Users/noar/.ssh/id_ed25519</Keyfile><Logontype>5</Logontype><Name>Key</Name></Server>
+    <Server><Host>imp.example</Host><Port>990</Port><Protocol>3</Protocol><Type>0</Type><Logontype>0</Logontype><Name>Anon</Name></Server>
+  </Servers>
+</FileZilla3>`;
+  eq(sites.detectFormat(xml), 'filezilla', 'detect FileZilla');
+  const list = sites.importFileZilla(xml);
+  eq(list.length, 5, 'five servers, nested folders included');
+  const nas = list[0];
+  eq([nas.site.name, nas.site.protocol, nas.site.host, nas.site.port, nas.site.user, nas.site.logon], ['NAS & rushes', 'sftp', 'nas.local', 2222, 'noar', 'normal'], 'NAS fields');
+  eq(nas.password, 'pä$$ <&>', 'base64 password decoded (UTF-8, special characters)');
+  eq(nas.site.remoteDir, '/volume1/My Rushes', 'RemoteDir with a space in a name');
+  eq(nas.site.localDir, '/Users/noar/Rushes', 'LocalDir');
+  eq(list[1].site.folder, 'Clients', 'folder');
+  eq(list[1].site.protocol, 'ftps', 'FTPES → ftps');
+  eq(list[1].passwordEncrypted, true, 'master-password protected password is flagged, not read');
+  eq(list[1].password, '', 'and not used');
+  eq(list[1].site.transferMode, 'active', 'active mode kept');
+  eq(list[1].site.maxConnections, 2, 'connection limit kept');
+  eq(list[2].site.folder, 'Clients / Old', 'nested folder');
+  eq([list[2].site.protocol, list[2].site.logon], ['ftp', 'ask'], 'insecure FTP + ask');
+  eq([list[3].site.logon, list[3].site.keyPath], ['key', '/Users/noar/.ssh/id_ed25519'], 'key file');
+  eq([list[4].site.protocol, list[4].site.logon], ['ftps-implicit', 'anonymous'], 'implicit + anonymous');
+  eq(sites.parseFzRemoteDir(sites.fzRemoteDir('/a b/c')), '/a b/c', 'RemoteDir round trip');
+
+  // Export → import: nothing lost but the passwords.
+  const withSecrets = list.map(x => Object.assign({}, x.site, { passwordEnc: 'BLOB', passphraseEnc: 'BLOB2' }));
+  const fzOut = sites.exportFileZilla(withSecrets);
+  ok(!fzOut.includes('BLOB') && !fzOut.includes('<Pass'), 'FileZilla export carries no password');
+  const again = sites.importFileZilla(fzOut);
+  const key = x => [x.site.name, x.site.host, x.site.port, x.site.protocol, x.site.folder, x.site.remoteDir, x.site.transferMode, x.site.maxConnections];
+  eq(again.map(key).sort(), list.map(key).sort(), 'FileZilla round trip (export groups by folder, so the order changes)');
+  const filoOut = sites.exportFilo(withSecrets);
+  ok(!filoOut.includes('BLOB'), 'filo export carries no password');
+  eq(sites.detectFormat(filoOut), 'filo', 'detect filo');
+  eq(sites.importFilo(filoOut).map(x => x.site.name), list.map(x => x.site.name), 'filo round trip');
+  ok(sites.importFilo(filoOut).every(x => !x.site.passwordEnc), 'imported filo sites have no password');
+
+  const n = sites.normalizeSite({ protocol: 'ftp', logon: 'key', port: 99999, transferMode: 'active' });
+  eq([n.logon, n.port, n.transferMode], ['normal', 21, 'active'], 'normalize: key only for SFTP, bad port fixed');
+  eq(sites.normalizeSite({ protocol: 'sftp', transferMode: 'active' }).transferMode, 'passive', 'no active mode for SFTP');
+  ok(!('passwordEnc' in sites.publicSite(sites.normalizeSite({ passwordEnc: 'x' }))), 'publicSite hides the blob');
+  eq(sites.publicSite(sites.normalizeSite({ passwordEnc: 'x' })).hasPassword, true, 'but says one exists');
+  eq(sites.parseXml('<a x="1&amp;2"><b>t&lt;</b><!-- <c/> --></a>').children[0].children[0].text, 't<', 'xml reader');
+});
+
+SEC('local folders', async () => {
+  // ensureLocalDir walks up to what exists instead of a recursive mkdir
+  // (which asks for the drive root on Windows and gets EPERM on S:\).
+  const d = scratch();
+  const { ensureLocalDirForTest } = transfer;
+  await ensureLocalDirForTest(path.join(d, 'a', 'b', 'c'));
+  ok(fs.statSync(path.join(d, 'a', 'b', 'c')).isDirectory(), 'nested folders created');
+  await ensureLocalDirForTest(path.join(d, 'a', 'b', 'c'));
+  ok(true, 'existing folder: no error');
+  await ensureLocalDirForTest(path.parse(d).root);
+  ok(true, 'a drive / filesystem root: nothing created, no error');
+  fs.writeFileSync(path.join(d, 'file'), 'x');
+  try { await ensureLocalDirForTest(path.join(d, 'file', 'sub')); ok(false, 'a file in the way must fail'); }
+  catch (e) { ok(/not a folder/.test(e.message) || e.code === 'ENOTDIR', 'a file in the way is reported'); }
+});
+
+SEC('local names', () => {
+  eq(safeLocalName('a:b*c?.mov', 'win32'), 'a_b_c_.mov', 'Windows forbidden characters');
+  eq(safeLocalName('name. ', 'win32'), 'name__', 'trailing dot and space');
+  eq(safeLocalName('CON.txt', 'win32'), '_CON.txt', 'reserved name');
+  eq(safeLocalName('a:b', 'darwin'), 'a:b', 'macOS keeps ":"');
+  eq(safeLocalName('a/b', 'linux'), 'a_b', 'never a separator');
+});
+
+SEC('auto tuner', () => {
+  // Bandwidth-limited: two connections already fill the line.
+  let t = new AutoTuner({ max: 10, start: 2, now: 0 });
+  let now = 0;
+  const window = (busy, bps, fps) => {
+    now += 1600;                       // past the settling time
+    t.winStart = Math.min(t.winStart, now - 0);
+    const start = now;
+    t.addBytes(0, start);
+    t.winStart = start;
+    t.winBytes = bps * 8; t.winFiles = Math.round(fps * 8);
+    now += 8000;
+    return t.tick(busy === undefined ? t.limit() : busy, 100, now);
+  };
+  window(undefined, 100e6, 0);  eq(t.limit(), 3, 'first window: climbs to 3');
+  window(undefined, 160e6, 0);  eq(t.limit(), 4, '+60 %: climbs to 4');
+  window(undefined, 162e6, 0);  eq(t.limit(), 3, 'no gain: back to the best (3)');
+  eq(t.phase, 'hold', 'and holds');
+  // Small files: bytes flat, files per second up.
+  t = new AutoTuner({ max: 10, start: 2, now: 0 }); now = 0;
+  window(undefined, 5e6, 20); window(undefined, 5.1e6, 30); window(undefined, 5e6, 42);
+  eq(t.limit(), 5, 'files per second alone makes it climb');
+  // A window where connections were idle does not count.
+  t = new AutoTuner({ max: 10, start: 2, now: 0 }); now = 0;
+  window(1, 100e6, 0);
+  eq(t.limit(), 2, 'unsaturated window ignored');
+  // The server refuses a connection: never above that again.
+  t = new AutoTuner({ max: 10, start: 6, now: 0 });
+  t.serverRefused(4, 0);
+  eq(t.limit(), 4, 'server limit caps the level');
+  t.setMax(2);
+  eq(t.limit(), 2, 'a lower maximum wins');
+  ok(better({ bps: 110, fps: 1 }, { bps: 100, fps: 1 }) && !better({ bps: 105, fps: 1 }, { bps: 100, fps: 1 }), 'better(): 10 % threshold');
+  ok(!better({ bps: 200, fps: 0.5 }, { bps: 100, fps: 1 }), 'better(): one measure may not lose more than 10 %');
+  // A file in segments: the climb starts at 4, once, and never above the caps.
+  t = new AutoTuner({ max: 10, start: 2, now: 0 });
+  ok(t.boost(4, 0) && t.limit() === 4, 'segments: starts at 4');
+  ok(!t.boost(4, 0), 'segments: only once');
+  t = new AutoTuner({ max: 3, start: 2, now: 0 });
+  t.boost(4, 0); eq(t.limit(), 3, 'segments: never above the maximum');
+  t = new AutoTuner({ max: 10, start: 2, now: 0 });
+  t.serverRefused(2, 0); t.boost(4, 0); eq(t.limit(), 2, 'segments: never above a server limit');
+});
+
+SEC('ftp passive: always the control host', async () => {
+  const transfer = require('basic-ftp/dist/transfer');
+  const realConnect = transfer.connectForPassiveTransfer;
+  const calls = [];
+  // The module keeps its own reference: test through a fake ftp context whose
+  // _newSocket records where the data connection goes.
+  const fakeFtp = (replies) => ({
+    socket: { remoteAddress: '::ffff:203.0.113.7' }, closed: false, timeout: 1000, ipFamily: undefined, tlsOptions: {},
+    request: async cmd => { const r = replies[cmd]; if (r instanceof Error) throw r; calls.push(cmd); return { code: 200, message: r }; },
+    _newSocket: () => {
+      const { EventEmitter } = require('events');
+      const so = new EventEmitter();
+      so.setTimeout = () => {}; so.destroy = () => {}; so.removeListener = so.off;
+      so.connect = (o, cb) => { calls.push(`connect ${o.host}:${o.port}`); setImmediate(cb); };
+      return so;
+    },
+    set dataSocket(v) { this._ds = v; }, get dataSocket() { return this._ds; },
+    log: () => {},
+  });
+  const { makePassive } = require('../src/main/proto/ftp-passive');
+  // A server behind NAT: EPSV unknown, PASV announces its private address.
+  let ftpc = fakeFtp({ EPSV: Object.assign(new Error('500 EPSV not understood'), { code: 500 }), PASV: '227 Entering Passive Mode (192,168,1,20,195,80)' });
+  let prep = makePassive();
+  await prep(ftpc);
+  ok(calls.includes('connect 203.0.113.7:50000'), 'PASV: the port is kept, the address is the control host');
+  ok(!calls.some(c => c.startsWith('connect 192.168')), 'PASV: the announced address is never used');
+  calls.length = 0;
+  await prep(ftpc);
+  ok(!calls.includes('EPSV') && calls[0] === 'PASV', 'PASV kept for the next transfers');
+  // A modern server: EPSV.
+  calls.length = 0;
+  ftpc = fakeFtp({ EPSV: '229 Entering Extended Passive Mode (|||6446|)' });
+  await makePassive()(ftpc);
+  ok(calls.includes('connect 203.0.113.7:6446'), 'EPSV: control host, given port');
+  ok(realConnect === transfer.connectForPassiveTransfer, 'basic-ftp untouched');
+});
+
+SEC('throttle', async () => {
+  const l = new Limiter();
+  ok(l.take(1e9) === null, 'no limit: never waits');
+  l.setRate(4e6);
+  const t0 = Date.now();
+  let n = 0;
+  while (n < 6e6) { const w = l.take(512 * 1024); if (w) await w; n += 512 * 1024; }
+  const s = (Date.now() - t0) / 1000;
+  ok(s > 1.0 && s < 2.2, `6 MB at 4 MB/s takes ~1.5 s (took ${s.toFixed(2)} s)`);
+  l.setRate(0);
+  ok(l.take(1e9) === null, 'limit removed');
+});
+
+SEC('hash', async () => {
+  const d = scratch();
+  const f = randomFile(path.join(d, 'x.bin'), 3 * 1024 * 1024 + 17);
+  eq(await hash.hashFile(f, 'sha256'), sha(f), 'SHA-256 = Node crypto');
+  const buf = fs.readFileSync(f);
+  eq(await hash.hashFile(f, 'md5', null, null, 1000, 2000), crypto.createHash('md5').update(buf.subarray(1000, 2000)).digest('hex'), 'range hash');
+  eq(await hash.hashFile(f, 'sha1', null, null, 5, 5), crypto.createHash('sha1').digest('hex'), 'empty range');
+  const x1 = await hash.hashFile(f, 'xxh64');
+  const h = await hash.createHasher('xxh64'); h.init(); h.update(buf.subarray(0, 100)); h.update(buf.subarray(100));
+  eq(h.digest().toLowerCase(), x1, 'xxHash64 streaming = whole');
+  eq((await hash.hashFile(f, 'crc32')).length, 8, 'CRC32 is 8 hex digits');
+});
+
+SEC('errors', () => {
+  const e = RemoteError.from(Object.assign(new Error('connect ECONNREFUSED 1.2.3.4:22'), { code: 'ECONNREFUSED' }));
+  ok(e.fatal && !e.network, 'refused = fatal');
+  ok(/nothing is listening/.test(e.message), 'refused: plain words');
+  ok(RemoteError.from(Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' })).network, 'reset = network');
+  ok(RemoteError.from(Object.assign(new Error('530 Login incorrect.'), { code: 530 })).fatal, '530 = fatal');
+  ok(RemoteError.from(Object.assign(new Error('421 Too many'), { code: 421 })).network, '421 = try later');
+  ok(RemoteError.from(new Error('All configured authentication methods failed')).fatal, 'SSH auth = fatal');
+  ok(RemoteError.from(new Error('ENOSPC: no space left on device')).noSpace, 'no space');
+  // A file error on this computer (Windows: mkdir 'S:\' on a mapped drive).
+  const le = RemoteError.from(Object.assign(new Error("EPERM: operation not permitted, mkdir 'S:\\'"), { code: 'EPERM', syscall: 'mkdir', path: 'S:\\' }));
+  ok(le.local && le.fatal && !le.network, 'local file error: fatal, not a network one');
+  ok(/on this computer/.test(le.message) && !/EPERM/.test(le.message), `local file error in plain words (${le.message})`);
+  const { serializeError } = require('../src/main/core/runner');
+  const se = serializeError(Object.assign(new Error('EACCES: permission denied, open \'/x\''), { code: 'EACCES', syscall: 'open', path: '/x' }));
+  ok(/on this computer/.test(se.message) && se.fatal, 'a worker thread sends the plain-words message');
+});
+
+SEC('settings', () => {
+  const s = normalizeSettings({ concurrency: '14', retries: -3, existingUp: 'bogus', limitUp: '2.55', segments: 0 });
+  eq([s.concurrency, s.retries, s.existingUp, s.limitUp, s.segments], [10, 0, 'ask', 2.6, false], 'normalized');
+  eq(normalizeSettings({}).concurrency, 'auto', 'Auto by default');
+  eq(normalizeSettings({}).verify, true, 'verification on by default');
+  const n = notify.forQueue({ done: 2, bytes: 3e9, durationMs: 61000, verified: 2, endpointLabel: 'NAS' });
+  ok(/^[\x20-\x7E]+$/.test(n.title), 'ntfy title is plain ASCII (it is an HTTP header)');
+});
+
+SEC('segment sizes', () => {
+  // Measured by the code itself, not the test setting (FILO_TEST_SEGMENT_MB).
+  const MB = 1024 * 1024, GB = 1024 * MB;
+  const sizeFor = size => Math.min(256 * MB, Math.max(32 * MB, Math.ceil(size / 16 / MB) * MB));
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'core', 'transfer.js'), 'utf8');
+  ok(/SEG_MIN = 32 \* MB, SEG_MAX = 256 \* MB, SEG_TARGET = 16/.test(src), 'segments: 32 to 256 MB, about 16 per file');
+  eq([1 * GB, 4 * GB, 300 * GB].map(x => Math.ceil(x / sizeFor(x))), [16, 16, 1200], '1 GB and 4 GB: 16 segments; 300 GB: 256 MB each');
+  eq(Math.ceil(100 * MB / sizeFor(100 * MB)), 4, '100 MB: 4 segments of 32 MB');
+});
+
+SEC('site manager order', () => {
+  const { Prefs } = require('../src/main/config');
+  const d = scratch();
+  const p = new Prefs(d).load();
+  const a = p.saveSite({ name: 'A', host: 'a' }), b = p.saveSite({ name: 'B', host: 'b', folder: 'X' }), c = p.saveSite({ name: 'C', host: 'c' });
+  p.arrangeSites([{ id: c.id, folder: 'X / Y' }, { id: a.id, folder: '' }, { id: 'ffffffff', folder: 'Z' }], ['X', 'X / Y']);
+  const again = new Prefs(d).load();
+  eq(again.listSites().map(s => s.name + '@' + s.folder), ['C@X / Y', 'A@', 'B@X'], 'new order and folders kept; unknown id ignored; a forgotten site stays');
+  eq(again.data.siteFolderOrder, ['X', 'X / Y'], 'folder order kept');
+  // Recent connections: sites and quick ones; a deleted site leaves; a broken
+  // entry on disk is dropped instead of blocking every connection.
+  again.pushQuick({ siteId: a.id }); again.pushQuick({ protocol: 'sftp', host: 'h', port: 22, user: 'u' }); again.pushQuick({ siteId: a.id });
+  eq(again.data.quickHistory.map(x => x.siteId ? 'site' : x.host), ['site', 'h'], 'recent: last first, no duplicate');
+  again.deleteSite(a.id);
+  eq(again.data.quickHistory.map(x => x.siteId ? 'site' : x.host), ['h'], 'recent: a deleted site leaves');
+  const raw = JSON.parse(fs.readFileSync(path.join(d, 'preferences.json'), 'utf8'));
+  raw.quickHistory = [null, 5, { siteId: 'abc' }, { host: 'k', protocol: 'ftp' }, {}];
+  fs.writeFileSync(path.join(d, 'preferences.json'), JSON.stringify(raw));
+  const third = new Prefs(d).load();
+  eq(third.data.quickHistory.length, 2, 'recent: broken entries dropped on load');
+  third.pushQuick({ protocol: 'sftp', host: 'z', port: 22 });
+  eq(third.data.quickHistory.length, 3, 'recent: still works after');
+});
+
+SEC('preload bridge', () => {
+  // Every argument a method receives must reach ipcRenderer: a bridge that
+  // drops one makes no noise (syncto's shutdown never worked until 0.7.3).
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'preload.js'), 'utf8');
+  const re = /^\s*(\w+)\s*:\s*\(([^)]*)\)\s*=>\s*inv\('([\w-]+)'((?:,\s*[\w]+)*)\)/gm;
+  let m, n = 0;
+  while ((m = re.exec(src))) {
+    n++;
+    const params = m[2].split(',').map(x => x.trim()).filter(Boolean);
+    const args = m[4].split(',').map(x => x.trim()).filter(Boolean);
+    eq(args, params, `${m[1]} forwards every argument`);
+  }
+  ok(n > 40, `bridge methods checked (${n})`);
+  // And every channel the bridge calls has a handler.
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'main.js'), 'utf8');
+  const chans = [...src.matchAll(/inv\('([\w-]+)'/g)].map(x => x[1]);
+  for (const c of chans) ok(main.includes(`ipcMain.handle('${c}'`), `handler for ${c}`);
+});
+
+// ── Against a real SFTP server ────────────────────────────────────────────
+let SRV = null, EP = null;
+async function server(opts) {
+  const root = scratch();
+  const srv = await startSftpServer(Object.assign({ root }, opts || {}));
+  const ep = { protocol: 'sftp', host: '127.0.0.1', port: srv.port, user: srv.username, password: srv.password };
+  const r = await connectTrusting(ep);
+  await r.close();
+  return { srv, ep, root };
+}
+
+SEC('sftp basics', async () => {
+  const { srv, ep, root } = await server();
+  SRV = srv; EP = ep;
+  const r = await connectTrusting(ep);
+  const changed = proto.createRemote(Object.assign({}, ep));
+  known.set(`sftp:${ep.host}:${ep.port}`, 'SHA256:somethingelse');
+  try { await changed.connect(); ok(false, 'a changed host key must be refused'); }
+  catch (e) { eq(e.code, 'HOST_KEY_CHANGED', 'changed host key refused before login'); }
+  known.delete(`sftp:${ep.host}:${ep.port}`);
+  const r2 = await connectTrusting(ep); await r2.close();
+  await r.mkdir('/d');
+  const big = crypto.randomBytes(300 * 1024 + 5);
+  fs.writeFileSync(path.join(root, 'd', 'f.bin'), big);
+  const list = await r.list('/d');
+  eq(list.map(e => [e.name, e.type, e.size]), [['f.bin', 'file', big.length]], 'list');
+  eq((await r.stat('/d/f.bin')).size, big.length, 'stat');
+  eq(await r.stat('/d/nope'), null, 'stat of nothing = null');
+  // Ranges.
+  const chunks = [];
+  const { Writable } = require('stream');
+  await r.downloadRange('/d/f.bin', new Writable({ write(c, e, cb) { chunks.push(c); cb(); } }), 1000, 70000);
+  ok(Buffer.concat(chunks).equals(big.subarray(1000, 70000)), 'downloadRange reads exactly [start, end)');
+  const { Readable } = require('stream');
+  await r.uploadRange(Readable.from([Buffer.alloc(100, 7)]), '/d/f.bin', 5000);
+  const after = fs.readFileSync(path.join(root, 'd', 'f.bin'));
+  ok(after.length === big.length && after.subarray(5000, 5100).equals(Buffer.alloc(100, 7)) && after.subarray(0, 5000).equals(big.subarray(0, 5000)) && after.subarray(5100).equals(big.subarray(5100)), 'uploadRange writes in place without truncating');
+  await r.createEmpty('/d/empty.bin');
+  eq(fs.statSync(path.join(root, 'd', 'empty.bin')).size, 0, 'createEmpty');
+  await r.rename('/d/empty.bin', '/d/e2.bin');
+  ok(fs.existsSync(path.join(root, 'd', 'e2.bin')), 'rename');
+  await r.unlink('/d/e2.bin');
+  ok(!fs.existsSync(path.join(root, 'd', 'e2.bin')), 'unlink');
+  eq(await r.hashAlgos(), [], 'no shell on the test server: no server checksum');
+  await r.close();
+});
+
+async function uploadDownloadCase(mode, extraSettings, size, label) {
+  const d = scratch();
+  const src = path.join(d, 'src');
+  const files = {
+    'a.mov': size,
+    'sub/b.bin': 70 * 1024,
+    'sub/deeper/c.txt': 0,                 // an empty file is still a file
+  };
+  for (const [rel, sz] of Object.entries(files)) randomFile(path.join(src, rel), sz);
+  fs.mkdirSync(path.join(src, 'empty-folder'), { recursive: true });
+  const settings = Object.assign({}, SETTINGS, extraSettings || {});
+  const remoteBase = `/${label.replace(/\W+/g, '-')}`;
+  // Upload
+  let q = makeQueue(EP, settings, mode);
+  const specs = [{ dir: 'up', type: 'folder', local: src, remote: remoteBase + '/src', endpointId: 'e', endpointLabel: 'test' }];
+  for (const rel of Object.keys(files)) specs.push({ dir: 'up', type: 'file', local: path.join(src, rel), remote: `${remoteBase}/src/${rel}`, size: files[rel], endpointId: 'e', endpointLabel: 'test' });
+  specs.push({ dir: 'up', type: 'folder', local: path.join(src, 'empty-folder'), remote: `${remoteBase}/src/empty-folder`, endpointId: 'e', endpointLabel: 'test' });
+  q.add(specs);
+  let s = await runQueue(q);
+  q.closeAll();
+  eq([s.done, s.failed], [3, 0], `${label}: upload done`);
+  const serverRoot = SRV_ROOT();
+  for (const rel of Object.keys(files)) eq(sha(path.join(serverRoot, remoteBase, 'src', rel)), sha(path.join(src, rel)), `${label}: ${rel} identical on the server`);
+  ok(fs.existsSync(path.join(serverRoot, remoteBase, 'src', 'empty-folder')), `${label}: empty folder created`);
+  ok(!fs.readdirSync(path.join(serverRoot, remoteBase, 'src')).some(n => n.endsWith('.filopart')), `${label}: no .filopart left`);
+  // Download it all back
+  q = makeQueue(EP, settings, mode);
+  const back = path.join(d, 'back');
+  q.add(Object.keys(files).map(rel => ({ dir: 'down', type: 'file', local: path.join(back, rel), remote: `${remoteBase}/src/${rel}`, size: files[rel], endpointId: 'e', endpointLabel: 'test' })));
+  s = await runQueue(q);
+  q.closeAll();
+  eq([s.done, s.failed], [3, 0], `${label}: download done`);
+  for (const rel of Object.keys(files)) eq(sha(path.join(back, rel)), sha(path.join(src, rel)), `${label}: ${rel} identical after the round trip`);
+  const items = q.page('done', 0, 10).items;
+  const big = items.find(i => i.local.endsWith('a.mov'));
+  if (settings.verify) ok(big && big.verify && big.verify.level !== 'size', `${label}: the big file was verified (${big && JSON.stringify(big.verify)})`);
+  else eq(big && big.verify, { level: 'size' }, `${label}: verification off = size only`);
+  return { q, d };
+}
+let SRV_ROOT = () => '';
+
+SEC('queue: inline lanes', async () => {
+  const { srv, ep, root } = await server();
+  SRV = srv; EP = ep; SRV_ROOT = () => root;
+  await uploadDownloadCase('inline', {}, 300 * 1024, 'plain');
+  await uploadDownloadCase('inline', { verify: false }, 300 * 1024, 'no verification');
+  await srv.close();
+});
+
+SEC('queue: segments (worker threads)', async () => {
+  const { srv, ep, root } = await server({ latencyMs: 2 });
+  SRV = srv; EP = ep; SRV_ROOT = () => root;
+  // 1 MB segments (FILO_TEST_SEGMENT_MB), from 2 MB: 5.5 MB = 6 segments.
+  const { q } = await uploadDownloadCase('worker', { concurrency: 4 }, 5.5 * 1024 * 1024, 'segments');
+  ok(q.logs.some(l => /6 segments/.test(l)), 'the big file was split in 6 segments');
+  await srv.close();
+});
+
+SEC('queue: pause and resume', async () => {
+  const { srv, ep, root } = await server({ latencyMs: 8 });
+  SRV = srv; EP = ep; SRV_ROOT = () => root;
+  for (const segments of [false, true]) {
+    const d = scratch();
+    const f = randomFile(path.join(d, 'clip.mov'), 12 * 1024 * 1024);
+    const settings = Object.assign({}, SETTINGS, { segments, concurrency: 2 });
+    const q = makeQueue(ep, settings, 'inline');
+    q.add([{ dir: 'up', type: 'file', local: f, remote: '/r' + segments + '/clip.mov', size: 12 * 1024 * 1024, endpointId: 'e', endpointLabel: 't' }]);
+    let paused = false;
+    q.on('progress', p => {
+      const a = p.active[0];
+      if (!paused && a && a.done > 6 * 1024 * 1024) { paused = true; q.pause(); }
+    });
+    q.start();
+    for (let i = 0; i < 200 && !paused; i++) await sleep(50);
+    ok(paused, `segments=${segments}: paused mid-file`);
+    await sleep(300);
+    eq(q.state, 'stopped', 'queue stopped');
+    ok(fs.existsSync(path.join(root, 'r' + segments, 'clip.mov.filopart')), 'the partial file is kept');
+    ok(!fs.existsSync(path.join(root, 'r' + segments, 'clip.mov')), 'the real name does not exist yet');
+    const s = await runQueue(q);
+    q.closeAll();
+    eq([s.done, s.failed], [1, 0], `segments=${segments}: finished after resuming`);
+    eq(sha(path.join(root, 'r' + segments, 'clip.mov')), sha(f), `segments=${segments}: identical`);
+    ok(s.bytes < 12 * 1024 * 1024, `segments=${segments}: the resumed run did not send everything again (${s.bytes} bytes)`);
+  }
+  await srv.close();
+});
+
+SEC('queue: one file at a time (pause, stop, resume, stop all)', async () => {
+  const { srv, ep, root } = await server({ latencyMs: 8 });
+  SRV = srv; EP = ep; SRV_ROOT = () => root;
+  for (const dir of ['up', 'down']) for (const mode of ['inline', 'worker']) {
+    const d = scratch();
+    const tag = `${dir}-${mode}`;
+    const srcDir = dir === 'up' ? d : path.join(root, 'src-' + tag);
+    fs.mkdirSync(srcDir, { recursive: true });
+    const files = [0, 1, 2, 3].map(i => randomFile(path.join(srcDir, `c${i}.mov`), 16 * 1024 * 1024));
+    const settings = Object.assign({}, SETTINGS, { concurrency: 2, limitUp: 4, limitDown: 4, segments: false });
+    const q = makeQueue(ep, settings, mode);
+    q.add([0, 1, 2, 3].map(i => dir === 'up'
+      ? { dir, type: 'file', local: files[i], remote: `/one-${tag}/c${i}.mov`, size: 16 * 1024 * 1024, endpointId: 'e', endpointLabel: 't' }
+      : { dir, type: 'file', local: path.join(d, 'got', `c${i}.mov`), remote: `/src-${tag}/c${i}.mov`, size: 16 * 1024 * 1024, endpointId: 'e', endpointLabel: 't' }));
+    const ids = q.order.slice();
+    const st = id => q.items.get(id).status;
+    q.start();
+    for (let i = 0; i < 200 && !(st(ids[0]) === 'running' && q.items.get(ids[0]).done > 0); i++) await sleep(25);
+    q.pauseItems([ids[0]]);          // running → paused
+    q.pauseItems([ids[3]]);          // queued → paused
+    // A held file lets go of its connection at once, not when its transfer
+    // would have finished (16 MB at 2 MB/s: 8 s).
+    const settled = async (id) => { const t = Date.now(); for (let i = 0; i < 200 && q._unitsOf(q.items.get(id)).length; i++) await sleep(25); return Date.now() - t; };
+    const t0 = await settled(ids[0]);
+    ok(t0 < 2000, `${tag}: pausing a running file stops it at once (${t0} ms)`);
+    eq([st(ids[0]), st(ids[3])], ['paused', 'paused'], `${tag}: a running and a queued file paused`);
+    eq(q.state, 'running', `${tag}: the queue keeps going`);
+    for (let i = 0; i < 200 && st(ids[1]) !== 'running'; i++) await sleep(25);
+    q.stopItems([ids[1]]);
+    await settled(ids[1]);
+    eq(st(ids[1]), 'stopped', `${tag}: a running file stopped`);
+    ok(q.page('failed', 0, 10).items.some(it => it.id === ids[1]), `${tag}: a stopped file is in the Failed tab`);
+    ok(q.page('queue', 0, 10).items.some(it => it.id === ids[0]), `${tag}: a paused file stays in the Queue tab`);
+    // Stop everything while files run.
+    q.resumeItems([ids[0]]);
+    for (let i = 0; i < 200 && st(ids[0]) !== 'running'; i++) await sleep(25);
+    q.stopAll();
+    let tAll = 0;
+    for (const id of ids) tAll += await settled(id);
+    ok(tAll < 2000, `${tag}: Stop all stops running files at once (${tAll} ms)`);
+    eq(ids.map(st), ['stopped', 'stopped', 'stopped', 'stopped'], `${tag}: Stop all stops every file, running ones included`);
+    eq(q.state, 'stopped', `${tag}: the queue is stopped`);
+    // Retry → everything finishes, identical.
+    settings.limitUp = 0; settings.limitDown = 0;
+    // "Start again": a file that had started forgets its partial copy.
+    q.retry([ids[0]], 'restart');
+    eq([st(ids[0]), q.items.get(ids[0]).restartFromZero, q.items.get(ids[0]).offset], ['queued', true, 0], `${tag}: start again resets a started file`);
+    q.retry([]);
+    const s = await runQueue(q);
+    q.closeAll();
+    eq(s.failed, 0, `${tag}: retried files finish`);
+    for (let i = 0; i < 4; i++) eq(sha(dir === 'up' ? path.join(root, `one-${tag}`, `c${i}.mov`) : path.join(d, 'got', `c${i}.mov`)), sha(files[i]), `${tag}: file ${i} identical`);
+  }
+  await srv.close();
+});
+
+SEC('queue: own partial file under the real name', async () => {
+  const { srv, ep, root } = await server({ latencyMs: 8 });
+  SRV = srv; EP = ep; SRV_ROOT = () => root;
+  // No temporary names, rule "overwrite if newer": after a cut, the partial
+  // file at the real name is newer than the source. It is filo's own work, so
+  // it must be completed, not skipped as "already there".
+  const d = scratch();
+  const f = randomFile(path.join(d, 'own.mov'), 12 * 1024 * 1024);
+  fs.utimesSync(f, new Date(Date.now() - 86400e3), new Date(Date.now() - 86400e3));
+  const settings = Object.assign({}, SETTINGS, { tempNames: false, existingUp: 'newer', segments: false, concurrency: 1, limitUp: 4 });
+  const q = makeQueue(ep, settings, 'inline');
+  q.add([{ dir: 'up', type: 'file', local: f, remote: '/own/own.mov', size: 12 * 1024 * 1024, endpointId: 'e', endpointLabel: 't' }]);
+  const id = q.order[0];
+  q.start();
+  for (let i = 0; i < 400 && !(q.items.get(id).done > 3 * 1024 * 1024); i++) await sleep(25);
+  q.pause();
+  for (let i = 0; i < 200 && q._unitsOf(q.items.get(id)).length; i++) await sleep(25);
+  ok(fs.existsSync(path.join(root, 'own', 'own.mov')), 'the partial file is at the real name');
+  settings.limitUp = 0;
+  const s = await runQueue(q);
+  q.closeAll();
+  eq([s.done, s.skipped], [1, 0], 'completed, not skipped');
+  eq(sha(path.join(root, 'own', 'own.mov')), sha(f), 'identical');
+  // Removed while running: gone from the queue, and the queue finishes.
+  const q2 = makeQueue(ep, Object.assign({}, settings, { limitUp: 4 }), 'inline');
+  q2.add([{ dir: 'up', type: 'file', local: f, remote: '/own/gone.mov', size: 12 * 1024 * 1024, endpointId: 'e', endpointLabel: 't' },
+          { dir: 'up', type: 'file', local: f, remote: '/own/stays.mov', size: 12 * 1024 * 1024, endpointId: 'e', endpointLabel: 't' }]);
+  const gone = q2.order[0];
+  const fin = new Promise(r => q2.once('finished', r));
+  q2.start();
+  for (let i = 0; i < 200 && q2.items.get(gone).status !== 'running'; i++) await sleep(25);
+  q2.remove([gone]);
+  for (let i = 0; i < 120 && q2.items.has(gone); i++) await sleep(25);
+  ok(!q2.items.has(gone), 'a removed running file leaves the queue');
+  q2.opts.settings = () => Object.assign({}, settings, { limitUp: 0 }); q2.applyLimits();
+  await Promise.race([fin, sleep(30000)]);
+  eq(q2.state, 'stopped', 'the queue still finishes');
+  q2.closeAll();
+  await srv.close();
+});
+
+SEC('local writes are grouped', async () => {
+  // A slow disk (network drive): 32 KB pieces arriving while a write is on its
+  // way go out together. Same bytes, far fewer writes.
+  const { LocalSink } = require('../src/main/proto/local');
+  const { Readable } = require('stream');
+  const d = scratch();
+  const out = path.join(d, 'sink.bin');
+  const src = crypto.randomBytes(8 * 1024 * 1024);
+  const orig = fs.write;
+  let calls = 0;
+  fs.write = function (fd, buf, off, len, pos, cb) { calls++; setTimeout(() => orig.call(fs, fd, buf, off, len, pos, cb), 3); };
+  try {
+    let at = 0;
+    const r = new Readable({ highWaterMark: 64 * 1024, read() { setImmediate(() => { if (at >= src.length) return this.push(null); this.push(src.subarray(at, at + 32768)); at += 32768; }); } });
+    await new Promise((res, rej) => r.pipe(new LocalSink(out, 0)).on('finish', res).on('error', rej));
+  } finally { fs.write = orig; }
+  eq(sha(out), crypto.createHash('sha256').update(src).digest('hex'), 'identical bytes');
+  ok(calls < 256 / 2, `${calls} writes for 256 pieces`);
+});
+
+SEC('queue: resuming after a stop, a pause, a restart, or adding the file again', async () => {
+  const { srv, ep, root } = await server({ latencyMs: 4 });
+  SRV = srv; EP = ep; SRV_ROOT = () => root;
+  const SZ = 16 * 1024 * 1024;
+  fs.mkdirSync(path.join(root, 'src'), { recursive: true });
+  const f = randomFile(path.join(root, 'src', 'big.mov'), SZ);
+  for (const segments of [false, true]) for (const how of ['stop-retry', 'pause-start', 'restart-app', 'add-again']) {
+    const d = scratch();
+    const memStore = { data: null, load() { return this.data; }, save(a) { this.data = JSON.parse(JSON.stringify(a)); } };
+    const settings = Object.assign({}, SETTINGS, { segments, concurrency: 2, limitDown: 4 });
+    const spec = () => [{ dir: 'down', type: 'file', local: path.join(d, 'big.mov'), remote: '/src/big.mov', size: SZ, endpointId: 'e', endpointLabel: 't' }];
+    let q = makeQueue(ep, settings, 'worker', { store: memStore });
+    q.add(spec());
+    const id = q.order[0];
+    q.start();
+    for (let i = 0; i < 400 && !(q.items.get(id).done > 6 * 1024 * 1024); i++) await sleep(25);
+    if (how === 'stop-retry') q.stopItems([id]); else q.pause();
+    for (let i = 0; i < 200 && q._unitsOf(q.items.get(id)).length; i++) await sleep(25);
+    q._save();
+    if (segments) {
+      // Segments cut half-way keep what they received (0.3.1).
+      const ch = q.items.get(id).seg.chunks;
+      ok(ch.some(c => c.st !== 'd' && c.got > 0), `${how}: a segment cut half-way keeps its first part (${ch.filter(c => c.got > 0).map(c => c.got).join(', ')})`);
+      const done = q.items.get(id).done, sum = ch.reduce((a, c) => a + (c.st === 'd' ? c.e - c.s : (c.got || 0)), 0);
+      eq(done, sum, `${how}: the progress shows exactly what is in place`);
+    }
+    settings.limitDown = 0;
+    let s;
+    if (how === 'stop-retry') { q.retry([id]); s = await runQueue(q); q.closeAll(); }
+    else if (how === 'pause-start') { s = await runQueue(q); q.closeAll(); }
+    else if (how === 'restart-app') { q.closeAll(); const q2 = makeQueue(ep, settings, 'worker', { store: memStore }); s = await runQueue(q2); q2.closeAll(); }
+    else {
+      // The same file added again: the stopped item comes back with what it had.
+      q.stopItems([id]);
+      for (let i = 0; i < 200 && q._unitsOf(q.items.get(id)).length; i++) await sleep(25);
+      const r = q.add(spec());
+      eq([r.length, r.revived.length, r.revived[0] && r.revived[0].id], [0, 1, id], `segments=${segments}: added again → the same item, with its partial copy`);
+      q.retry(r.revived.map(x => x.id), 'resume');
+      s = await runQueue(q); q.closeAll();
+    }
+    ok(s.bytes < SZ, `segments=${segments} ${how}: resumed, not started again (${(s.bytes / 1048576).toFixed(1)} MB of 16 sent)`);
+    eq(sha(path.join(d, 'big.mov')), sha(f), `${how} identical`);
+  }
+  await srv.close();
+});
+
+SEC('queue: file already there', async () => {
+  const { srv, ep, root } = await server();
+  SRV = srv; EP = ep; SRV_ROOT = () => root;
+  const d = scratch();
+  const f = randomFile(path.join(d, 'x.bin'), 50000);
+  fs.mkdirSync(path.join(root, 'ex'), { recursive: true });
+  const spec = () => [{ dir: 'up', type: 'file', local: f, remote: '/ex/x.bin', size: 50000, endpointId: 'e', endpointLabel: 't' }];
+  // skip
+  fs.writeFileSync(path.join(root, 'ex', 'x.bin'), 'old');
+  let q = makeQueue(ep, Object.assign({}, SETTINGS, { existingUp: 'skip' }), 'inline');
+  q.add(spec()); let s = await runQueue(q); q.closeAll();
+  eq([s.done, s.skipped, fs.readFileSync(path.join(root, 'ex', 'x.bin'), 'utf8')], [0, 1, 'old'], 'skip leaves the target alone');
+  // rename
+  q = makeQueue(ep, Object.assign({}, SETTINGS, { existingUp: 'rename' }), 'inline');
+  q.add(spec()); s = await runQueue(q); q.closeAll();
+  eq(sha(path.join(root, 'ex', 'x (1).bin')), sha(f), 'rename: new name, old file kept');
+  // ask → overwrite, answered "for all"
+  q = makeQueue(ep, Object.assign({}, SETTINGS, { existingUp: 'ask' }), 'worker');
+  let asked = 0;
+  q.on('ask', a => { asked++; q.answer(a.askId, 'overwrite', true); });
+  q.add(spec()); s = await runQueue(q); q.closeAll();
+  eq([asked, sha(path.join(root, 'ex', 'x.bin'))], [1, sha(f)], 'ask, through a worker thread: overwrite');
+  // resume a smaller target (another client stopped half way)
+  // SFTP resumes 2 MB before the end of what is there (writes may have
+  // landed out of order before the cut): 5 MB file, 4 MB there → 3 MB sent.
+  const big = randomFile(path.join(d, 'big.bin'), 5 * 1024 * 1024);
+  fs.writeFileSync(path.join(root, 'ex', 'big.bin'), fs.readFileSync(big).subarray(0, 4 * 1024 * 1024));
+  q = makeQueue(ep, Object.assign({}, SETTINGS, { existingUp: 'resume', segments: false }), 'inline');
+  q.add([{ dir: 'up', type: 'file', local: big, remote: '/ex/big.bin', size: 5 * 1024 * 1024, endpointId: 'e', endpointLabel: 't' }]);
+  s = await runQueue(q); q.closeAll();
+  eq(sha(path.join(root, 'ex', 'big.bin')), sha(big), 'resume completes a partial target');
+  ok(s.bytes === 3 * 1024 * 1024, `resume sent the rest, from 2 MB before the end of the partial file (${s.bytes})`);
+  await srv.close();
+});
+
+SEC('queue: server connection limit', async () => {
+  const { srv, ep, root } = await server({ maxSessions: 2 });
+  SRV = srv; EP = ep; SRV_ROOT = () => root;
+  const d = scratch();
+  const specs = [];
+  for (let i = 0; i < 8; i++) specs.push({ dir: 'up', type: 'file', local: randomFile(path.join(d, `f${i}.bin`), 200000), remote: `/lim/f${i}.bin`, size: 200000, endpointId: 'e', endpointLabel: 't' });
+  const q = makeQueue(ep, Object.assign({}, SETTINGS, { concurrency: 'auto', autoMax: 6 }), 'inline');
+  q.tuner = new AutoTuner({ max: 6, start: 5 });
+  q.add(specs);
+  const s = await runQueue(q, 90000);
+  q.closeAll();
+  eq([s.done, s.failed], [8, 0], 'every file arrived despite the limit');
+  ok(q.tuner.cap <= 2, `the limit was learnt (cap ${q.tuner.cap})`);
+  await srv.close();
+});
+
+SEC('review 0.3.4: no silent replace, kept progress', async () => {
+  const MB = 1024 * 1024;
+  // Two different files for one destination: the second is left out.
+  let q = makeQueue({}, SETTINGS, 'inline');
+  const a = q.add([
+    { dir: 'down', type: 'file', local: '/x/C0001.MP4', remote: '/cardA/C0001.MP4', size: 10, endpointId: 'e' },
+    { dir: 'down', type: 'file', local: '/x/C0001.MP4', remote: '/cardB/C0001.MP4', size: 10, endpointId: 'e' },
+  ]);
+  eq([a.length, a.conflict], [1, 1], 'same destination, different source: the second is not queued');
+  q.closeAll();
+
+  const { srv, ep, root } = await server();
+  SRV = srv; EP = ep; SRV_ROOT = () => root;
+  const d = scratch();
+  fs.mkdirSync(path.join(root, 'rv'), { recursive: true });
+
+  // START AGAIN on a file that filo never wrote under the real name: the rule
+  // ("skip") still applies, the file there is kept.
+  const f = randomFile(path.join(d, 's.bin'), 60000);
+  fs.writeFileSync(path.join(root, 'rv', 's.bin'), 'theirs');
+  q = makeQueue(ep, Object.assign({}, SETTINGS, { existingUp: 'skip' }), 'inline');
+  const [id] = q.add([{ dir: 'up', type: 'file', local: f, remote: '/rv/s.bin', size: 60000, endpointId: 'e', endpointLabel: 't' }]);
+  q.get(id).restartFromZero = true;
+  let s = await runQueue(q); q.closeAll();
+  eq([s.skipped, fs.readFileSync(path.join(root, 'rv', 's.bin'), 'utf8')], [1, 'theirs'], 'start again does not override "skip"');
+
+  // A file that appears under the real name while the transfer runs: the rule
+  // decides at the end ("skip"), nothing is replaced, no partial file is left.
+  for (const dir of ['down', 'up']) {
+    const big = dir === 'up' ? randomFile(path.join(d, 'late-up.bin'), 3 * MB) : randomFile(path.join(root, 'rv', 'late-down.bin'), 3 * MB);
+    const target = dir === 'up' ? path.join(root, 'rv', 'late-up.bin') : path.join(d, 'late-down.bin');
+    q = makeQueue(ep, Object.assign({}, SETTINGS, { existingUp: 'skip', existingDown: 'skip', segments: false, limitUp: 2, limitDown: 2 }), 'inline');
+    q.add([dir === 'up'
+      ? { dir, type: 'file', local: big, remote: '/rv/late-up.bin', size: 3 * MB, endpointId: 'e', endpointLabel: 't' }
+      : { dir, type: 'file', local: target, remote: '/rv/late-down.bin', size: 3 * MB, endpointId: 'e', endpointLabel: 't' }]);
+    setTimeout(() => fs.writeFileSync(target, 'arrived meanwhile'), 400);
+    s = await runQueue(q); q.closeAll();
+    eq([s.skipped, fs.readFileSync(target, 'utf8'), fs.existsSync(target + '.filopart')], [1, 'arrived meanwhile', false], `${dir}: a file arriving meanwhile is not replaced`);
+  }
+  await srv.close();
+
+  // A segment that fails before saying what it holds keeps what was known.
+  q = makeQueue({}, SETTINGS, 'inline');
+  const it = { id: 'x', dir: 'down', type: 'file', local: path.join(d, 'k'), remote: '/k', size: 64 * MB, status: 'running', done: 20 * MB, endpointId: 'e',
+    seg: { chunks: [{ s: 0, e: 32 * MB, st: 'r', got: 20 * MB, by: 'u1' }, { s: 32 * MB, e: 64 * MB, st: 'p' }] } };
+  q.items.set('x', it); q.order.push('x');
+  q._unitFailed({ id: 'u1', it, kind: 'seg', idx: 0, bytes: 0, aborted: false, phase: 'connect' }, Object.assign(new Error('x'), { network: true }));
+  eq([it.seg.chunks[0].got, it.done], [20 * MB, 20 * MB], 'segment: 20 MB kept, progress unchanged');
+  q.closeAll();
+
+  // After a relaunch, a stopped file still knows what it had: "start again"
+  // applies, and the window can ask.
+  let saved = null;
+  const store = { load: () => saved, save: x => { saved = JSON.parse(JSON.stringify(x)); } };
+  q = makeQueue({}, SETTINGS, 'inline', { store });
+  q.items.set('y', { id: 'y', dir: 'up', type: 'file', local: '/l', remote: '/r', size: 1e9, status: 'stopped', done: 5e8, offset: 4e8, resume: { srcSize: 1e9, srcMtime: 1 }, endpointId: 'e' });
+  q.order.push('y'); q._save(); q.closeAll();
+  q = makeQueue({}, SETTINGS, 'inline', { store });
+  eq([q.get('y').done, q.get('y').offset], [5e8, 4e8], 'progress kept across a relaunch');
+  q.retry(['y'], 'restart');
+  ok(q.get('y').restartFromZero === true, 'start again after a relaunch');
+  // Retry while units of the file are still ending: deferred, not mixed.
+  const z = { id: 'z', dir: 'up', type: 'file', local: '/l2', remote: '/r2', size: 10, status: 'failed', endpointId: 'e' };
+  q.items.set('z', z); q.order.push('z');
+  const ghost = { id: 'g', it: z, kind: 'seg', idx: 0 };
+  q.units.add(ghost);
+  q.retry(['z'], 'resume');
+  eq([z.status, z._pendingRetry], ['failed', 'resume'], 'retry waits for the last unit of the file');
+  q.units.delete(ghost);
+  q.closeAll();
+
+  // Auto: a limit learned from one server does not cap the next run.
+  const t = new AutoTuner({ max: 10, start: 2, now: 0 });
+  t.serverRefused(3, 0); t.newRun(0);
+  ok(t.limit() >= 2 && t.cap === Infinity && !t.boosted, 'a new run forgets the server limit');
+});
+
+SEC('verification catches corruption', async () => {
+  // A server that stores something else than what it received.
+  const d = scratch();
+  const f = randomFile(path.join(d, 'v.bin'), 100000);
+  const store = new Map();
+  const { Writable, Readable } = require('stream');
+  const fake = {
+    canSetMTime: false, canSegment: false,
+    async stat(p) { if (store.has(p)) return { type: 'file', size: store.get(p).length, mtime: 0 }; if (p === '/' || p === '/v') return { type: 'folder' }; return null; },
+    async list() { return []; },
+    async mkdir() {},
+    async rename(a, b) { store.set(b, store.get(a)); store.delete(a); },
+    async unlink(p) { store.delete(p); },
+    async hashAlgos() { return []; },
+    upload(src, p) { const parts = []; return new Promise((res, rej) => src.pipe(new Writable({ write(c, e, cb) { parts.push(c); cb(); }, final(cb) { const b = Buffer.concat(parts); b[500] ^= 0xff; store.set(p, b); cb(); res(); } })).on('error', rej)); },
+    download(p, dest) { return new Promise((res, rej) => { const rs = Readable.from([store.get(p)]); rs.pipe(dest); dest.on('finish', res); dest.on('error', rej); }); },
+  };
+  const item = { dir: 'up', type: 'file', local: f, remote: '/v/v.bin', size: 100000 };
+  const ctx = { remote: fake, settings: Object.assign({}, SETTINGS), token: {}, log: () => {}, onBytes: () => {}, ask: async () => 'overwrite' };
+  try { await transfer.runFile(item, ctx); ok(false, 'a corrupted copy must not pass'); }
+  catch (e) { ok(e.mismatch, `corruption detected by read-back (${e.message})`); }
+  ok(!store.has('/v/v.bin'), 'and the real name was never given to it');
+});
+
+SEC('ftp (real servers, optional)', async () => {
+  const targets = [['ftp', process.env.FILO_TEST_FTP], ['ftps', process.env.FILO_TEST_FTPS], ['ftps-implicit', process.env.FILO_TEST_FTPS_IMPLICIT]].filter(x => x[1]);
+  if (!targets.length) { process.stdout.write(' (skipped: no FILO_TEST_FTP*)'); return; }
+  for (const [protocol, hp] of targets) {
+    const [host, port] = hp.split(':');
+    const ep = { protocol, host, port: Number(port), user: process.env.FILO_TEST_FTP_USER, password: process.env.FILO_TEST_FTP_PASS };
+    for (const transferMode of ['passive', 'active']) {
+      const r = await connectTrusting(Object.assign({ transferMode }, ep));
+      const home = await r.home();
+      const data = crypto.randomBytes(1234567);
+      const { Readable, Writable } = require('stream');
+      const p = `${home}/filo-test-${protocol}-${transferMode}.bin`;
+      await r.upload(Readable.from([data]), p, 0);
+      const got = [];
+      await r.download(p, new Writable({ write(c, e, cb) { got.push(c); cb(); } }), 0);
+      ok(Buffer.concat(got).equals(data), `${protocol} ${transferMode}: round trip`);
+      // Resume: a first part, then the rest appended.
+      await r.upload(Readable.from([data.subarray(0, 1000000)]), p, 0);
+      await r.upload(Readable.from([data.subarray(1000000)]), p, 1000000);
+      const got2 = [];
+      await r.download(p, new Writable({ write(c, e, cb) { got2.push(c); cb(); } }), 0);
+      ok(Buffer.concat(got2).equals(data), `${protocol} ${transferMode}: resumed upload (APPE) = whole file`);
+      const tail = [];
+      await r.download(p, new Writable({ write(c, e, cb) { tail.push(c); cb(); } }), 1200000);
+      ok(Buffer.concat(tail).equals(data.subarray(1200000)), `${protocol} ${transferMode}: resumed download (REST)`);
+      await r.unlink(p);
+      await r.close();
+    }
+  }
+});
+
+// ══ Run ══════════════════════════════════════════════════════════════════
+(async () => {
+  const only = process.argv[2];
+  const t0 = Date.now();
+  for (const [name, fn] of SECTIONS) {
+    if (only && !name.includes(only)) continue;
+    section = name;
+    process.stdout.write(`\n${name.padEnd(36)} `);
+    try { await fn(); }
+    catch (e) { failed++; failures.push(`[${name}] UNCAUGHT: ${e && e.stack || e}`); process.stdout.write('X'); }
+  }
+  console.log(`\n\n${passed} passed, ${failed} failed (${((Date.now() - t0) / 1000).toFixed(1)} s)`);
+  if (failures.length) console.log('\n' + failures.map(f => '  ✗ ' + f).join('\n'));
+  try { fs.rmSync(ROOT, { recursive: true, force: true }); } catch (_) {}
+  process.exit(failed ? 1 : 0);
+})();
