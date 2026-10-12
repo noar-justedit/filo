@@ -841,7 +841,7 @@ function serverImport(sh, pw) {
   if (!site) {
     const blob = pw ? secrets.encrypt(pw) : null;
     if (pw && !blob) warn = 'This machine has no keychain filo can use: the password is kept until filo quits, then asked again. AUTO cannot start on its own after a restart.';
-    site = prefs.saveSite({ name: sh.name, folder: 'Shared', protocol: sh.server.protocol, host: sh.server.host, port: sh.server.port, user: sh.server.user, logon: blob ? 'normal' : 'ask', transferMode: sh.server.transferMode, remoteDir: sh.remote }, { passwordEnc: blob });
+    site = prefs.saveSite({ name: sh.name, folder: 'LIVE SYNC', protocol: sh.server.protocol, host: sh.server.host, port: sh.server.port, user: sh.server.user, logon: blob ? 'normal' : 'ask', transferMode: sh.server.transferMode, remoteDir: sh.remote }, { passwordEnc: blob });
   } else if (pw) {
     const blob = secrets.encrypt(pw);
     if (blob && site.logon !== 'key') prefs.saveSite(Object.assign({}, site, { logon: 'normal' }), { passwordEnc: blob });
@@ -1547,7 +1547,7 @@ ipcMain.handle('queue-reveal', (_, id) => {
 });
 
 // ── IPC: sites ─────────────────────────────────────────────────────────────
-ipcMain.handle('sites-list', () => ({ sites: prefs.listSites(), vaultAvailable: secrets.available() }));
+ipcMain.handle('sites-list', () => ({ sites: prefs.listSites(), siteFolderOrder: prefs.data.siteFolderOrder, vaultAvailable: secrets.available() }));
 // site from the window; password: string to store, '' to forget, undefined to keep.
 ipcMain.handle('sites-save', (_, site, password, passphrase) => {
   try {
@@ -1576,6 +1576,24 @@ ipcMain.handle('sites-duplicate', (_, id) => {
   if (!s) return prefs.listSites();
   const copy = Object.assign({}, s, { id: null, name: s.name + ' (copy)' });
   prefs.saveSite(copy, { passwordEnc: s.passwordEnc, passphraseEnc: s.passphraseEnc });
+  return prefs.listSites();
+});
+// A folder of the site manager (Noar, 0.6.4). Its path and the ones under it.
+const underFolder = (f, path) => f === path || String(f || '').startsWith(path + ' / ');
+ipcMain.handle('sites-delete-folder', (_, path) => {
+  if (typeof path !== 'string' || !path) return prefs.listSites();
+  for (const s of prefs.listSites()) if (underFolder(s.folder, path)) { prefs.deleteSite(s.id); memSecrets.delete('site:' + s.id); }
+  return prefs.listSites();
+});
+// A copy of a folder: every site in it (and in its sub-folders), same names,
+// remembered passwords included, under `to`.
+ipcMain.handle('sites-duplicate-folder', (_, from, to) => {
+  if (typeof from !== 'string' || !from || typeof to !== 'string' || !to) return prefs.listSites();
+  for (const s of prefs.listSites()) {
+    if (!underFolder(s.folder, from)) continue;
+    const raw = prefs.getSite(s.id);
+    prefs.saveSite(Object.assign({}, s, { id: null, folder: to + String(s.folder).slice(from.length) }), { passwordEnc: raw.passwordEnc, passphraseEnc: raw.passphraseEnc });
+  }
   return prefs.listSites();
 });
 // Turns a quick connection into a site, password included if one was typed.

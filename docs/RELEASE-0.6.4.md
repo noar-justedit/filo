@@ -1,13 +1,18 @@
-# filo 0.6.3
+# filo 0.6.4
 
-Text for the GitHub Release **v0.6.3** (title: `filo 0.6.3`).
+Text for the GitHub Release **v0.6.4** (title: `filo 0.6.4`).
 
 ---
 
 A two-panel FTP, FTPS and SFTP client for video professionals: large files,
 moved as fast as the line allows, and verified on arrival.
 
-**New in 0.6.3**
+**New in 0.6.4**
+
+- **Site Manager**: opens as you left it; right-click menus for new sites
+  and folders, rename, duplicate and delete; a NEW FOLDER button; empty
+  folders stay; a clear drop line when you arrange sites by dragging, and the
+  empty space takes them back to the top level.
 
 - **Synchronized browsing shows the differences**: with FileZilla's two
   colours, the names of what is only on one side are highlighted in yellow,
@@ -61,17 +66,17 @@ moved as fast as the line allows, and verified on arrival.
 
 | System | File |
 |---|---|
-| macOS, Apple Silicon | `filo-0.6.3-mac-arm64.dmg` |
-| Windows x64, installer | `filo-Setup-0.6.3.exe` |
-| Windows x64, portable | `filo-0.6.3-win-x64.zip` |
-| Linux x64, Debian / Ubuntu | `filo_0.6.3_amd64.deb` |
-| Linux x64, any distribution | `filo-0.6.3-linux-x86_64.AppImage` |
+| macOS, Apple Silicon | `filo-0.6.4-mac-arm64.dmg` |
+| Windows x64, installer | `filo-Setup-0.6.4.exe` |
+| Windows x64, portable | `filo-0.6.4-win-x64.zip` |
+| Linux x64, Debian / Ubuntu | `filo_0.6.4_amd64.deb` |
+| Linux x64, any distribution | `filo-0.6.4-linux-x86_64.AppImage` |
 
 **Notes**
 
 - Windows: the build is not signed. SmartScreen asks once: *More info → Run
   anyway*.
-- Linux: `sudo apt install ./filo_0.6.3_amd64.deb`. The AppImage needs FUSE 2
+- Linux: `sudo apt install ./filo_0.6.4_amd64.deb`. The AppImage needs FUSE 2
   (`sudo apt install libfuse2t64`). On Ubuntu 24.04 and later, prefer the
   `.deb`: it installs the AppArmor profile Electron's sandbox needs.
 - Server passwords on Linux need a desktop keyring (GNOME Keyring or KWallet).
@@ -84,10 +89,10 @@ Full list of changes: [CHANGELOG.md](https://github.com/noar-justedit/filo/blob/
 
 1. Builds: `build_mac.command` (dmg), `build_windows.command` or
    `build_on_windows.bat` (exe + zip), `./build_linux.sh` on Linux (deb +
-   AppImage). Five files, all named `0.6.3`. The build downloads Syncthing once (internet needed): the build log says "SYNCTHING: included".
+   AppImage). Five files, all named `0.6.4`. The build downloads Syncthing once (internet needed): the build log says "SYNCTHING: included".
 2. Try each one once: it opens, connects, transfers.
 3. `scripts/push_github.command`: the code goes to GitHub, `version.json` waits.
-4. On GitHub: *Releases → Draft a new release*, tag `v0.6.3` on `main`, title
-   `filo 0.6.3`, the text above, the five files. Publish.
+4. On GitHub: *Releases → Draft a new release*, tag `v0.6.4` on `main`, title
+   `filo 0.6.4`, the text above, the five files. Publish.
 5. `scripts/push_github.command` again: `version.json` goes out, and installed
-   copies of filo now announce 0.6.3.
+   copies of filo now announce 0.6.4.

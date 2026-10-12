@@ -1274,13 +1274,20 @@ async function saveQuickAsSite() {
 // ══ Site manager ═══════════════════════════════════════════════════════════
 const sm = { selId: null, draft: null, pwAction: undefined, ppAction: undefined, search: '' };
 
+// Opens as it was left (Noar, 0.6.4): the folders open then, the site
+// selected then, the same scroll. Nothing is unfolded on its own, unless a
+// given site is asked for.
 async function openSites(selectId) {
   const r = await API.sitesList();
   state.sites = r.sites; state.vault = r.vaultAvailable;
+  if (r.siteFolderOrder) state.siteFolderOrder = r.siteFolderOrder;
   sm.search = ''; $('sm-search').value = '';
   $('ov-sites').classList.add('open');
-  const first = selectId || sm.selId || (state.sites[0] && state.sites[0].id);
-  selectSite(first && state.sites.find(s => s.id === first) ? first : null);
+  const last = sm.selId || (state.ui && state.ui.sitesSel);
+  const pick = selectId || last;
+  selectSite(pick && state.sites.find(s => s.id === pick) ? pick : null, { expand: !!selectId });
+  const top = state.ui && state.ui.sitesScroll;
+  if (!selectId && top) requestAnimationFrame(() => { $('sm-list').scrollTop = top; });
 }
 function closeSites() { $('ov-sites').classList.remove('open'); }
 
@@ -1314,25 +1321,146 @@ function renderSiteList() {
     }
     node.sites.push(s);
   }
+  // Folders of their own (an empty one too): they live in the order list.
+  if (!q) for (const fp of state.siteFolderOrder || []) {
+    let node = root, path = '';
+    for (const p of String(fp).split(' / ').map(x => x.trim()).filter(Boolean)) {
+      path = path ? path + ' / ' + p : p;
+      if (!node.dirs.has(p)) node.dirs.set(p, { name: p, path, dirs: new Map(), sites: [], count: 0 });
+      node = node.dirs.get(p);
+    }
+  }
   const open = smOpen();
+  const ren = sm.renaming;
   let html = '';
   const short = { sftp: 'SFTP', ftps: 'FTPS', 'ftps-implicit': 'FTPS-i', ftp: 'FTP' };
   const draw = (node, depth) => {
     const pad = depth * 14;
     for (const d of [...node.dirs.values()].sort(folderCmp)) {
       const isOpen = !!q || open.has(d.path);
-      html += `<div class="sm-folder${isOpen ? ' open' : ''}" data-path="${esc(d.path)}"${q ? '' : ' draggable="true"'} style="padding-left:${6 + pad}px"><span class="chev">${I.chev}</span>${I.folder}<span class="nm">${esc(d.name)}</span><span class="n">${d.count}</span></div>`;
+      const editing = ren && ren.kind === 'folder' && ren.key === d.path;
+      html += `<div class="sm-folder${isOpen ? ' open' : ''}${sm.selFolder === d.path ? ' sel' : ''}" data-path="${esc(d.path)}"${q || editing ? '' : ' draggable="true"'} style="padding-left:${6 + pad}px"><span class="chev">${I.chev}</span>${I.folder}${editing ? `<input class="sm-ren" id="sm-ren" value="${esc(d.name)}" aria-label="Folder name" spellcheck="false">` : `<span class="nm">${esc(d.name)}</span><span class="n">${d.count}</span>`}</div>`;
       if (isOpen) draw(d, depth + 1);
     }
     for (const s of node.sites) {
-      html += `<div class="sm-item${s.id === sm.selId ? ' sel' : ''}" data-id="${esc(s.id)}"${q ? '' : ' draggable="true"'} style="padding-left:${9 + pad + (depth ? 8 : 0)}px"><span class="ic ${s.protocol}">${short[s.protocol]}</span><div class="t"><div class="a">${esc(s.name)}</div><div class="b">${esc(s.user ? s.user + '@' : '')}${esc(s.host)}</div></div></div>`;
+      const editing = ren && ren.kind === 'site' && ren.key === s.id;
+      html += `<div class="sm-item${s.id === sm.selId ? ' sel' : ''}" data-id="${esc(s.id)}"${q || editing ? '' : ' draggable="true"'} style="padding-left:${9 + pad + (depth ? 8 : 0)}px"><span class="ic ${s.protocol}">${short[s.protocol]}</span><div class="t">${editing ? `<input class="sm-ren" id="sm-ren" value="${esc(s.name)}" aria-label="Site name" spellcheck="false">` : `<div class="a">${esc(s.name)}</div>`}<div class="b">${esc(s.user ? s.user + '@' : '')}${esc(s.host)}</div></div></div>`;
     }
   };
   draw(root, 0);
-  if (list.length && !q) html += '<div class="sm-drop-end"></div>';
-  if (!state.sites.length) html = '<div class="sm-empty" style="padding:30px 10px">No site yet.<br>Create one, or import your FileZilla sites.</div>';
-  else if (!list.length) html = '<div class="sm-empty" style="padding:30px 10px">No match.</div>';
+  if (!state.sites.length && !root.dirs.size) html = '<div class="sm-empty" style="padding:30px 10px">No site yet.<br>Create one, or import your FileZilla sites.</div>';
+  else if (q && !list.length) html = '<div class="sm-empty" style="padding:30px 10px">No match.</div>';
+  // The empty space below the rows: a drop there goes to the top level.
+  if (!q) html += '<div class="sm-drop-end"></div>';
   $('sm-list').innerHTML = html;
+  const inp = $('sm-ren');
+  if (inp) {
+    inp.focus(); inp.select();
+    inp.addEventListener('keydown', ev => { ev.stopPropagation(); if (ev.key === 'Enter') smCommitRename(); if (ev.key === 'Escape') { sm.renaming = null; renderSiteList(); } });
+    inp.addEventListener('blur', () => smCommitRename());
+    inp.addEventListener('mousedown', ev => ev.stopPropagation());
+  }
+}
+
+// ── Folders and sites from the list itself (Noar, 0.6.4) ───────────────────
+// Rename in place, new folder, duplicate, delete (asked first). A folder is a
+// path ("Clients / Agency X"); renaming or moving it rewrites the paths under it.
+const allFolders = () => {
+  const set = new Set(state.siteFolderOrder || []);
+  for (const s of state.sites) { const parts = String(s.folder || '').split(' / ').filter(Boolean); parts.forEach((_, i) => set.add(parts.slice(0, i + 1).join(' / '))); }
+  return set;
+};
+const freeFolderName = (parent, base) => {
+  const all = allFolders();
+  let name = base, k = 2;
+  while (all.has(parent ? parent + ' / ' + name : name)) name = `${base} ${k++}`;
+  return name;
+};
+async function smSaveArrangement(sites, order) {
+  const r = await API.sitesArrange(sites, order);
+  state.sites = r.sites; state.siteFolderOrder = r.siteFolderOrder;
+}
+// Every folder (empty ones included) gets a place in the order list.
+function fullOrder() {
+  const order = (state.siteFolderOrder || []).slice();
+  const known = [...allFolders()].sort((a, b) => folderCmp({ path: a, name: baseOf(a) }, { path: b, name: baseOf(b) }));
+  for (const f of known) if (!order.includes(f)) order.push(f);
+  return order;
+}
+async function smRelocateFolder(from, to) {
+  const move = f => (inFolder(f, from) ? to + f.slice(from.length) : f);
+  const sites = state.sites.map(s => ({ id: s.id, folder: move(s.folder || '') }));
+  const order = fullOrder().map(move);
+  const o = smOpen(), moved = [...o].map(move);
+  o.clear(); moved.forEach(x => o.add(x));
+  state.ui.sitesOpen = [...o]; API.saveUi({ sitesOpen: [...o] });
+  if (sm.selFolder && inFolder(sm.selFolder, from)) sm.selFolder = move(sm.selFolder);
+  await smSaveArrangement(sites, order);
+}
+async function smCommitRename() {
+  const r = sm.renaming, inp = $('sm-ren');
+  if (!r || !inp) return;
+  const v = inp.value.replace(/\s*\/\s*/g, ' - ').trim();
+  sm.renaming = null;
+  try {
+    if (!v) return;
+    if (r.kind === 'site') {
+      const s = state.sites.find(x => x.id === r.key);
+      if (s && v !== s.name) {
+        const res = await API.sitesSave(Object.assign({}, s, { name: v }), undefined, undefined);
+        if (!res.ok) { toast(res.error, true); return; }
+        state.sites = res.sites;
+        if (sm.draft && sm.draft.id === s.id) { sm.draft.name = v; renderSiteForm(); }
+      }
+    } else if (v !== baseOf(r.key)) {
+      const parent = parentOf(r.key), to = parent ? parent + ' / ' + v : v;
+      if (allFolders().has(to)) { toast(`There is already a folder “${v}” there.`, true); return; }
+      await smRelocateFolder(r.key, to);
+    }
+  } finally { renderSiteList(); }
+}
+async function smNewFolder(parent) {
+  const name = freeFolderName(parent || '', 'New folder');
+  const path = parent ? parent + ' / ' + name : name;
+  const order = fullOrder(); order.push(path);
+  await smSaveArrangement(state.sites.map(s => ({ id: s.id, folder: s.folder || '' })), order);
+  if (parent) { smOpen().add(parent); state.ui.sitesOpen = [...smOpen()]; API.saveUi({ sitesOpen: state.ui.sitesOpen }); }
+  sm.selFolder = path;
+  sm.renaming = { kind: 'folder', key: path };
+  renderSiteList();
+}
+async function smDuplicateFolder(path) {
+  const parent = parentOf(path);
+  const name = freeFolderName(parent, baseOf(path) + ' (copy)');
+  const to = parent ? parent + ' / ' + name : name;
+  state.sites = await API.sitesDuplicateFolder(path, to);
+  const order = fullOrder().filter(f => !inFolder(f, to));
+  const copies = order.filter(f => inFolder(f, path)).map(f => to + f.slice(path.length));
+  const last = order.reduce((at, f, i) => (inFolder(f, path) ? i : at), -1);
+  order.splice(last + 1, 0, ...copies);
+  await smSaveArrangement(state.sites.map(s => ({ id: s.id, folder: s.folder || '' })), order);
+  sm.selFolder = to;
+  renderSiteList(); toast('Duplicated');
+}
+async function smDeleteFolder(path) {
+  const n = state.sites.filter(s => inFolder(s.folder || '', path)).length;
+  if (!(await confirmBox(`Delete the folder “${baseOf(path)}”?`, n ? `Its ${plural(n, 'site')} ${n === 1 ? 'goes' : 'go'} with it, and their remembered passwords too.` : 'It is empty.', 'DELETE', true))) return;
+  state.sites = await API.sitesDeleteFolder(path);
+  await smSaveArrangement(state.sites.map(s => ({ id: s.id, folder: s.folder || '' })), fullOrder().filter(f => !inFolder(f, path)));
+  if (sm.selId && !state.sites.some(s => s.id === sm.selId)) selectSite(null);
+  if (sm.selFolder && inFolder(sm.selFolder, path)) sm.selFolder = null;
+  renderSiteList(); toast('Deleted');
+}
+async function smDeleteSite(id) {
+  const s = state.sites.find(x => x.id === id); if (!s) return;
+  if (!(await confirmBox(`Delete the site “${s.name}”?`, 'Its remembered password is deleted too.', 'DELETE', true))) return;
+  state.sites = await API.sitesDelete(id);
+  if (sm.selId === id) selectSite(null); else renderSiteList();
+  toast('Deleted');
+}
+async function smDuplicateSite(id) {
+  state.sites = await API.sitesDuplicate(id);
+  renderSiteList(); toast('Duplicated');
 }
 
 // Folders among their siblings: the order the user dragged them into, then the
@@ -1357,7 +1485,9 @@ const baseOf = path => { const i = path.lastIndexOf(' / '); return i < 0 ? path 
 const inFolder = (folder, path) => folder === path || folder.startsWith(path + ' / ');
 
 function smDropSpot(ev) {
-  const el = ev.target.closest('.sm-item, .sm-folder, .sm-drop-end');
+  let el = ev.target.closest('.sm-item, .sm-folder, .sm-drop-end');
+  // Anywhere else in the list (between rows, below them): the top level.
+  if (!el && ev.target.closest('#sm-list')) el = document.querySelector('#sm-list .sm-drop-end');
   if (!el) return null;
   const r = el.getBoundingClientRect(), y = (ev.clientY - r.top) / r.height;
   if (el.classList.contains('sm-drop-end')) return { el, kind: 'end' };
@@ -1365,18 +1495,16 @@ function smDropSpot(ev) {
   if (sm.drag && sm.drag.type === 'folder') return { el, kind: y < 0.28 ? 'before' : y > 0.72 ? 'after' : 'into' };
   return { el, kind: 'into' };
 }
-function smClearMarks() { document.querySelectorAll('#sm-list .drop-before, #sm-list .drop-after, #sm-list .drop-into').forEach(e => e.classList.remove('drop-before', 'drop-after', 'drop-into')); }
+function smClearMarks() { document.querySelectorAll('#sm-list .drop-before, #sm-list .drop-after, #sm-list .drop-into, #sm-list .drop-root').forEach(e => e.classList.remove('drop-before', 'drop-after', 'drop-into', 'drop-root')); }
 
 async function smApplyDrop(spot) {
   const d = sm.drag;
   if (!d || !spot) return;
   let sites = state.sites.map(s => ({ id: s.id, folder: s.folder || '' }));
-  let order = (state.siteFolderOrder || []).slice();
-  const all = new Set();
-  for (const s of state.sites) { const parts = String(s.folder || '').split(' / ').filter(Boolean); parts.forEach((_, i) => all.add(parts.slice(0, i + 1).join(' / '))); }
-  // Every folder gets a place in the order list, so "before / after" means something.
-  const known = [...all].sort((a, b) => folderCmp({ path: a, name: baseOf(a) }, { path: b, name: baseOf(b) }));
-  for (const f of known) if (!order.includes(f)) order.push(f);
+  // Every folder (empty ones too) gets a place in the order list, so
+  // "before / after" means something.
+  const all = allFolders();
+  let order = fullOrder();
 
   if (d.type === 'site') {
     const moving = sites.find(x => x.id === d.id);
@@ -1437,14 +1565,17 @@ function smFoldAll(openAll) {
   renderSiteList();
 }
 
-function selectSite(id) {
+function selectSite(id, opts) {
   sm.selId = id;
+  if (id) sm.selFolder = null;
   sm.pwAction = undefined; sm.ppAction = undefined;
   const s = id ? state.sites.find(x => x.id === id) : null;
   sm.draft = s ? Object.assign({}, s) : null;
-  // The folders of the site being shown are opened once, when it is chosen;
-  // after that they fold like any other (they used to stay forced open).
-  if (s && s.folder) {
+  if (state.ui) state.ui.sitesSel = id || null;
+  API.saveUi({ sitesSel: id || null });
+  // Its folders are opened only when this site was asked for from elsewhere
+  // (0.6.4: opening the window no longer unfolds anything on its own).
+  if (s && s.folder && opts && opts.expand) {
     const parts = String(s.folder).split(' / ').map(x => x.trim()).filter(Boolean);
     const o = smOpen();
     let changed = false;
@@ -1467,7 +1598,6 @@ function newSite() {
 function renderSiteForm() {
   const d = sm.draft;
   const f = $('sm-form');
-  ['sm-delete', 'sm-dup'].forEach(id => { $(id).disabled = !d || !d.id; });
   ['sm-save', 'sm-connect'].forEach(id => { $(id).disabled = !d; });
   if (!d) { f.innerHTML = `<div class="sm-empty">${I.server.replace('<svg', '<svg width="40" height="40"')}<div>Pick a site on the left, or create one.</div><button class="btn sm go" id="sm-new2">${I.plus} NEW SITE</button></div>`; $('sm-new2').onclick = newSite; return; }
   const isFtp = d.protocol !== 'sftp';
@@ -1556,8 +1686,9 @@ function bindSites() {
   $('sm-new').onclick = newSite;
   $('sm-search').addEventListener('input', () => { sm.search = $('sm-search').value.trim(); renderSiteList(); });
   $('sm-list').addEventListener('click', ev => {
+    if (ev.target.closest('.sm-ren')) return;
     const f = ev.target.closest('.sm-folder');
-    if (f) { if (ev.altKey) smFoldAll(!f.classList.contains('open')); else smToggle(f.dataset.path); return; }
+    if (f) { sm.selFolder = f.dataset.path; if (ev.altKey) smFoldAll(!f.classList.contains('open')); else smToggle(f.dataset.path); return; }
     const it = ev.target.closest('.sm-item'); if (!it) return;
     // Double-click = connect. Detected here: the first click redraws the list
     // (selection), so the browser's own dblclick never reaches a site row.
@@ -1588,7 +1719,7 @@ function bindSites() {
     if (!spot) return;
     ev.preventDefault();
     ev.dataTransfer.dropEffect = 'move';
-    spot.el.classList.add(spot.kind === 'into' ? 'drop-into' : spot.kind === 'end' ? 'drop-before' : 'drop-' + spot.kind);
+    spot.el.classList.add(spot.kind === 'into' ? 'drop-into' : spot.kind === 'end' ? 'drop-root' : 'drop-' + spot.kind);
   });
   smList.addEventListener('dragleave', ev => { if (!smList.contains(ev.relatedTarget)) smClearMarks(); });
   smList.addEventListener('drop', ev => {
@@ -1599,23 +1730,43 @@ function bindSites() {
     smApplyDrop(spot).catch(e => toast(String(e && e.message || e), true)).finally(() => { sm.drag = null; });
   });
   smList.addEventListener('dragend', () => { smClearMarks(); sm.drag = null; document.querySelectorAll('#sm-list .dragging').forEach(e => e.classList.remove('dragging')); });
+  // Right-click (Noar, 0.6.4): the empty space, a folder, a site.
   $('sm-list').addEventListener('contextmenu', ev => {
-    if (!ev.target.closest('.sm-folder')) return;
     ev.preventDefault();
+    if (sm.search) return;
+    const f = ev.target.closest('.sm-folder'), it = ev.target.closest('.sm-item');
+    if (f) {
+      const path = f.dataset.path, isOpen = smOpen().has(path);
+      sm.selFolder = path; renderSiteList();
+      return showMenu(ev.clientX, ev.clientY, [
+        { label: 'Rename', icon: I.edit, action: () => { sm.renaming = { kind: 'folder', key: path }; renderSiteList(); } },
+        { label: 'Expand', icon: I.folder, disabled: isOpen, action: () => { if (!smOpen().has(path)) smToggle(path); } },
+        { label: 'Collapse', icon: I.folder, disabled: !isOpen, action: () => { if (smOpen().has(path)) smToggle(path); } },
+        { label: 'Duplicate', icon: I.copy, action: () => smDuplicateFolder(path).catch(e => toast(e.message, true)) },
+        'sep',
+        { label: 'Delete…', icon: I.trash, danger: true, action: () => smDeleteFolder(path).catch(e => toast(e.message, true)) },
+      ]);
+    }
+    if (it) {
+      const id = it.dataset.id;
+      if (sm.selId !== id) selectSite(id);
+      return showMenu(ev.clientX, ev.clientY, [
+        { label: 'Rename', icon: I.edit, action: () => { sm.renaming = { kind: 'site', key: id }; renderSiteList(); } },
+        { label: 'Duplicate', icon: I.copy, action: () => smDuplicateSite(id).catch(e => toast(e.message, true)) },
+        'sep',
+        { label: 'Delete…', icon: I.trash, danger: true, action: () => smDeleteSite(id).catch(e => toast(e.message, true)) },
+      ]);
+    }
     showMenu(ev.clientX, ev.clientY, [
-      { label: 'Expand all folders', icon: I.folder, action: () => smFoldAll(true) },
-      { label: 'Collapse all folders', icon: I.folder, action: () => smFoldAll(false) },
+      { label: 'New site', icon: I.plus, action: newSite },
+      { label: 'New folder', icon: I.folder, action: () => smNewFolder('').catch(e => toast(e.message, true)) },
     ]);
   });
+  $('sm-new-folder').onclick = () => smNewFolder('').catch(e => toast(e.message, true));
+  let scrollT = null;
+  $('sm-list').addEventListener('scroll', () => { clearTimeout(scrollT); scrollT = setTimeout(() => { state.ui.sitesScroll = $('sm-list').scrollTop; API.saveUi({ sitesScroll: state.ui.sitesScroll }); }, 300); });
   $('sm-save').onclick = async () => { const s = await saveSite(); if (s) toast('Saved'); };
   $('sm-connect').onclick = async () => { const s = await saveSite(); if (!s) return; closeSites(); connectWith({ siteId: s.id }, s.name); };
-  $('sm-dup').onclick = async () => { if (!sm.draft || !sm.draft.id) return; state.sites = await API.sitesDuplicate(sm.draft.id); renderSiteList(); toast('Duplicated'); };
-  $('sm-delete').onclick = async () => {
-    const d = sm.draft; if (!d || !d.id) return;
-    if (!(await confirmBox(`Delete the site “${d.name}”?`, 'Its remembered password is deleted too.', 'DELETE', true))) return;
-    state.sites = await API.sitesDelete(d.id);
-    selectSite(state.sites[0] ? state.sites[0].id : null);
-  };
   $('sm-import').onclick = importSites;
   $('sm-export').onclick = () => {
     const r = $('sm-export').getBoundingClientRect();

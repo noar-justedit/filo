@@ -618,10 +618,23 @@ body.live-st #queue .q-head,body.live-st #q-blocked,body.live-st #q-tabs,body.li
 .sy-peer .mono{font-size:11px;word-break:break-all;flex:1;min-width:0;}
 /* Drag and drop in the site list: a line where it will land, or the folder lit. */
 #sm-list .dragging{opacity:.4;}
-#sm-list .drop-before{box-shadow:inset 0 2px 0 var(--blue);}
-#sm-list .drop-after{box-shadow:inset 0 -2px 0 var(--blue);}
-#sm-list .drop-into{background:var(--blue-d);box-shadow:inset 0 0 0 1px var(--blue);}
-.sm-drop-end{min-height:36px;border-radius:8px;}
+/* Drop marks (0.6.4): a straight line between the rows, a dot at its start
+   (the old mark followed the row's rounded corners); a folder to drop into
+   is tinted; the empty space below the rows = the top level. */
+#sm-list .sm-item,#sm-list .sm-folder{position:relative;}
+#sm-list .drop-before::before,#sm-list .drop-after::after{content:'';position:absolute;left:10px;right:4px;height:2px;border-radius:1px;background:var(--blue);pointer-events:none;
+}
+#sm-list .drop-before::before{top:-1px;} #sm-list .drop-after::after{bottom:-1px;}
+#sm-list .drop-before::after,#sm-list .drop-after::before{content:'';position:absolute;left:2px;width:8px;height:8px;border-radius:50%;border:2px solid var(--blue);background:var(--ins);box-sizing:border-box;pointer-events:none;}
+#sm-list .drop-before::after{top:-4px;} #sm-list .drop-after::before{bottom:-4px;}
+#sm-list .drop-into{background:var(--blue-d);}
+#sm-list .drop-into .nm,#sm-list .drop-into > svg{color:var(--blue);}
+#sm-list{display:flex;flex-direction:column;}
+.sm-drop-end{flex:1 0 36px;border-radius:8px;}
+.sm-drop-end.drop-root{background:var(--blue-d);}
+.sm-folder.sel{background:var(--raise);color:var(--text);}
+.sm-ren{flex:1;min-width:0;height:24px;background:var(--card);border:none;border-radius:6px;padding:0 7px;color:var(--text);font:inherit;outline:none;box-shadow:0 0 0 1px var(--blue);}
+.sm-item .t .sm-ren{width:100%;font-size:12.5px;font-weight:600;}
 .sm-item:hover{background:rgba(255,255,255,.03);}
 .sm-item.sel{background:var(--raise);}
 .sm-item .ic{width:34px;height:28px;white-space:nowrap;border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:8.5px;font-weight:800;letter-spacing:.04em;flex-shrink:0;}
@@ -936,6 +949,7 @@ body.live-st #queue .q-head,body.live-st #q-blocked,body.live-st #q-tabs,body.li
     <div class="sm-left">
       <div class="hd"><div class="m-h1">Sites</div>
         <button class="ibtn ins" id="sm-new" aria-label="New site" data-tip="New site"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg></button>
+        <button class="ibtn ins" id="sm-new-folder" aria-label="New folder" data-tip="New folder"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 10v6"/><path d="M9 13h6"/><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg></button>
       </div>
       <input class="sm-search" id="sm-search" placeholder="Search…" spellcheck="false">
       <div class="sm-list" id="sm-list"></div>
@@ -947,8 +961,6 @@ body.live-st #queue .q-head,body.live-st #q-blocked,body.live-st #q-tabs,body.li
     <div class="sm-right">
       <div class="sm-form" id="sm-form"></div>
       <div class="m-btns">
-        <button class="btn sm stop" id="sm-delete">DELETE</button>
-        <button class="btn sm" id="sm-dup">DUPLICATE</button>
         <span class="sp"></span>
         <button class="btn sm" id="sm-close">CLOSE</button>
         <button class="btn sm" id="sm-save">SAVE</button>

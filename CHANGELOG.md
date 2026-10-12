@@ -4,6 +4,26 @@ All notable changes to filo are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/lang/fr/).
 
+## [0.6.4] — 2026-10-12
+
+### Changed
+
+- **Site Manager** (Noar):
+  - It opens as it was left: the folders open then, the site selected then,
+    the same scroll. Nothing unfolds on its own.
+  - Right-click on the empty space: New site, New folder. On a folder:
+    Rename, Expand, Collapse, Duplicate, Delete (asked first; its sites go
+    with it, and their remembered passwords). On a site: Rename, Duplicate,
+    Delete (asked first). Rename happens in the list itself.
+  - A NEW FOLDER button beside +. Folders exist on their own: an empty folder
+    stays.
+  - DELETE and DUPLICATE are no longer at the bottom of the form.
+  - Drag and drop: a straight line between the rows, with a dot at its start
+    (it used to follow the rounded corners of a row); a folder to drop into
+    is tinted; anything dropped on the empty space goes to the top level.
+- The folder created for a LIVE SYNC session imported with its server is
+  called "LIVE SYNC" (was "Shared").
+
 ## [0.6.3] — 2026-10-12
 
 ### Added

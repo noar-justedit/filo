@@ -1227,6 +1227,17 @@ SEC('dual sync: the server, a mirror of the MASTER', async () => {
   ok(fo2 === 1, 'no news after that: the S-FTP BACKUP takes over');
 });
 
+SEC('site manager: folders of their own', () => {
+  const { Prefs } = require('../src/main/config');
+  const d = scratch();
+  fs.writeFileSync(path.join(d, 'preferences.json'), JSON.stringify({ sites: [{ id: 'aaaaaaaaaaaaaaaa', name: 'A', host: 'a', protocol: 'sftp', folder: 'Clients / X' }], siteFolderOrder: ['Gone long ago', 'Clients / X', 'Clients'] }));
+  const p1 = new Prefs(d).load();
+  eq(p1.data.siteFolderOrder.slice().sort(), ['Clients', 'Clients / X'], 'first start of 0.6.4: folders emptied long ago do not come back');
+  p1.arrangeSites(p1.listSites().map(x => ({ id: x.id, folder: x.folder })), p1.data.siteFolderOrder.concat('Archives'));
+  const p2 = new Prefs(d).load();
+  ok(p2.data.siteFolderOrder.includes('Archives'), 'an empty folder made since stays');
+});
+
 SEC('segment relay between two filo', async () => {
   const { Syncer } = require('../src/main/syncer');
   const { srv, ep, root } = await server();

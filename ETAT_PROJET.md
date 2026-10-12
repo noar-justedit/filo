@@ -6,6 +6,37 @@
 
 ## 1. État actuel
 
+- **0.6.4 (12/10/2026)** : gestionnaire de sites revu (section suivante).
+  Tests : **608 (+18 FTP réels)** verts ; le gestionnaire a été manipulé dans l'app
+  (menus, nouveau dossier, renommage, duplication et suppression d'un
+  dossier, glisser vers la zone vide et dans un dossier, réouverture après
+  un redémarrage), pas par un test automatique.
+
+### Gestionnaire de sites (12/10/2026, Noar, validé sur une simulation)
+- **Vue retrouvée** : `openSites` reprend le site choisi (`ui.sitesSel`), les
+  dossiers ouverts (`ui.sitesOpen`) et le défilement (`ui.sitesScroll`) ;
+  `selectSite(id, { expand })` ne déplie que si un site précis est demandé
+  depuis ailleurs.
+- **Clic droit** : zone vide (New site, New folder), dossier (Rename,
+  Expand, Collapse, Duplicate, Delete… avec confirmation), site (Rename,
+  Duplicate, Delete…). Renommage dans la liste (`sm.renaming`, `#sm-ren`).
+  DELETE et DUPLICATE retirés du bas du formulaire. Bouton NEW FOLDER
+  (`#sm-new-folder`).
+- **Dossiers enregistrés pour eux-mêmes** : un dossier vide reste ; ils
+  vivent dans `siteFolderOrder` (ordre et existence). Migration unique
+  (`siteFoldersOwn`) : les anciens chemins sans site sont retirés, pour ne
+  pas faire réapparaître des dossiers vidés autrefois.
+- **Supprimer un dossier supprime ses sites** et leurs mots de passe
+  (`sites-delete-folder`, la confirmation dit combien). **Dupliquer un
+  dossier** copie ses sites, mots de passe compris, dans « nom (copy) »
+  (`sites-duplicate-folder`).
+- **Glisser-déposer** : ligne droite avec un rond au début (pseudo-éléments,
+  plus d'ombre intérieure qui suivait l'arrondi) ; dossier cible teinté ;
+  toute la zone vide sous les rangées = racine (`.sm-drop-end` occupe la
+  hauteur restante).
+- Dossier créé à l'import d'une session avec serveur : « LIVE SYNC » (au lieu
+  de « Shared »).
+
 - **0.6.3 (12/10/2026)** : navigation synchronisée avec les différences
   entre les deux côtés (section suivante). Tests : **602 (+18 FTP réels)** verts.
 
@@ -943,7 +974,7 @@ Machine de test : 2 cœurs cloud, serveur sur la même machine.
   `https://raw.githubusercontent.com/noar-justedit/filo/main/version.json`.
   Un dépôt privé la rend muette (sans erreur visible).
 - Texte de la Release en cours et liste de contrôle :
-  `docs/RELEASE-0.6.3.md` (0.1.0 à 0.6.1 n'ont jamais été publiées ; la
+  `docs/RELEASE-0.6.4.md` (0.1.0 à 0.6.1 n'ont jamais été publiées ; la
   0.3.5 était la première prévue sur GitHub). Tag `vX.Y.Z` sur `main` (c'est ce que
   `push_github.command` attend pour envoyer `version.json`).
 - Fichiers de la Release : `filo-X.Y.Z-mac-arm64.dmg`, `filo-Setup-X.Y.Z.exe`,
@@ -1261,7 +1292,7 @@ SmartScreen, débits réels.
    manager », corbeille, extinction en fin de file.
 6. Vérifier sur le Mac et le PC que les builds avec fuses démarrent.
 7. Créer le dépôt GitHub `noar-justedit/filo` **public** et vide, puis suivre
-   `docs/RELEASE-0.6.3.md` (push, Release v0.6.3 avec les cinq fichiers, push
+   `docs/RELEASE-0.6.4.md` (push, Release v0.6.4 avec les cinq fichiers, push
    de `version.json`).
 8. Noar doit tester la réception depuis son NAS sur le port 1 Gb d'origine
    (sans l'adaptateur USB 2,5G).
@@ -1273,6 +1304,7 @@ SmartScreen, débits réels.
 
 | Version | Date | Tests | Contenu principal |
 |---|---|---|---|
+| 0.6.4 | 12/10 | 608 (+18 FTP réels) | Gestionnaire de sites : vue retrouvée, clic droit (nouveau, renommer, dupliquer, supprimer), bouton NEW FOLDER, dossiers vides, ligne de dépôt droite, zone vide = racine ; dossier « LIVE SYNC » |
 | 0.6.3 | 12/10 | 602 (+18 FTP réels) | Navigation synchronisée : différences surlignées (jaune : seulement ici, vert : plus récent ici), compte sous chaque panneau, filtre DIFFERENCES ONLY |
 | 0.6.2 | 12/10 | 602 (+18 FTP réels) | DUAL SYNC à trois (ce qui est posé sur le NAS arrive sur les deux ordinateurs) ; couleurs des modes sur l'anneau et la file ; logo turquoise ; revue globale : le S-FTP BACKUP n'efface que ce que la session connaît, racine refusée, lecture locale stricte ; noms de serveur sans sortie du dossier ; `.filo-session` du serveur sans autorité sur sens et filtre ; bascule vers le serveur sur dossier calme ; copies retenues fiables ; noms, couleurs et détails d'interface |
 | 0.6.1 | 12/10 | 586 (+18 FTP réels) | Anneau : UP TO DATE / ALL UP TO DATE à la place de IDLE ; graphes de débit (anneau et file) fluides ; MODE CLIENT / LIVE SYNC dans la barre de connexion, bouton de connexion à droite du mot de passe ; en-tête de file refait (%, barre de progression, START / STOP / balai, badges PEAK et TIME LEFT) |

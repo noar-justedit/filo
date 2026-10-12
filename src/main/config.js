@@ -143,7 +143,18 @@ class Prefs {
       window: d.window || null,
       ui: d.ui || {},
       lastLocalDir: d.lastLocalDir || '',
+      // 0.6.4: folders exist on their own (an empty one stays, NEW FOLDER).
+      // Before, a folder only existed through its sites: the order list could
+      // hold folders emptied long ago, pruned once here so they do not come
+      // back as empty folders.
+      siteFoldersOwn: d.siteFoldersOwn === true,
     };
+    if (!this.data.siteFoldersOwn) {
+      const used = new Set();
+      for (const st of this.data.sites) { const parts = String(st.folder || '').split(' / ').filter(Boolean); parts.forEach((_, i) => used.add(parts.slice(0, i + 1).join(' / '))); }
+      this.data.siteFolderOrder = this.data.siteFolderOrder.filter(f => used.has(f));
+      this.data.siteFoldersOwn = true;
+    }
     return this;
   }
 
