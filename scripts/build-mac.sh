@@ -131,6 +131,19 @@ verify_result "dist/mac-arm64/filo.app" "$DMG"
 
 echo ""
 echo -e "  ${BOLD}Installer:${NC}  $DMG"
+# The Rust transfer engine (scripts/engine-build.js, run during the build).
+if [ -x "dist/mac-arm64/filo.app/Contents/Resources/filo-engine" ]; then
+  echo -e "  ${GREEN}Rust engine: included.${NC}"
+else
+  echo -e "  ${YELLOW}Rust engine: NOT included (Rust missing? see the [engine] lines above).${NC}"
+  echo -e "  ${YELLOW}filo works, with its built-in engine. Install Rust: https://rustup.rs${NC}"
+fi
+# SYNCTHING: Syncthing (scripts/syncthing-fetch.js, run during the build).
+if [ -x "dist/mac-arm64/filo.app/Contents/Resources/syncthing/syncthing" ]; then
+  echo -e "  ${GREEN}SYNCTHING: included.${NC}"
+else
+  echo -e "  ${YELLOW}SYNCTHING: NOT included (no internet during the build? see the [direct] lines above).${NC}"
+fi
 echo ""
 echo -e "  Open the .dmg and drag ${BOLD}filo${NC} into Applications."
 case "$SIGN_MODE" in

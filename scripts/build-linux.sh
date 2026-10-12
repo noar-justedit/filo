@@ -137,6 +137,7 @@ fi
 echo
 echo "Done. Packages are in dist/:"
 ls -1 dist/*.AppImage dist/*.deb 2>/dev/null || true
+if [ -x dist/linux-unpacked/resources/syncthing/syncthing ]; then echo "SYNCTHING: included."; else echo "SYNCTHING: NOT included (see the [direct] lines above)."; fi
 echo
 echo "Install the deb:   sudo apt install ./dist/filo_*_amd64.deb"
 echo "Run the AppImage:  chmod +x dist/filo-*.AppImage && ./dist/filo-*.AppImage"

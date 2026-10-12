@@ -309,7 +309,7 @@ class FtpRemote {
     const d = normalize(dir);
     return this._q(async () => {
       const raw = await this.client.list(d);
-      const out = raw.filter(i => i.name && i.name !== '.' && i.name !== '..' && !i.name.includes('/')).map(i => this._map(i));
+      const out = raw.filter(i => i.name && i.name !== '.' && i.name !== '..' && !/[\/\\\0]/.test(i.name)).map(i => this._map(i));
       if (out.some(e => e._naive)) {
         let off = null;
         try { off = await this._tzOffset(d, out); } catch (_) {}

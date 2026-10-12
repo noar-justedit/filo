@@ -2,7 +2,8 @@
 """
 filo - writes build-resources/icon.svg: the word "filo" in Poppins Bold, the
 letters turned into vector outlines (so the icon does not depend on the font
-being installed), "fil" in white and the "o" in FileZilla's red #BF0000, on
+being installed), "fil" in white and the "o" in filo's turquoise #19C9B4 (Noar, 12/10/2026;
+FileZilla's red #BF0000 until 0.6.1, too close to Presto's magenta), on
 the family's black square (824 px on 1024, corner radius 185).
 
 Needs: pip install fonttools
@@ -16,7 +17,7 @@ from fontTools.pens.boundsPen import BoundsPen
 HERE = os.path.dirname(os.path.abspath(__file__))
 FONT = os.path.join(HERE, "..", "src", "renderer", "fonts", "Poppins-Bold.ttf")
 OUT = os.path.join(HERE, "..", "build-resources", "icon.svg")
-RED = "#BF0000"
+RED = "#19C9B4"   # filo's turquoise (the name RED is historical)
 
 font = TTFont(FONT)
 gs = font.getGlyphSet()
@@ -58,8 +59,8 @@ svg = f'''<?xml version="1.0" encoding="UTF-8"?>
 <!--
   filo - app icon (0.1.0, asked by Noar on 09.10.2026).
 
-  The word "filo" in Poppins Bold, as outlines; only the "o" in colour, the red
-  of FileZilla's logo (#BF0000). Family template (syncto, ingesto...): black
+  The word "filo" in Poppins Bold, as outlines; only the "o" in colour, filo's
+  turquoise #19C9B4 (until 0.6.1: FileZilla's red #BF0000). Family template (syncto, ingesto...): black
   square, white drawing, ONE element in the application's colour. Shape 824 px
   on a 1024 canvas, corner radius 185 (Apple template).
 

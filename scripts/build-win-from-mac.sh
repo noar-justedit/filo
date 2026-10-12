@@ -87,6 +87,20 @@ else
 fi
 
 # ── 4. Build ────────────────────────────────────────────────────
+# The Rust transfer engine for Windows is compiled here, on the Mac, with
+# MinGW (scripts/engine-build.js, run during the build). Without it the app
+# is built anyway, with filo's built-in engine.
+[ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
+if ! command -v cargo &>/dev/null; then
+  echo -e "${YELLOW}⚠ Rust not found: the Windows app will be built WITHOUT the Rust engine.${NC}"
+  echo -e "${YELLOW}  Install it once: https://rustup.rs${NC}"
+elif ! command -v x86_64-w64-mingw32-gcc &>/dev/null; then
+  echo -e "${YELLOW}⚠ MinGW not found: the Windows app will be built WITHOUT the Rust engine.${NC}"
+  echo -e "${YELLOW}  Install it once:  brew install mingw-w64${NC}"
+else
+  echo -e "${GREEN}✓ Rust and MinGW found — the Rust engine will be included${NC}"
+fi
+
 echo -e "${BLUE}[4/4]${NC} Building for Windows x64…"
 npm run build:win
 echo ""
@@ -94,6 +108,16 @@ echo -e "${GREEN}✓ Done.${NC}"
 echo ""
 echo -e "  ${BOLD}Installer:${NC}  dist/filo-Setup-$VERSION.exe    (NSIS)"
 echo -e "  ${BOLD}Portable:${NC}   dist/filo-$VERSION-win-x64.zip"
+if [ -f "dist/win-unpacked/resources/filo-engine.exe" ]; then
+  echo -e "  ${GREEN}Rust engine: included.${NC}"
+else
+  echo -e "  ${YELLOW}Rust engine: NOT included (see the [engine] lines above): filo works, with its built-in engine.${NC}"
+fi
+if [ -f "dist/win-unpacked/resources/syncthing/syncthing.exe" ]; then
+  echo -e "  ${GREEN}SYNCTHING: included.${NC}"
+else
+  echo -e "  ${YELLOW}SYNCTHING: NOT included (see the [direct] lines above).${NC}"
+fi
 echo ""
 echo -e "  ${YELLOW}The build is unsigned: Windows SmartScreen will warn on first${NC}"
 echo -e "  ${YELLOW}launch — «More info» → «Run anyway». Expected.${NC}"

@@ -95,6 +95,24 @@ class AutoTuner {
     return true;
   }
 
+  // A large file SENT in segments starts on one connection (0.4.0, measured
+  // on Noar's DS920+ with a 21.8 GB file: 1 connection 1'53", 4 connections
+  // 2'42", FileZilla 2'01"). Several connections write into the same file at
+  // several places at once, which the disks of a NAS take badly. Auto then
+  // adds a connection only if it measures a real gain (a server far away,
+  // where one connection is held back by the distance). Only at the start of
+  // a run, before anything was measured.
+  startLow(n, now) {
+    if (this.boosted) return false;
+    this.boosted = true;
+    const target = Math.max(1, Math.min(n, this.max, this.cap));
+    if (this.phase !== 'climb' || this.results.size || target >= this.level) return false;
+    this.level = target;
+    this.note = 'measuring';
+    this._reset(now || Date.now());
+    return true;
+  }
+
   // Called by the queue as things happen.
   addBytes(n, now) { if ((now || Date.now()) >= this.winStart) this.winBytes += n; }
   addFile(now) { if ((now || Date.now()) >= this.winStart) this.winFiles += 1; }
@@ -162,6 +180,7 @@ function better(a, b) {
   return (up(a.bps, b.bps) && notDown(a.fps, b.fps)) || (up(a.fps, b.fps) && notDown(a.bps, b.bps));
 }
 
-const SEGMENT_START = 4;
+const SEGMENT_START = 4;          // a file received in segments
+const SEGMENT_UP_START = 1;       // a file sent in segments (see startLow)
 
-module.exports = { AutoTuner, SEGMENT_START, better, WINDOW_MS, SETTLE_MS, HOLD_MS };
+module.exports = { AutoTuner, SEGMENT_START, SEGMENT_UP_START, better, WINDOW_MS, SETTLE_MS, HOLD_MS };

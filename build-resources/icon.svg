@@ -2,8 +2,8 @@
 <!--
   filo - app icon (0.1.0, asked by Noar on 09.10.2026).
 
-  The word "filo" in Poppins Bold, as outlines; only the "o" in colour, the red
-  of FileZilla's logo (#BF0000). Family template (syncto, ingesto...): black
+  The word "filo" in Poppins Bold, as outlines; only the "o" in colour, filo's
+  turquoise #19C9B4 (until 0.6.1: FileZilla's red #BF0000). Family template (syncto, ingesto...): black
   square, white drawing, ONE element in the application's colour. Shape 824 px
   on a 1024 canvas, corner radius 185 (Apple template).
 
@@ -14,5 +14,5 @@
   <path transform="translate(184.94 676.67) scale(0.41531 -0.41531)" d="M342 416H250V0H79V416H17V558H79V574Q79 677 138.0 730.5Q197 784 311 784Q330 784 339 783V638Q290 641 270.0 624.0Q250 607 250 563V558H342Z" fill="#ffffff"/>
   <path transform="translate(334.45 676.67) scale(0.41531 -0.41531)" d="M46 708Q46 748 74.5 774.5Q103 801 148 801Q192 801 220.5 774.5Q249 748 249 708Q249 669 220.5 642.5Q192 616 148 616Q103 616 74.5 642.5Q46 669 46 708ZM233 558V0H62V558Z" fill="#ffffff"/>
   <path transform="translate(456.97 676.67) scale(0.41531 -0.41531)" d="M233 740V0H62V740Z" fill="#ffffff"/>
-  <path transform="translate(579.49 676.67) scale(0.41531 -0.41531)" d="M28 279Q28 365 66.0 430.5Q104 496 170.0 531.0Q236 566 318 566Q400 566 466.0 531.0Q532 496 570.0 430.5Q608 365 608 279Q608 193 569.5 127.5Q531 62 464.5 27.0Q398 -8 316 -8Q234 -8 168.5 27.0Q103 62 65.5 127.0Q28 192 28 279ZM434 279Q434 346 400.5 382.0Q367 418 318 418Q268 418 235.0 382.5Q202 347 202 279Q202 212 234.5 176.0Q267 140 316 140Q365 140 399.5 176.0Q434 212 434 279Z" fill="#BF0000"/>
+  <path transform="translate(579.49 676.67) scale(0.41531 -0.41531)" d="M28 279Q28 365 66.0 430.5Q104 496 170.0 531.0Q236 566 318 566Q400 566 466.0 531.0Q532 496 570.0 430.5Q608 365 608 279Q608 193 569.5 127.5Q531 62 464.5 27.0Q398 -8 316 -8Q234 -8 168.5 27.0Q103 62 65.5 127.0Q28 192 28 279ZM434 279Q434 346 400.5 382.0Q367 418 318 418Q268 418 235.0 382.5Q202 347 202 279Q202 212 234.5 176.0Q267 140 316 140Q365 140 399.5 176.0Q434 212 434 279Z" fill="#19C9B4"/>
 </svg>

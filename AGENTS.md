@@ -44,7 +44,7 @@ ensuite, en entier, avant de toucher au code.
 - Format : X.Y.Z.
 
 ### 5. Livraison : le ZIP
-- À chaque bump, fournir `NomDuProjet_vX.Y.Z.zip` (ici `filo_v0.3.4.zip`).
+- À chaque bump, fournir `NomDuProjet_vX.Y.Z.zip` (ici `filo_v0.6.3.zip`).
 - Une fois décompressé, le ZIP correspond exactement à ce que Noar pousse sur GitHub :
   sources, scripts de build, documentation et fichiers de suivi.
 - Le ZIP ne contient pas :
@@ -112,8 +112,18 @@ ensuite, en entier, avant de toucher au code.
    accord.
 9. **Ne jamais inventer une option de ligne de commande** : vérifier la page de
    manuel (`notarytool`, `sha256sum`, commandes FTP…).
-10. **Rust est écarté pour l'instant** (décision de Noar, 09/10/2026) : le build
-    Windows depuis le Mac en dépend. Voir `ETAT_PROJET.md`, Décisions.
+10. **Le moteur Rust (`engine/`) est en place depuis la 0.4.0** (Noar avait
+    d'abord écarté Rust le 09/10/2026, puis l'a lancé le 10/10). Voir
+    `ETAT_PROJET.md`, Décisions.
+11. **Licences.** filo est sous GPL-3.0-or-later. Avant d'ajouter une
+    dépendance (npm, crate Rust) ou d'embarquer un programme externe
+    (Syncthing…), vérifier que sa licence est compatible avec la GPL v3 et le
+    dire à Noar. Compatibles : MIT, ISC, BSD, Apache-2.0, BSL-1.0, Unlicense,
+    Zlib, MPL-2.0, LGPL, GPL v3. **Incompatibles** : GPL-2.0 seule (sans « or
+    later »), AGPL (sauf accord de Noar, elle change les obligations), SSPL,
+    licences « non commerciales » ou propriétaires. Après tout changement de
+    dépendance : `node scripts/third-party-notices.js`, puis livrer le
+    `THIRD_PARTY_NOTICES.md` regénéré dans le ZIP.
 
 ### Commandes
 
@@ -123,6 +133,8 @@ npm test                               # suite complète (~1 min, serveur SFTP d
 node test/run-tests.js segments        # seulement les sections dont le nom contient "segments"
 npm run dev                            # lance l'app sans build (vrai profil !)
 FILO_LANES=inline npm run dev          # transferts dans le processus principal (débogage)
+node scripts/syncthing-fetch.js        # Syncthing (mode SYNCTHING) pour npm run dev / npm test (les builds le font seuls)
+node scripts/third-party-notices.js    # regénère THIRD_PARTY_NOTICES.md après un changement de dépendance
 ./build_mac.command                    # Mac arm64 .dmg, signé + notarisé (double-clic)
 ./build_windows.command                # Windows x64 depuis le Mac (double-clic)
 build_on_windows.bat                   # Windows x64 sur un PC Windows (double-clic), sans Wine

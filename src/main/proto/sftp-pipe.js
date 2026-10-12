@@ -35,12 +35,14 @@ const XFER_CHUNK = 32 * 1024;
 // 64 × 32 KB = 2 MB in flight. At 100 ms that is a 20 MB/s ceiling; beyond it
 // the memory cost stops buying anything on the links this is meant for.
 const XFER_CONCURRENCY = 64;
-// Ceiling of the adaptive read depth: 1024 × 32 KB = 32 MB in flight, enough
-// for ~100 MB/s at 150 ms on one connection.
-const MAX_READ_DEPTH = 1024;
+// Ceiling of the adaptive read depth, in bytes: 32 MB in flight (1024 × 32 KB
+// or 128 × 254 KB), enough for ~200 MB/s at 150 ms on one connection.
+const MAX_READ_BYTES = 32 * 1024 * 1024;
+const MAX_READ_DEPTH = MAX_READ_BYTES / XFER_CHUNK;
 const READ_STALL_MS = 60000;
 
 const { Readable, Writable } = require('stream');
+const { performance } = require('perf_hooks');
 
 // Writes to a remote file with many requests outstanding.
 //
@@ -51,7 +53,7 @@ const { Readable, Writable } = require('stream');
 class PipelinedWriter extends Writable {
   constructor(owner, remotePath, opts) {
     const o = opts || {};
-    super({ highWaterMark: XFER_CHUNK * 4 });
+    super({ highWaterMark: Math.max(XFER_CHUNK * 4, (o.chunkSize || 0) * 2) });
     this.owner = owner;
     this.remotePath = remotePath;
     this.chunkSize = o.chunkSize || XFER_CHUNK;
@@ -151,7 +153,7 @@ class PipelinedWriter extends Writable {
 class PipelinedReader extends Readable {
   constructor(owner, remotePath, opts) {
     const o = opts || {};
-    super({ highWaterMark: XFER_CHUNK * 8 });
+    super({ highWaterMark: Math.max(XFER_CHUNK * 8, (o.chunkSize || 0) * 2) });
     this.owner = owner;
     this.remotePath = remotePath;
     this.chunkSize = o.chunkSize || XFER_CHUNK;
@@ -177,7 +179,17 @@ class PipelinedReader extends Readable {
     // Start where the last transfer on this connection ended up: the next
     // segment should not climb from 64 again.
     if (this.adaptive && owner && owner._lastDepth) this.limit = owner._lastDepth;
-    this.rtt = 0;                 // EWMA of one request's round trip, ms
+    // The round trip used is the SHORTEST one seen lately, not the average.
+    // A reply waits behind every request issued before it: with 64 requests
+    // out, the average round trip is mostly that queue, and it grows with the
+    // depth itself. Sized on the average, the depth asked for twice itself
+    // every second, up to 1024 requests (32 MB in flight) even on a LAN, and a
+    // single connection ran 2 to 3 times slower than with 64 (measured
+    // 10/10/2026: 129-218 MB/s against 450-480 on the same machine). The
+    // shortest reply is the link without the queue.
+    this.rtt = 0;                 // shortest round trip of the current period, ms
+    this.rttPrev = 0;             // of the period before (the link may change)
+    this.rttAt = Date.now();
     this.winBytes = 0;
     this.winStart = Date.now();
   }
@@ -189,11 +201,14 @@ class PipelinedReader extends Readable {
     if (el < 1000) return;
     const rate = this.winBytes / (el / 1000);          // bytes per second
     this.winBytes = 0; this.winStart = now;
-    if (!this.rtt) return;
-    const need = Math.ceil((rate * (this.rtt / 1000) * 2) / this.chunkSize);
+    const base = Math.min(this.rtt || Infinity, this.rttPrev || Infinity);
+    if (now - this.rttAt > 10000) { this.rttPrev = this.rtt; this.rtt = 0; this.rttAt = now; }
+    if (base === Infinity) return;
+    const need = Math.ceil((rate * (base / 1000) * 2) / this.chunkSize);
     // Grow by doubling at most (a jump to 1024 on one optimistic sample would
     // flood a fragile server), shrink straight to what is needed.
-    const next = Math.max(XFER_CONCURRENCY, Math.min(MAX_READ_DEPTH, need, this.limit * 2));
+    const cap = Math.max(XFER_CONCURRENCY, Math.floor(MAX_READ_BYTES / this.chunkSize));
+    const next = Math.max(XFER_CONCURRENCY, Math.min(cap, need, this.limit * 2));
     if (need >= this.limit * 0.8 || next < this.limit) this.limit = next;
     if (this.owner) this.owner._lastDepth = this.limit;
     if (this.owner && this.owner._wantWindow) this.owner._wantWindow(this.limit * this.chunkSize * 2);
@@ -204,6 +219,10 @@ class PipelinedReader extends Readable {
     const sftp = this.owner.sftp;
     if (this.owner.dead) return cb(this.owner.dead);
     if (!sftp) return cb(new Error('The SFTP connection is not open.'));
+    // The receive window covers what is in flight, twice over, from the
+    // first request: ssh2's fixed 2 MB held 64 × 254 KB back (measured on a
+    // DS920+: 150 → 260 MB/s with the window and the larger requests).
+    if (this.owner && this.owner._wantWindow) this.owner._wantWindow(this.limit * this.chunkSize * 2);
     sftp.open(this.remotePath, 'r', (err, handle) => {
       if (err) return cb(err);
       this.handle = handle;
@@ -248,12 +267,12 @@ class PipelinedReader extends Readable {
   // asked for instead, and only a real EOF ends it.
   _readChunk(seq, at, buf, got) {
     const want = buf.length - got;
-    const t0 = Date.now();
+    const t0 = performance.now();
     this.owner.sftp.read(this.handle, buf, got, want, at + got, (err, read) => {
       if (this.destroyed) return;                // stopped: late replies are dropped
       this.lastReply = Date.now();
-      const dt = Date.now() - t0;
-      this.rtt = this.rtt ? this.rtt * 0.9 + dt * 0.1 : dt;
+      const dt = performance.now() - t0;
+      if (!this.rtt || dt < this.rtt) this.rtt = dt;
       if (read) this.winBytes += read;
       if (err) {
         this.inflight--;

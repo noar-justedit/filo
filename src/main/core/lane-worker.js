@@ -37,6 +37,9 @@ function installPolicy() {
 parentPort.on('message', async m => {
   if (m.type === 'connect') {
     ep = m.ep;
+    // A Buffer sent to a thread arrives as a plain Uint8Array, which ssh2 does
+    // not take as a key: the login was then tried without it, and refused.
+    if (ep && ep.privateKey && !Buffer.isBuffer(ep.privateKey) && typeof ep.privateKey !== 'string') ep.privateKey = Buffer.from(ep.privateKey);
     installPolicy();
     try {
       remote = createRemote(ep, { log });

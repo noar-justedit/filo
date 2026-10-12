@@ -22,9 +22,8 @@
      states something: a selection, keyboard focus, an alarm.
    - Four state colours: green done/verified, red deletion/failure, blue
      neutral information, orange "decide / careful".
-   - The accent (filo's identity colour: FileZilla's red #BF0000, Noar's
-     choice) lives on the "o" of the logo only. Red is otherwise the colour of
-     deletion and failure; on the logo alone it cannot be mistaken for either.
+   - The accent (filo's identity colour: turquoise #19C9B4 since 0.6.2, FileZilla's red #BF0000 before; Noar's
+     choice) lives on the "o" of the logo only.
    ═══════════════════════════════════════════════════════════════════════════ */
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -32,12 +31,16 @@
   --text:#e8eaf0; --text2:#aeb3bd; --text3:#8b909b; --text4:#6f757f;
   --green:#35c98b; --green-d:rgba(53,201,139,.15);
   --red:#f2555a;   --red-d:rgba(242,85,90,.15);
+  --violet:#a880ff; --violet-d:rgba(168,128,255,.15);
+  --hybrid:#8f8cfb;
   --blue:#4d90f0;  --blue-d:rgba(77,144,240,.15);
   --orange:#f2a03d;--orange-d:rgba(242,160,61,.15);
-  --accent:#BF0000;            /* FileZilla's red, on the logo's "o" only */
+  --accent:#19C9B4;            /* filo's turquoise (Noar, 12/10/2026), on the logo's "o" only */
   --r-card:14px; --r-ins:11px; --r-field:8px; --r-badge:4px;
   --focus:inset 0 0 0 1px rgba(255,255,255,.18);
   --font:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',system-ui,sans-serif;
+  --folder:#7fa8e8;
+  --yellow:#f2c94c;   /* synchronized browsing only: only on this side (FileZilla's code) */
   --mono:ui-monospace,'SF Mono','JetBrains Mono',Menlo,Consolas,monospace;
   --font-logo:'Poppins',-apple-system,BlinkMacSystemFont,sans-serif;
   --rowh:26px;
@@ -79,8 +82,16 @@ body.win #titlebar,body.linux #titlebar{padding-left:16px;}
 .conn-pill .nm{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--text);flex-shrink:0;max-width:240px;}
 .conn-pill .nm.mono{font-family:var(--mono);font-size:12px;font-weight:500;flex-shrink:1;max-width:none;}
 .conn-pill .proto{font-size:10px;font-weight:700;letter-spacing:.1em;color:var(--text3);}
-.badge{display:inline-flex;align-items:center;gap:4px;font-size:9.5px;font-weight:700;letter-spacing:.08em;
-  text-transform:uppercase;padding:2px 6px;border-radius:var(--r-badge);white-space:nowrap;}
+/* Every badge of filo, one design (Noar, 11/10/2026): the model is the MODE
+   badge of the LIVE SYNC view. Size, weight, spacing and shape here, colour
+   by class. */
+.badge,.sy-badge,.sy-role,.lv-state{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:900;letter-spacing:.12em;
+  text-transform:uppercase;line-height:14px;padding:4px 9px;border-radius:7px;white-space:nowrap;vertical-align:middle;flex:none;}
+.badge svg,.sy-badge svg,.sy-role svg,.lv-state svg{width:13px;height:13px;flex:none;}
+.badge.v{color:var(--violet);background:var(--violet-d);}
+@keyframes bdg-blink{0%,100%{opacity:1;}50%{opacity:.35;}}
+.blink{animation:bdg-blink 1.1s ease-in-out infinite;}
+@media (prefers-reduced-motion:reduce){.blink{animation:none;}}
 .badge.g{color:var(--green);background:var(--green-d);} .badge.o{color:var(--orange);background:var(--orange-d);}
 .badge.b{color:var(--blue);background:var(--blue-d);}   .badge.r{color:var(--red);background:var(--red-d);}
 .badge.n{color:var(--text2);background:rgba(255,255,255,.06);}
@@ -91,8 +102,10 @@ body.win #titlebar,body.linux #titlebar{padding-left:16px;}
 .ibtn:hover:not(:disabled){color:var(--text);}
 .ibtn:disabled{opacity:.35;cursor:default;}
 .ibtn svg{width:16px;height:16px;}
-.ibtn.ins{background:var(--ins);width:28px;height:28px;}
+.ibtn.ins{background:var(--ins);width:30px;height:30px;}
 .ibtn.ins.on{color:var(--blue);}
+.ibtn.ins.lab{width:auto;padding:0 9px 0 8px;gap:6px;font-size:10.5px;font-weight:700;letter-spacing:.08em;}
+.ibtn.ins.lab svg{width:14px;height:14px;}
 #btn-after.set{color:var(--orange);background:var(--orange-d);}
 #wincontrols{display:none;gap:2px;margin-left:4px;}
 body.win #wincontrols,body.linux #wincontrols{display:flex;}
@@ -122,19 +135,22 @@ body.win #wincontrols,body.linux #wincontrols{display:flex;}
 .seg button:hover{color:var(--text);}
 .seg button.on{background:var(--raise);color:var(--text);}
 .seg button.on.warn{color:var(--orange);}
-.btn{height:34px;display:inline-flex;align-items:center;justify-content:center;gap:7px;border:none;border-radius:9px;
+.btn{height:34px;display:inline-flex;align-items:center;justify-content:center;gap:7px;border:none;border-radius:var(--r-field);
   padding:0 14px;font-size:12px;font-weight:700;letter-spacing:.06em;background:var(--ins);color:var(--text2);white-space:nowrap;}
 .btn:hover:not(:disabled){color:var(--text);}
 .btn:disabled{opacity:.4;cursor:default;}
 .btn svg{width:15px;height:15px;}
-.btn.go{background:#0f2c1d;color:var(--green);}
-.btn.go:hover:not(:disabled){background:#12351f;}
-.btn.blue{background:#0f1d33;color:var(--blue);}
+.btn.go{background:var(--green-d);color:var(--green);}
+.btn.go:hover:not(:disabled),.btn.blue:hover:not(:disabled),.btn.stop:hover:not(:disabled){filter:brightness(1.15);}
+.btn.blue{background:var(--blue-d);color:var(--blue);}
 .btn.stop{background:var(--red-d);color:var(--red);}
 .btn.sm{height:28px;padding:0 11px;font-size:11px;}
 #q-sites{padding:0 13px;}
 #q-hist,#q-sync,#btn-after{width:34px;padding:0;flex-shrink:0;}
-#q-connect{min-width:150px;justify-content:center;}
+#q-connect{width:100%;min-width:44px;padding:0;justify-content:center;}
+#q-connect svg{width:18px;height:18px;}
+#q-connect.busy svg{animation:qc-pulse 1s ease-in-out infinite;}
+@keyframes qc-pulse{50%{opacity:.35;}}
 #q-proto{min-width:112px;justify-content:space-between;gap:8px;}
 #q-proto .chev{width:12px;height:12px;color:var(--text3);transform:rotate(90deg);}
 #q-proto.warn{color:var(--orange);}
@@ -153,6 +169,17 @@ body.win #wincontrols,body.linux #wincontrols{display:flex;}
   font-family:var(--mono);font-size:12px;color:var(--text);outline:none;}
 .p-path:focus{box-shadow:var(--focus);}
 .p-tools{display:flex;gap:4px;}
+/* Synchronized browsing: what differs from the other side (Noar, 12/10/2026,
+   FileZilla's two codes): yellow = only on this side, green = newer here. The
+   name is highlighted, not the row. */
+.p-dif{display:none !important;}
+body.syncb .p-dif{display:inline-flex !important;}
+.ibtn.ins.p-dif.on{background:rgba(242,201,76,.15);color:var(--yellow);}
+.row .nm .hl{padding:1px 6px;margin-left:-6px;border-radius:5px;}
+.row .nm .hl.o{background:rgba(242,201,76,.2);color:var(--yellow);}
+.row .nm .hl.n{background:var(--green-d);color:var(--green);}
+.p-foot .dif{margin-left:10px;} .p-foot .dif b{font-weight:800;}
+.p-foot .dif .o{color:var(--yellow);} .p-foot .dif .n{color:var(--green);}
 .p-filter{width:130px;height:30px;background:var(--ins);border:none;border-radius:var(--r-field);padding:0 9px;font-size:12px;outline:none;}
 .p-filter:focus{box-shadow:var(--focus);}
 .p-filter.on{box-shadow:inset 0 0 0 1px rgba(242,160,61,.6);}
@@ -178,7 +205,7 @@ body.win #wincontrols,body.linux #wincontrols{display:flex;}
 .row.drop{box-shadow:inset 0 0 0 1.5px var(--blue);background:var(--blue-d);}
 .row .ic{display:flex;align-items:center;justify-content:center;color:var(--text3);}
 .row .ic svg{width:15px;height:15px;}
-.row.folder .ic{color:#7fa8e8;}
+.row.folder .ic{color:var(--folder);}
 .row.up .ic{color:var(--text3);}
 .row .nm{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .ren{position:absolute;z-index:3;height:22px;padding:0 4px;border:1px solid var(--blue);border-radius:5px;background:var(--ins);color:var(--text);font-family:var(--font);font-size:12.5px;outline:none;box-shadow:0 0 0 3px rgba(77,144,240,.25);}
@@ -207,44 +234,46 @@ body.win #wincontrols,body.linux #wincontrols{display:flex;}
 #queue.live.paused{animation:none;box-shadow:inset 0 0 0 2px var(--text3);}
 @keyframes runglow{0%,100%{box-shadow:inset 0 0 0 2px var(--q-color,var(--green)),0 0 0 0 transparent;}
   50%{box-shadow:inset 0 0 0 2px var(--q-color,var(--green)),0 0 24px 0 var(--q-glow,rgba(53,201,139,.28));}}
-@media (prefers-reduced-motion:reduce){#queue.live{animation:none;}.q-title::before{animation:none!important;}}
-.q-head{display:flex;align-items:center;gap:16px;padding:12px 14px 10px 16px;flex-shrink:0;}
-.q-ring{width:58px;height:58px;position:relative;flex-shrink:0;}
-.q-ring svg{width:58px;height:58px;}
-.q-ring .trk{stroke:var(--ins);} .q-ring .fill{stroke:var(--q-color,var(--green));stroke-linecap:round;transition:stroke-dashoffset .3s ease;}
-.q-ring .pct{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12.5px;
-  font-variant-numeric:tabular-nums;color:var(--q-color,var(--text2));}
+@media (prefers-reduced-motion:reduce){#queue.live{animation:none;}}
+.q-head{display:flex;align-items:center;gap:16px;padding:12px 14px 10px 12px;flex-shrink:0;}
+.q-progrow{display:flex;align-items:center;gap:12px;margin:0 12px 8px;flex-shrink:0;}
+.q-prog{flex:1;height:4px;border-radius:2px;background:var(--ins);overflow:hidden;flex-shrink:0;}
+.q-prog i{display:block;height:100%;width:0;border-radius:2px;background:var(--q-fill,var(--q-color,var(--green)));transition:width .3s ease;}
+.q-prog.idle i{background:var(--text4);}
+.q-run{display:flex;gap:8px;align-items:center;flex-shrink:0;}
 .q-titles{min-width:0;flex:1;display:flex;flex-direction:column;justify-content:center;position:relative;align-self:stretch;}
 .q-title{position:relative;}
 /* Total speed over the last minute, behind the title (as in syncto / ingesto). */
 .q-spark{position:absolute;left:0;right:0;bottom:0;width:100%;height:100%;pointer-events:none;opacity:.35;}
-.q-now{position:absolute;right:6px;top:2px;font-family:var(--mono);font-size:12px;font-weight:700;color:var(--q-color,var(--green));
-  font-variant-numeric:tabular-nums;text-align:right;line-height:1.25;pointer-events:none;}
-.q-now small{display:block;font-size:9.5px;font-weight:600;color:var(--text3);letter-spacing:.06em;}
+.q-titles.nograph .q-spark{display:none;}
+/* Time left (the figure that matters most) and time elapsed, under the title. */
+.q-times{position:relative;display:flex;align-items:baseline;gap:14px;margin-top:3px;font-family:var(--mono);color:var(--text3);font-size:11px;white-space:nowrap;}
+.q-times:empty{display:none;}
+.q-times .left{font-size:17px;font-weight:800;color:var(--q-color,var(--green));letter-spacing:.01em;}
+.q-times .left small,.q-times .el small{font-family:var(--font);font-size:9.5px;font-weight:700;letter-spacing:.08em;color:var(--text3);margin-left:5px;}
+.q-times .el{font-weight:600;color:var(--text2);}
+/* Segments on their way at once, on a running row: the number alone. */
+.qr-sub .par{display:inline-block;min-width:16px;padding:0 5px;margin-right:8px;border-radius:var(--r-badge);background:rgba(255,255,255,.08);color:var(--text2);text-align:center;font-weight:700;}
 .q-spark .spark-area{fill:var(--q-color,var(--green));opacity:.45;stroke:none;}
 .q-spark .spark-line{fill:none;stroke:var(--q-color,var(--green));stroke-width:1.4;vector-effect:non-scaling-stroke;stroke-linejoin:round;}
 .q-title{font-size:20px;font-weight:800;letter-spacing:.05em;display:flex;align-items:center;gap:10px;color:var(--text2);}
 #queue.live .q-title{color:var(--q-color,var(--green));}
-#queue.live .q-title::before{content:'';width:10px;height:10px;border-radius:50%;background:currentColor;animation:pulse 1.1s ease-in-out infinite;}
-#queue.live.paused .q-title::before{animation:none;}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
 .q-stats{display:flex;gap:2px;min-width:0;overflow:hidden;margin-right:6px;}
 .q-stat{display:flex;gap:6px;align-items:center;padding:6px 9px;border-radius:var(--r-field);font-size:11px;font-weight:700;
   letter-spacing:.08em;text-transform:uppercase;color:var(--text3);white-space:nowrap;}
 .q-stat .n{font-family:var(--mono);font-size:10px;font-weight:700;padding:1px 6px;border-radius:var(--r-badge);
   background:rgba(255,255,255,.06);color:var(--text);letter-spacing:0;text-transform:none;}
-.q-stat.g .n{background:var(--green-d);color:var(--green);} .q-stat.b .n{background:var(--blue-d);color:var(--blue);}
-.q-stat.o .n{background:var(--orange-d);color:var(--orange);}
-.q-conn{display:flex;align-items:center;gap:8px;height:34px;padding:0 6px;border:none;border-radius:9px;background:transparent;color:var(--text2);}
+.q-stat.g .n{background:color-mix(in srgb,var(--q-color,var(--green)) 15%,transparent);color:var(--q-color,var(--green));} .q-stat.b .n{background:var(--blue-d);color:var(--blue);}
+.q-conn{display:flex;align-items:center;gap:8px;height:34px;padding:0 6px;border:none;border-radius:var(--r-field);background:transparent;color:var(--text2);}
 .q-conn:hover{color:var(--text);}
 .q-conn .v{font-family:var(--mono);font-size:11.5px;font-weight:700;color:var(--blue);}
 .q-conn .car{font-size:10px;color:var(--text4);}
 .btn.sq{width:34px;padding:0;}
 .btn.sq svg{width:14px;height:14px;}
 .q-btns{display:flex;gap:10px;align-items:center;}
-.q-check{display:flex;align-items:center;gap:9px;height:34px;padding:0 6px;border-radius:9px;cursor:pointer;}
-.q-check .lbl{color:var(--text2);}
-.q-check.off .lbl{color:var(--orange);}
+.q-check{display:flex;align-items:center;gap:9px;height:34px;padding:0 6px;border-radius:var(--r-field);cursor:pointer;}
+.q-check .lbl{color:var(--green);}
+.q-check.off .lbl{color:var(--text3);}
 .q-tabs{display:flex;align-items:center;gap:2px;padding:0 12px 6px 12px;flex-shrink:0;}
 .q-tabs button{border:none;background:transparent;color:var(--text3);border-radius:var(--r-field);padding:6px 11px;
   font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;display:flex;gap:6px;align-items:center;}
@@ -275,12 +304,14 @@ body.win #wincontrols,body.linux #wincontrols{display:flex;}
 .qact:disabled{opacity:.22;cursor:default;}
 .qbar{height:3px;border-radius:2px;background:var(--ins);overflow:hidden;position:relative;margin-left:60px;}
 .qbar i{position:absolute;left:0;top:0;bottom:0;background:var(--green);border-radius:2px;transition:width .3s ease;}
+#st-panel .qbar i:not(.r){background:var(--q-fill,var(--blue));}
 .qbar i.v{background:var(--blue);} .qbar i.o{background:var(--orange);} .qbar i.r{background:var(--red);} .qbar i.p{opacity:.45;}
 .qbar.pieces{height:5px;}
 .qbar.pieces canvas{display:block;width:100%;height:100%;}
 .qr-sub{display:flex;gap:12px;margin-left:60px;font-family:var(--mono);font-size:10.5px;line-height:15px;color:var(--text4);min-width:0;}
 .qr-sub .l{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .qr-sub .r{flex-shrink:0;color:var(--text3);white-space:nowrap;}
+.qr-sub .tm{flex-shrink:0;color:var(--text4);white-space:nowrap;}
 .qr-sub .err{color:var(--red);font-family:var(--font);font-size:11px;}
 .qr-sub .err.o{color:var(--orange);}
 .q-empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--text4);font-size:12.5px;text-align:center;padding:20px;}
@@ -327,23 +358,264 @@ body.win #wincontrols,body.linux #wincontrols{display:flex;}
 
 /* Site manager */
 #ov-sites .mcard{width:920px;height:640px;padding:0;flex-direction:row;overflow:hidden;}
+#ov-sync .mcard{width:960px;height:680px;padding:0;flex-direction:row;overflow:hidden;}
+/* Off: red; on: green, breathing; a problem: orange (Noar, 11/10/2026). */
+#mode-seg button{display:inline-flex;align-items:center;gap:7px;}
+#mode-seg button svg{width:14px;height:14px;}
+#mode-seg button.cur{background:var(--raise);color:var(--text);}
+#mode-menu{padding:0 7px !important;}
+#btn-sync.on{color:var(--blue);}
+#btn-sync.on.cur{background:var(--blue-d);}
+/* A live sync is on: the LIVE SYNC segment breathes, blue (Noar, 11/10/2026). */
+#btn-sync.on{animation:sy-breathe 2.4s ease-in-out infinite;}
+@keyframes sy-breathe{0%,100%{box-shadow:0 0 0 0 rgba(77,144,240,0),0 0 6px rgba(77,144,240,.18);}50%{box-shadow:0 0 0 2px rgba(77,144,240,.24),0 0 12px rgba(77,144,240,.45);}}
+@media (prefers-reduced-motion:reduce){#btn-sync.on{animation:none;box-shadow:0 0 0 2px rgba(77,144,240,.3);}}
+#btn-sync.err{color:var(--orange);}
+#btn-sync.err.cur{background:var(--orange-d);}
+#btn-sync .sy-n:empty{display:none;}
+#btn-sync .sy-n{font-family:var(--mono);font-size:10px;padding:1px 5px;border-radius:var(--r-badge);background:rgba(255,255,255,.08);}
+
+/* ── LIVE SYNC: new session (three kinds), the forms, the folder picker ── */
+/* Mode buttons, syncto's design (.mbtn): an icon on a hollow tinted with
+   the mode's colour, the chosen one outlined in it with a green tick. */
+.mbtn{display:flex;align-items:center;gap:10px;background:transparent;border:none;border-radius:var(--r-field);padding:9px 12px;cursor:pointer;color:var(--text);font:inherit;text-align:left;}
+.mbtn:hover{background:rgba(255,255,255,.03);}
+.mbtn.on{background:var(--ins);}
+.mico{flex-shrink:0;display:flex;align-items:center;justify-content:center;width:30px;height:30px;border-radius:var(--r-field);color:var(--text2);background:rgba(255,255,255,.06);}
+.mico svg{width:20px;height:20px;}
+.mbadge{font-size:12.5px;font-weight:700;letter-spacing:.07em;color:var(--text2);white-space:nowrap;}
+.mbtn.on .mbadge{color:var(--text);}
+.msel{visibility:hidden;font-size:0;width:13px;height:13px;flex-shrink:0;background:no-repeat center/13px 13px url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2335c98b' stroke-width='2.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 6 9 17l-5-5'/%3E%3C/svg%3E");}
+.mbtn.on .msel{visibility:visible;}
+.modes-row{display:flex;gap:6px;flex-wrap:wrap;}
+/* SYNCTHING blue, S-FTP violet, the failsafe both at once (Noar, 11/10/2026). */
+.k-direct .mico,.k-direct.sy-kic{color:var(--blue);background:var(--blue-d);}
+.k-hybrid .mico,.k-hybrid.sy-kic{color:var(--hybrid);background:linear-gradient(135deg,var(--blue-d),var(--violet-d));}
+.k-server .mico,.k-server.sy-kic{color:var(--violet);background:var(--violet-d);}
+.d-one .mico{color:var(--green);background:var(--green-d);}
+.d-two .mico{color:var(--blue);background:var(--blue-d);}
+.mbtn.d-one.on{box-shadow:inset 0 0 0 1.5px var(--green);}
+.mbtn.d-two.on{box-shadow:inset 0 0 0 1.5px var(--blue);}
+.sy-types{display:flex;flex-direction:column;gap:10px;}
+.sy-type{background:var(--ins);padding:14px 16px;gap:14px;}
+.sy-type .mico{width:44px;height:44px;}
+.sy-type .mico svg{width:26px;height:26px;}
+.sy-type .minfo{display:flex;flex-direction:column;gap:4px;}
+.sy-type .mbadge{color:var(--text);font-size:13.5px;}
+.sy-type .d{font-size:12px;color:var(--text2);line-height:1.5;}
+.sy-type.k-direct:hover{box-shadow:inset 0 0 0 1.5px var(--blue);}
+.sy-type.k-hybrid:hover{box-shadow:inset 0 0 0 1.5px var(--hybrid);}
+.sy-type.k-server:hover{box-shadow:inset 0 0 0 1.5px var(--violet);}
+.sy-kind{display:flex;align-items:center;gap:10px;margin-bottom:14px;}
+.sy-badge.k-direct{background:var(--blue-d);color:var(--blue);}
+.sy-badge.k-hybrid{background:linear-gradient(135deg,var(--blue-d),var(--violet-d));color:var(--hybrid);}
+.sy-badge.k-server{background:var(--violet-d);color:var(--violet);}
+.sy-kic{position:relative;width:34px;height:28px;border-radius:7px;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+.sy-kic svg{width:16px;height:16px;}
+.sy-kic .dot{position:absolute;right:-2px;bottom:-2px;width:9px;height:9px;border-radius:50%;background:var(--text4);box-shadow:0 0 0 2px var(--card);}
+.sy-kic .dot.on{background:var(--green);}
+.sy-kic .dot.err{background:var(--orange);}
+.sy-sub{font-size:11px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--text);margin:18px 0 10px;padding-top:14px;border-top:1px solid rgba(255,255,255,.06);}
+.sy-sub span{font-weight:500;letter-spacing:0;text-transform:none;color:var(--text3);margin-left:8px;}
+.sy-auto select.sm{width:auto;}
+.rp-path{font-size:11.5px;color:var(--text2);background:var(--ins);border-radius:8px;padding:8px 10px;margin-bottom:8px;word-break:break-all;}
+.rp-list{height:300px;overflow-y:auto;background:var(--ins);border-radius:10px;padding:4px;}
+.rp-it{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:7px;font-size:12.5px;cursor:default;user-select:none;}
+.rp-it svg{width:15px;height:15px;color:var(--blue);flex-shrink:0;}
+.rp-it:hover{background:rgba(255,255,255,.04);}
+.rp-it.sel{background:var(--blue-d);}
+
+/* ── LIVE SYNC view (main window) ── */
+#live{display:none;flex:1;min-height:200px;flex-direction:column;padding:12px 14px 18px;gap:12px;overflow:auto;}
+body.live-on #live{display:flex;}
+body.live-on #quick,body.live-on #panels{display:none;}
+.lv-head{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;}
+.lv-head .lv-tabs,.lv-head .lv-ib{margin-bottom:2px;}
+.lv-tabs{display:flex;gap:6px;flex-wrap:wrap;}
+.lv-tabs button{height:32px;background:var(--ins);border:none;color:var(--text2);font:inherit;font-size:12px;font-weight:700;padding:0 11px;border-radius:var(--r-field);cursor:pointer;}
+.lv-tabs button:hover{color:var(--text);}
+.lv-tabs button.on{background:var(--blue-d);color:var(--blue);}
+.lv-tabs button.err{color:var(--orange);}
+.lv-name{font-size:14px;font-weight:700;color:var(--text);}
+.lv-head .sp{flex:1;}
+.lv-ask:empty{display:none;}
+.lv-ask .sy-ask{margin:0 0 8px;}
+.lv-body{flex:1;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.5fr) minmax(0,1fr);gap:14px;min-height:0;}
+.lv-card,.lv-mid{background:var(--ins);border-radius:14px;padding:16px 18px;overflow:auto;min-height:0;}
+.lv-mid{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:12px;overflow:hidden;}
+.lv-who{display:flex;align-items:center;gap:8px;font-size:10.5px;font-weight:800;letter-spacing:.14em;color:var(--text3);}
+.lv-who > svg{width:15px;height:15px;}
+.lv-state{margin-left:auto;}
+.lv-state.ok{background:var(--green-d);color:var(--green);}
+.lv-state.off{background:rgba(255,255,255,.06);color:var(--text3);}
+.lv-state.bad{background:var(--orange-d);color:var(--orange);}
+.lv-state.red{background:var(--red-d);color:var(--red);}
+.lv-sub .sp{flex:1;}
+.lv-host .lv-state.alone{margin-left:0;}
+.lv-sub > svg{width:15px;height:15px;}
+.lv-host{display:flex;align-items:center;gap:10px;font-size:20px;font-weight:800;color:var(--text);margin:6px 0 10px;}
+.lv-host > span:first-child{word-break:break-all;min-width:0;}
+/* Not linked yet (MASTER): this computer's SYNCTHING ID, to send (SYNCTHING). */
+.lv-link{background:rgba(255,255,255,.03);border-radius:10px;padding:11px 12px;margin:4px 0 12px;}
+.lv-link .k{font-size:10px;font-weight:800;letter-spacing:.12em;color:var(--text3);margin-bottom:7px;}
+.lv-link .hint{margin-top:8px;}
+.lv-or{font-size:10px;font-weight:800;letter-spacing:.14em;color:var(--text4);margin:2px 0 8px;}
+.lv-kv{display:grid;grid-template-columns:86px 1fr;gap:6px 10px;font-size:12.5px;}
+.lv-kv .k{color:var(--text3);font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;padding-top:2px;}
+.lv-kv .v{color:var(--text);word-break:break-all;}
+.lv-kv .mono{font-size:11.5px;}
+.lv-sub{display:flex;align-items:center;gap:8px;font-size:10.5px;font-weight:800;letter-spacing:.14em;color:var(--text3);margin:16px 0 10px;padding-top:12px;border-top:1px solid rgba(255,255,255,.06);}
+.lv-note{font-size:12px;color:var(--text2);line-height:1.5;margin:8px 0 12px;}
+body.live-on .q-progrow{display:none;}
+.lv-id{background:rgba(255,255,255,.03);border-radius:10px;padding:9px 11px;margin:-4px 0 12px;display:flex;align-items:center;gap:10px;}
+.lv-id .k{font-size:10px;font-weight:800;letter-spacing:.12em;color:var(--text3);}
+.lv-id .v{font-size:11px;color:var(--text);word-break:break-all;margin:3px 0 0;line-height:1.5;}
+.lv-id .t{flex:1;min-width:0;}
+.lv-id .b{display:flex;gap:6px;flex-shrink:0;}
+.lv-mid{position:relative;}
+/* The session at a glance: its kind in its colour, its state as an icon. */
+#lv-modeb{position:absolute;top:14px;left:14px;z-index:2;}
+.lv-modeb{border:none;cursor:pointer;font-family:inherit;}
+.lv-modeb:hover{filter:brightness(1.18);}
+.lv-modeb.m-direct{color:var(--blue);background:var(--blue-d);}
+.lv-modeb.m-hybrid{color:var(--hybrid);background:linear-gradient(135deg,var(--blue-d),var(--violet-d));}
+.lv-modeb.m-server{color:var(--violet);background:var(--violet-d);}
+.lv-modeb .st{display:inline-flex;}
+.lv-modeb .st.on{color:var(--green);} .lv-modeb .st.warn{color:var(--orange);} .lv-modeb .st.off{color:var(--red);}
+.sw-list{display:flex;flex-direction:column;gap:8px;}
+.sw-list .lv-sw{width:100%;height:38px;}
+.lv-sw .sw-st{margin-left:auto;font-size:10px;opacity:.85;}
+body.live-on #conn-pill{display:none;}
+.lv-sw{display:inline-flex;align-items:center;gap:7px;height:32px;padding:0 12px;border:none;border-radius:8px;font:inherit;font-size:10.5px;font-weight:800;letter-spacing:.12em;cursor:pointer;}
+.lv-sw svg{width:16px;height:16px;}
+.lv-sw.on{color:var(--green);background:var(--green-d);box-shadow:inset 0 0 0 1px rgba(53,201,139,.35);}
+.lv-sw.off{color:var(--red);background:var(--red-d);box-shadow:inset 0 0 0 1px rgba(242,85,90,.35);}
+.lv-sw.warn{color:var(--orange);background:var(--orange-d);box-shadow:inset 0 0 0 1px rgba(242,160,61,.35);}
+.lv-sw:hover{filter:brightness(1.15);}
+/* LIVE SYNC is blue (Noar, 11/10/2026): MASTER filled, SLAVE outlined. */
+.sy-role.master,.sy-role.slave{color:var(--blue);background:var(--blue-d);}
+.lv-host .sy-role{margin-left:auto;}
+/* The SYNCTHING queue: in place of filo's own queue while a SYNCTHING
+   session is shown (Noar, 12/10/2026: what moves, what waits, what arrived). */
+#st-panel{display:none;flex:1;min-height:0;flex-direction:column;}
+body.live-st #st-panel{display:flex;}
+body.live-st #queue .q-head,body.live-st #q-blocked,body.live-st #q-tabs,body.live-st #q-list{display:none;}
+.st-head{display:flex;align-items:center;gap:14px;padding:4px 4px 10px;}
+.st-stats{font-family:var(--mono);font-size:11px;color:var(--text3);}
+.st-list .qrow{position:relative;left:auto;right:auto;}
+.st-list .qrow .dirc{display:inline-flex;color:var(--text3);flex:none;}
+.st-list .qrow .dirc svg{width:14px;height:14px;}
+.st-empty{padding:30px 0;text-align:center;color:var(--text4);font-size:12.5px;}
+.sm-item .a .sy-role{margin-left:7px;}
+.sy-kind .badge{margin-left:2px;}
+/* The arrows beside the ring while files move: left in, right out. */
+.lv-flow{position:absolute;top:50%;display:flex;transform:translateY(-50%);opacity:0;transition:opacity .4s;pointer-events:none;color:var(--blue);}
+.lv-flow.on{opacity:1;}
+.lv-flow svg{width:10cqw;height:10cqw;margin:0 -2.6cqw;fill:none;stroke:currentColor;stroke-width:3;stroke-linecap:round;stroke-linejoin:round;opacity:.15;}
+.lv-flow.r{left:100%;margin-left:2cqw;}
+.lv-flow.l{right:100%;margin-right:2cqw;transform:translateY(-50%) scaleX(-1);}
+.lv-flow.on svg{animation:lv-chev 1.1s linear infinite;}
+.lv-flow.on svg:nth-child(2){animation-delay:.18s;}
+.lv-flow.on svg:nth-child(3){animation-delay:.36s;}
+@keyframes lv-chev{0%{opacity:.15;}25%{opacity:1;}60%,100%{opacity:.15;}}
+.lv-ring.sf .lv-flow{color:var(--violet);}
+@media (prefers-reduced-motion:reduce){.lv-flow.on svg{animation:none;opacity:.8;}}
+.lv-trash{display:flex;align-items:center;gap:10px;background:rgba(255,255,255,.03);border-radius:10px;padding:8px 11px;margin:-4px 0 12px;}
+.lv-trash .t{flex:1;min-width:0;}
+.lv-trash .k{font-size:10px;font-weight:800;letter-spacing:.12em;color:var(--text3);}
+.lv-trash .k .mono{letter-spacing:0;font-weight:500;margin-left:4px;}
+.lv-trash .tv{font-size:12px;color:var(--text);margin-top:2px;}
+.modes-row.ro .mbtn{cursor:default;opacity:.75;}
+.modes-row.ro .mbtn:not(.on){opacity:.4;}
+.lv-ib{width:32px;height:32px;}
+.lv-ib svg{width:17px;height:17px;}
+.sy-del{color:var(--red);}
+/* The ring, Presto's (renderer/styles.css: 11 px stroke on r 86, glow),
+   filling the centre of the view. Sizes inside follow the ring's width
+   (container units), so it reads the same small or large. */
+.lv-ring{position:relative;height:100%;max-height:100%;max-width:100%;aspect-ratio:1;container-type:size;flex:none;}
+.lv-ring .ring{position:absolute;inset:0;width:100%;height:100%;display:block;}
+.lv-ring .ring-bg{fill:none;stroke:#22242a;stroke-width:11;}
+.lv-ring .ring-fg{fill:none;stroke:var(--blue);stroke-width:11;stroke-linecap:round;filter:drop-shadow(0 0 5px rgba(77,144,240,.35));}
+.lv-ring .bars rect{fill:var(--blue);opacity:.16;}
+.lv-ring .bars rect.now{opacity:.32;}
+.lv-ring:not(.run) .bars rect{opacity:.07;}
+.lv-ring.sf .ring-fg{stroke:var(--violet);filter:drop-shadow(0 0 5px rgba(168,128,255,.35));}
+.lv-ring.sf .bars rect{fill:var(--violet);}
+/* DUAL SYNC: its mode's colour, blue to violet (Noar, 12/10/2026). */
+.lv-ring.hy .ring-fg{stroke:url(#lv-hy);filter:drop-shadow(0 0 5px rgba(143,140,251,.35));}
+.lv-ring.hy .bars rect{fill:var(--hybrid);}
+.lv-ring.hy .lv-flow{color:var(--hybrid);}
+.lv-ring.hy .r-status{color:var(--hybrid);}
+.lv-ring.bad .ring-fg{stroke:var(--orange);filter:drop-shadow(0 0 5px rgba(242,160,61,.35));}
+.lv-ring.off .ring-fg{stroke:var(--text4);filter:none;}
+/* Standing by (IDLE): the ring fades, so activity stands out at a glance. */
+.lv-ring.idle .ring-fg{opacity:.32;filter:none;}
+.lv-ring.idle .r-status{opacity:.6;}
+.lv-ring .ring-fg{transition:stroke-dashoffset .5s ease,stroke .3s,opacity .6s;}
+.lv-ring.off .bars rect{fill:var(--text4);}
+.lv-ring .ring-center{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;}
+.lv-ring .r-status{font-size:4.6cqw;font-weight:800;letter-spacing:.14em;color:var(--blue);}
+.lv-ring.sf .r-status{color:var(--violet);} .lv-ring.bad .r-status{color:var(--orange);} .lv-ring.off .r-status{color:var(--text3);}
+.lv-ring .r-mode{margin-top:1.6cqw;font-size:3.3cqw;font-weight:800;letter-spacing:.14em;padding:.7cqw 2.2cqw;border-radius:1.4cqw;}
+.lv-ring .r-mode.m-sf{color:var(--violet);background:var(--violet-d);}
+.lv-ring.off .r-mode{color:var(--text3);background:rgba(255,255,255,.06);}
+.lv-ring .r-pct{font-size:19cqw;font-weight:700;line-height:1;margin-top:2cqw;color:var(--text);font-variant-numeric:tabular-nums;}
+.lv-ring .r-pct span{font-size:6.5cqw;color:var(--text3);font-weight:600;margin-left:.4cqw;}
+.lv-ring .r-bytes{font-size:3.6cqw;color:var(--text2);margin-top:1.2cqw;}
+.lv-ring .r-speed{font-size:5.2cqw;font-weight:700;color:var(--text);margin-top:1.4cqw;}
+.lv-ring .r-row{display:flex;justify-content:center;gap:7cqw;margin-top:3cqw;}
+.lv-ring .r-fig{display:flex;flex-direction:column;align-items:center;}
+.lv-ring .r-fig .n{font-size:5.6cqw;font-weight:700;color:var(--text);line-height:1.1;}
+.lv-ring .r-fig .l{font-size:2.4cqw;font-weight:800;letter-spacing:.14em;color:var(--text3);margin-top:.5cqw;}
+
+/* SYNCTHING: another computer asks to connect, or offers a session. */
+.sy-ask{margin:6px 8px;padding:10px 12px;border-radius:8px;background:var(--orange-d);border:1px solid rgba(242,160,61,.25);}
+.sy-ask .a{display:flex;gap:8px;align-items:center;font-size:12px;color:var(--text);}
+.sy-ask .a svg{width:14px;height:14px;color:var(--orange);flex-shrink:0;}
+.sy-ask .b{font-size:10px;color:var(--text3);margin:4px 0 8px;word-break:break-all;}
+.sy-ask .c{display:flex;gap:6px;justify-content:flex-end;}
+.sy-dev{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid rgba(255,255,255,.06);font-size:12px;}
+.sy-dev .sy-dim{font-size:11px;margin-top:2px;}
+.sy-dim{color:var(--text3);}
+.sy-status{background:var(--ins);border-radius:var(--r-field);padding:10px 12px;font-size:12px;color:var(--text2);line-height:1.55;margin-bottom:12px;}
+.sy-status b{color:var(--text);}
+.sy-status .err{color:var(--orange);}
+.sy-status ul{margin:6px 0 0 16px;font-family:var(--mono);font-size:11px;color:var(--text3);max-height:120px;overflow-y:auto;}
+.sy-auto{display:flex;align-items:center;gap:10px;font-size:12.5px;color:var(--text2);flex-wrap:wrap;}
+.sy-auto input[type=number]{width:64px;}
+.sy-kv{display:grid;grid-template-columns:120px 1fr;gap:6px 12px;font-size:12.5px;margin:4px 0 14px;}
+.sy-kv .k{color:var(--text3);font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;padding-top:2px;}
+.sy-kv .v{color:var(--text);word-break:break-all;}
+.sy-kv .v.mono{font-family:var(--mono);font-size:11.5px;}
 .sm-left{width:300px;flex-shrink:0;background:var(--ins);display:flex;flex-direction:column;border-radius:18px 0 0 18px;}
 .sm-left .hd{padding:20px 16px 10px;display:flex;align-items:center;gap:8px;}
 .sm-left .hd .m-h1{margin:0;flex:1;}
 .sm-search{margin:0 14px 10px;height:32px;background:var(--card);border:none;border-radius:var(--r-field);padding:0 10px;outline:none;}
 .sm-search:focus{box-shadow:var(--focus);}
 .sm-list{flex:1;overflow-y:auto;padding:0 8px 10px;}
-.sm-group{font-size:9.5px;font-weight:700;letter-spacing:.13em;text-transform:uppercase;color:var(--text4);padding:12px 8px 5px;}
 .sm-folder{display:flex;align-items:center;gap:7px;padding:7px 9px 7px 6px;border-radius:8px;cursor:pointer;color:var(--text2);font-size:12px;font-weight:600;user-select:none;}
 .sm-folder:hover{background:rgba(255,255,255,.03);color:var(--text);}
 .sm-folder svg{width:14px;height:14px;flex-shrink:0;}
-.sm-folder > svg{color:#7fa8e8;}
+.sm-folder > svg{color:var(--folder);}
 .sm-folder .chev{display:flex;color:var(--text4);transition:transform .15s ease;}
 .sm-folder .chev svg{width:12px;height:12px;}
 .sm-folder.open .chev{transform:rotate(90deg);}
 .sm-folder .nm{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .sm-folder .n{font-family:var(--mono);font-size:10px;padding:1px 6px;border-radius:var(--r-badge);background:rgba(255,255,255,.06);color:var(--text3);}
 .sm-item{display:flex;align-items:center;gap:9px;padding:7px 9px;border-radius:8px;cursor:pointer;}
+.sm-item .sy-del-it{margin-left:auto;width:26px;height:26px;opacity:0;color:var(--red);flex:none;}
+.sm-item:hover .sy-del-it,.sm-item.sel .sy-del-it{opacity:1;}
+.chips{display:flex;flex-wrap:wrap;gap:6px;background:var(--ins);border-radius:var(--r-field);padding:8px;}
+.chip{display:inline-flex;align-items:center;gap:4px;height:22px;padding:0 3px 0 9px;border-radius:11px;box-shadow:inset 0 0 0 1px rgba(255,255,255,.14);font-size:11px;color:var(--text);}
+.chips[data-ro="1"] .chip{padding-right:9px;color:var(--text2);}
+.chip button{border:none;background:none;color:var(--text3);font-size:13px;line-height:1;cursor:pointer;padding:1px 4px;}
+.chip button:hover{color:var(--red);}
+.chip-add{display:flex;gap:8px;width:100%;}
+.chip-add .btn{box-shadow:inset 0 0 0 1px rgba(255,255,255,.18);}
+.chip-add input{width:160px;background:var(--card);border:none;border-radius:var(--r-field);padding:5px 9px;font-size:11px;color:var(--text);outline:none;}
+.sy-peer{display:flex;align-items:center;gap:10px;font-size:13px;}
+.sy-peer .mono{font-size:11px;word-break:break-all;flex:1;min-width:0;}
 /* Drag and drop in the site list: a line where it will land, or the folder lit. */
 #sm-list .dragging{opacity:.4;}
 #sm-list .drop-before{box-shadow:inset 0 2px 0 var(--blue);}
@@ -366,7 +638,6 @@ body.win #wincontrols,body.linux #wincontrols{display:flex;}
 .sm-empty{flex:1;display:flex;flex-direction:column;gap:10px;align-items:center;justify-content:center;color:var(--text3);text-align:center;padding:30px;}
 .pw-kept{font-size:11.5px;color:var(--green);display:flex;align-items:center;gap:8px;}
 .pw-kept button{border:none;background:transparent;color:var(--text3);font-size:11.5px;text-decoration:underline;}
-.ctx-mini{position:absolute;}
 
 /* Settings */
 #ov-settings .mcard{width:680px;}
@@ -390,6 +661,14 @@ body.win #wincontrols,body.linux #wincontrols{display:flex;}
 .set-row select.sm{flex:0 0 160px;}
 .set-sec-note{font-weight:400;letter-spacing:0;text-transform:none;font-size:11px;color:var(--text4);margin-left:6px;}
 .set-row input#st-limit-up,.set-row input#st-limit-down{width:84px;}
+.cli-cmd{flex:1;min-width:0;background:var(--ins);border-radius:var(--r-field);padding:7px 9px;font:12px/1.3 var(--mono);color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;user-select:all;}
+.ibtn.cli-i{width:26px;height:26px;border-radius:50%;font:italic 700 13px/1 Georgia,serif;flex-shrink:0;}
+.cli-list{display:flex;flex-direction:column;gap:12px;max-height:420px;overflow:auto;padding-right:4px;}
+.cli-it .d{font-size:12.5px;color:var(--text2);margin-bottom:5px;}
+.cli-it .l{display:flex;gap:8px;align-items:center;}
+.cli-it code{flex:1;min-width:0;background:var(--ins);border-radius:var(--r-field);padding:7px 9px;font:11.5px/1.35 var(--mono);white-space:pre-wrap;word-break:break-all;}
+.cli-codes{font-size:12px;color:var(--text3);line-height:1.6;margin-top:4px;}
+.cli-codes b{color:var(--text);font-weight:600;display:inline-block;width:18px;}
 .ntfy-qrs{margin:6px 0 0 230px;}
 .ntfy-qr-h{font-size:11.5px;color:var(--text3);margin-bottom:10px;}
 .ntfy-qr-row{display:flex;gap:44px;}
@@ -418,7 +697,7 @@ body.win #wincontrols,body.linux #wincontrols{display:flex;}
 .ex-opts label.on{background:var(--raise);}
 .ex-opts input{accent-color:var(--green);}
 .scope{display:flex;flex-direction:column;align-items:flex-start;gap:7px;margin-top:14px;font-size:12.5px;color:var(--text2);}
-.scope .h{font-family:var(--mono,monospace);font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--text3,var(--text2));}
+.scope .h{font-family:var(--mono);font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--text3);}
 .scope label{display:flex;align-items:center;gap:6px;cursor:pointer;}
 .scope input{accent-color:var(--green);}
 .chk{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--text2);cursor:pointer;}
@@ -429,10 +708,6 @@ body.win #wincontrols,body.linux #wincontrols{display:flex;}
 .sum-ico{width:48px;height:48px;border-radius:14px;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
 .sum-ico svg{width:24px;height:24px;}
 .sum-ico.ok{background:var(--green-d);color:var(--green);} .sum-ico.err{background:var(--red-d);color:var(--red);}
-.sum-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;margin-bottom:12px;}
-.tile{background:var(--ins);border-radius:var(--r-ins);padding:11px 12px;display:flex;flex-direction:column;gap:5px;}
-.tile .v{font-size:16px;font-weight:600;font-variant-numeric:tabular-nums;}
-.tile .k{font-size:9px;font-weight:700;letter-spacing:.13em;text-transform:uppercase;color:var(--text3);}
 .err-list{background:var(--red-d);border-radius:var(--r-ins);padding:10px 12px;font-size:12px;max-height:150px;overflow-y:auto;user-select:text;-webkit-user-select:text;}
 .err-list div{margin-bottom:4px;word-break:break-word;}
 #ov-after .mcard{width:420px;text-align:center;}
@@ -496,9 +771,15 @@ body.win #wincontrols,body.linux #wincontrols{display:flex;}
 
 <!-- ── Quick connect ─────────────────────────────────────────────────── -->
 <div id="quick" class="card">
-  <div class="qf fixed">
-    <span class="lbl">Server</span>
-    <button class="btn go" id="q-connect"></button>
+  <!-- MODE (Noar, 12/10/2026): the FTP client or the LIVE SYNC view; ▾ the
+       LIVE SYNC menu. The same block moves into the LIVE SYNC view's head. -->
+  <div class="qf fixed" id="mode-f">
+    <span class="lbl">Mode</span>
+    <div class="seg" id="mode-seg">
+      <button id="mode-client" data-tip="FTP client: the two file panels">CLIENT</button>
+      <button id="btn-sync" aria-label="LIVE SYNC" data-tip="LIVE SYNC: no session connected (new, import, connect)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg><span>LIVE SYNC</span><span class="sy-n" id="sy-n"></span></button>
+      <button id="mode-menu" aria-label="LIVE SYNC menu" data-tip="LIVE SYNC: new session, import, connect, sessions"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></button>
+    </div>
   </div>
   <div class="qf fixed">
     <span class="lbl">Sites</span>
@@ -515,6 +796,10 @@ body.win #wincontrols,body.linux #wincontrols{display:flex;}
   <div class="qf" id="q-port-f"><span class="lbl">Port</span><input id="q-port" placeholder="22" inputmode="numeric" spellcheck="false" autocomplete="off"></div>
   <div class="qf" id="q-user-f"><span class="lbl">User</span><input id="q-user" placeholder="user" spellcheck="false" autocomplete="off"></div>
   <div class="qf" id="q-pass-f"><span class="lbl">Password</span><input id="q-pass" type="password" placeholder="password" autocomplete="off"></div>
+  <div class="qf fixed" id="q-connect-f">
+    <span class="lbl">Connect</span>
+    <button class="btn go" id="q-connect"></button>
+  </div>
   <button class="btn" id="q-hist" aria-label="Recent connections" data-tip="Recent connections">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg>
   </button>
@@ -533,6 +818,7 @@ body.win #wincontrols,body.linux #wincontrols{display:flex;}
       <button class="ibtn ins" data-act="browse" aria-label="Browse" data-tip="Choose a folder or a drive"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/></svg></button>
       <input class="p-path" spellcheck="false" autocomplete="off">
       <div class="p-tools">
+        <button class="ibtn ins p-dif" data-act="diff" aria-label="Differences only" data-tip="DIFFERENCES ONLY: show only what differs from the other side"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 3H2l8 9.46V19l4 2v-8.54L22 3z"/></svg></button>
         <button class="ibtn ins" data-act="up" aria-label="Parent folder" data-tip="Parent folder (⌫)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg></button>
         <button class="ibtn ins" data-act="refresh" aria-label="Refresh" data-tip="Refresh (F5)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg></button>
         <button class="ibtn ins" data-act="hidden" aria-label="Hidden files" data-tip="Show hidden files (⇧⌘.)"></button>
@@ -559,11 +845,12 @@ body.win #wincontrols,body.linux #wincontrols{display:flex;}
       <span class="lbl">Server</span>
       <input class="p-path" spellcheck="false" autocomplete="off" disabled>
       <div class="p-tools">
+        <button class="ibtn ins p-dif" data-act="diff" aria-label="Differences only" data-tip="DIFFERENCES ONLY: show only what differs from the other side"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 3H2l8 9.46V19l4 2v-8.54L22 3z"/></svg></button>
         <button class="ibtn ins" data-act="up" aria-label="Parent folder" data-tip="Parent folder (⌫)" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg></button>
         <button class="ibtn ins" data-act="refresh" aria-label="Refresh" data-tip="Refresh (F5)" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg></button>
         <button class="ibtn ins" data-act="hidden" aria-label="Hidden files" data-tip="Show hidden files (⇧⌘.)" disabled></button>
         <button class="ibtn ins" data-act="mkdir" aria-label="New folder" data-tip="New folder" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 10v6"/><path d="M9 13h6"/><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg></button>
-        <button class="ibtn ins" data-act="home" aria-label="Home folder" data-tip="Login folder" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"/><path d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></button>
+        <button class="ibtn ins lab" data-act="home" aria-label="Home folder" data-tip="HOME: back to the folder this server opens on (your login folder)" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"/><path d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><span>HOME</span></button>
       </div>
       <input class="p-filter" placeholder="Filter…" spellcheck="false" disabled>
     </div>
@@ -581,33 +868,51 @@ body.win #wincontrols,body.linux #wincontrols{display:flex;}
   </div>
 </div>
 
+<!-- ── LIVE SYNC view: in place of the quick bar and the panels while a
+     session is connected (app.js, renderLive) ─────────────────────────── -->
+<div id="live" class="card">
+  <div class="lv-head">
+    <div class="lv-tabs" id="lv-tabs"></div>
+    <span class="sp"></span>
+    <button class="ibtn ins lv-ib" id="lv-settings" aria-label="Session settings" data-tip="Settings of this session"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7h-9"/><path d="M14 17H5"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/></svg></button>
+  </div>
+  <div class="lv-ask" id="lv-ask"></div>
+  <div class="lv-body">
+    <div class="lv-card" id="lv-local"></div>
+    <div class="lv-mid" id="lv-mid"><div id="lv-modeb"></div></div>
+    <div class="lv-card" id="lv-remote"></div>
+  </div>
+</div>
+
 <div class="split-h" id="split-queue" data-tip="Drag to resize"></div>
 
 <!-- ── Queue ────────────────────────────────────────────────────────── -->
 <div id="queue" class="card">
   <div class="q-head">
-    <div class="q-ring">
-      <svg viewBox="0 0 58 58"><circle cx="29" cy="29" r="24" fill="none" stroke-width="6" class="trk"/>
-        <circle cx="29" cy="29" r="24" fill="none" stroke-width="6" class="fill" id="q-ring" stroke-dasharray="150.8" stroke-dashoffset="150.8" transform="rotate(-90 29 29)"/></svg>
-      <div class="pct" id="q-pct">–</div>
-    </div>
-    <div class="q-titles">
-      <svg class="q-spark" id="q-spark" viewBox="0 0 100 28" preserveAspectRatio="none" aria-hidden="true"><path class="spark-area" d=""></path><path class="spark-line" d=""></path></svg>
-      <div class="q-title" id="q-title">QUEUE</div>
-      <div class="q-now" id="q-now"></div>
-    </div>
-    <div class="q-btns">
-      <button class="q-conn" id="q-conn"><span class="lbl">Connections</span><span class="v" id="q-conn-v">Auto</span><span class="car">▾</span></button>
-      <label class="q-check" id="q-check" data-tip="">
-        <span class="lbl">Checksum</span>
-        <span class="switch"><input type="checkbox" id="q-verify"><span class="slider"></span></span>
-      </label>
+    <!-- Noar, 12/10/2026: START, STOP and CLEAR (a broom); the percentage
+         sits at the end of the progress bar. -->
+    <div class="q-run">
       <button class="btn sq go" id="q-start" aria-label="Start"></button>
       <button class="btn sq stop" id="q-stop" aria-label="Stop everything" data-tip="Stop everything: every file still to do stops and goes to Failed. Partial files are kept, so Retry resumes them.">
         <svg viewBox="0 0 24 24" fill="currentColor"><rect x="5.5" y="5.5" width="13" height="13" rx="2"/></svg>
       </button>
+      <button class="btn sq" id="q-clear" aria-label="Clear" data-tip="Clear this list"></button>
+    </div>
+    <div class="q-titles">
+      <svg class="q-spark" id="q-spark" viewBox="0 0 100 28" preserveAspectRatio="none" aria-hidden="true"><path class="spark-area" d=""></path><path class="spark-line" d=""></path></svg>
+      <div class="q-title" id="q-title">QUEUE</div>
+      <div class="q-times" id="q-times"></div>
+    </div>
+    <div class="q-btns">
+      <button class="q-conn" id="q-conn"><span class="lbl">Connections</span><span class="v" id="q-conn-v">AUTO</span><span class="car">▾</span></button>
+      <label class="q-check" id="q-check" data-tip="">
+        <span class="lbl">Checksum</span>
+        <span class="switch"><input type="checkbox" id="q-verify"><span class="slider"></span></span>
+      </label>
     </div>
   </div>
+  <!-- The whole queue's progress, a thin bar (Noar, 12/10/2026). -->
+  <div class="q-progrow"><div class="q-prog" id="q-prog-box"><i id="q-prog"></i></div></div>
   <div id="q-blocked"></div>
   <div class="q-tabs" id="q-tabs">
     <button data-tab="queue" class="on">Queue <span class="n" id="n-queue">0</span></button>
@@ -617,9 +922,9 @@ body.win #wincontrols,body.linux #wincontrols{display:flex;}
     <span class="sp"></span>
     <span class="q-stats" id="q-stats"></span>
     <button id="q-retry" style="display:none">Retry all</button>
-    <button id="q-clear">Clear</button>
   </div>
   <div class="q-list" id="q-list" tabindex="0"><div class="p-spacer" id="q-spacer"></div><div id="q-log" style="display:none"></div></div>
+  <div id="st-panel"><div class="st-head"><div class="q-title">SYNCTHING QUEUE</div><span class="st-stats" id="st-stats"></span></div><div class="q-list st-list" id="st-list"></div></div>
 </div>
 
 <div id="footer"><span id="ver">v</span>·<a id="lnk-gh">github</a><span id="upd" class="upd"></span></div>
@@ -653,6 +958,31 @@ body.win #wincontrols,body.linux #wincontrols{display:flex;}
   </div>
 </div>
 
+<!-- ══ LIVE SYNC ═══════════════════════════════════════════════════════ -->
+<div class="ov" id="ov-sync">
+  <div class="mcard">
+    <div class="sm-left">
+      <div class="hd"><div class="m-h1">LIVE SYNC</div>
+        <button class="ibtn ins" id="sy-new" aria-label="New session" data-tip="New session"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg></button>
+      </div>
+      <div class="sm-list" id="sy-list"></div>
+      <div class="ft"><button class="ibtn ins lab" id="sy-import" data-tip="IMPORT SESSION: the config file a MASTER saved for this computer, or its SYNCTHING ID, or another team's S-FTP session (.filosync)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m8 11 4 4 4-4"/><path d="M8 5H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-4"/></svg><span>IMPORT SESSION</span></button>
+        <button class="ibtn ins lab" id="sy-me" data-tip="THIS COMPUTER: its SYNCTHING ID, and the remote computers it accepted"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="14" x="2" y="3" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/></svg><span>THIS COMPUTER</span></button></div>
+    </div>
+    <div class="sm-right">
+      <div class="sm-form" id="sy-form"></div>
+      <div class="m-btns">
+        <button class="ibtn ins sy-del" id="sy-delete" aria-label="Delete" data-tip="Delete this session (no file is touched)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg></button>
+        <button class="ibtn ins" id="sy-share" aria-label="Share" data-tip="SHARE. SYNCTHING: what to send to the remote computer. S-FTP: give this session to another team"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.59 13.51 6.83 3.98"/><path d="m15.41 6.51-6.82 3.98"/></svg></button>
+        <span class="sp"></span>
+        <button class="btn sm" id="sy-close">CANCEL</button>
+        <button class="btn sm" id="sy-save">SAVE</button>
+        <button class="btn sm go" id="sy-run">SAVE &amp; CONNECT</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- ══ Settings ═════════════════════════════════════════════════════════ -->
 <div class="ov" id="ov-settings">
   <div class="mcard">
@@ -660,9 +990,9 @@ body.win #wincontrols,body.linux #wincontrols{display:flex;}
     <div class="body">
       <div class="set-section">
         <div class="set-sec-title">Transfers</div>
-        <div class="set-row"><label>Parallel transfers</label>
+        <div class="set-row"><label>Connections</label>
           <select id="st-conc" class="sm">
-            <option value="auto">Auto (measured)</option>
+            <option value="auto">AUTO (measured)</option>
             <option>1</option><option>2</option><option>3</option><option>4</option><option>5</option>
             <option>6</option><option>7</option><option>8</option><option>9</option><option>10</option>
           </select>
@@ -716,6 +1046,16 @@ body.win #wincontrols,body.linux #wincontrols{display:flex;}
             <figure class="ntfy-qr"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 37 37" shape-rendering="crispEdges"><rect width="37" height="37" fill="#ffffff"/><path fill="#0c0c0e" d="M2 2h1v1h-1zM3 2h1v1h-1zM4 2h1v1h-1zM5 2h1v1h-1zM6 2h1v1h-1zM7 2h1v1h-1zM8 2h1v1h-1zM10 2h1v1h-1zM11 2h1v1h-1zM15 2h1v1h-1zM19 2h1v1h-1zM20 2h1v1h-1zM21 2h1v1h-1zM22 2h1v1h-1zM23 2h1v1h-1zM25 2h1v1h-1zM28 2h1v1h-1zM29 2h1v1h-1zM30 2h1v1h-1zM31 2h1v1h-1zM32 2h1v1h-1zM33 2h1v1h-1zM34 2h1v1h-1zM2 3h1v1h-1zM8 3h1v1h-1zM10 3h1v1h-1zM14 3h1v1h-1zM15 3h1v1h-1zM20 3h1v1h-1zM23 3h1v1h-1zM25 3h1v1h-1zM28 3h1v1h-1zM34 3h1v1h-1zM2 4h1v1h-1zM4 4h1v1h-1zM5 4h1v1h-1zM6 4h1v1h-1zM8 4h1v1h-1zM11 4h1v1h-1zM13 4h1v1h-1zM18 4h1v1h-1zM19 4h1v1h-1zM22 4h1v1h-1zM25 4h1v1h-1zM26 4h1v1h-1zM28 4h1v1h-1zM30 4h1v1h-1zM31 4h1v1h-1zM32 4h1v1h-1zM34 4h1v1h-1zM2 5h1v1h-1zM4 5h1v1h-1zM5 5h1v1h-1zM6 5h1v1h-1zM8 5h1v1h-1zM10 5h1v1h-1zM14 5h1v1h-1zM16 5h1v1h-1zM17 5h1v1h-1zM18 5h1v1h-1zM21 5h1v1h-1zM22 5h1v1h-1zM25 5h1v1h-1zM28 5h1v1h-1zM30 5h1v1h-1zM31 5h1v1h-1zM32 5h1v1h-1zM34 5h1v1h-1zM2 6h1v1h-1zM4 6h1v1h-1zM5 6h1v1h-1zM6 6h1v1h-1zM8 6h1v1h-1zM11 6h1v1h-1zM12 6h1v1h-1zM15 6h1v1h-1zM16 6h1v1h-1zM22 6h1v1h-1zM24 6h1v1h-1zM28 6h1v1h-1zM30 6h1v1h-1zM31 6h1v1h-1zM32 6h1v1h-1zM34 6h1v1h-1zM2 7h1v1h-1zM8 7h1v1h-1zM11 7h1v1h-1zM14 7h1v1h-1zM16 7h1v1h-1zM20 7h1v1h-1zM21 7h1v1h-1zM22 7h1v1h-1zM24 7h1v1h-1zM28 7h1v1h-1zM34 7h1v1h-1zM2 8h1v1h-1zM3 8h1v1h-1zM4 8h1v1h-1zM5 8h1v1h-1zM6 8h1v1h-1zM7 8h1v1h-1zM8 8h1v1h-1zM10 8h1v1h-1zM12 8h1v1h-1zM14 8h1v1h-1zM16 8h1v1h-1zM18 8h1v1h-1zM20 8h1v1h-1zM22 8h1v1h-1zM24 8h1v1h-1zM26 8h1v1h-1zM28 8h1v1h-1zM29 8h1v1h-1zM30 8h1v1h-1zM31 8h1v1h-1zM32 8h1v1h-1zM33 8h1v1h-1zM34 8h1v1h-1zM10 9h1v1h-1zM11 9h1v1h-1zM12 9h1v1h-1zM13 9h1v1h-1zM14 9h1v1h-1zM19 9h1v1h-1zM20 9h1v1h-1zM22 9h1v1h-1zM24 9h1v1h-1zM26 9h1v1h-1zM2 10h1v1h-1zM4 10h1v1h-1zM5 10h1v1h-1zM7 10h1v1h-1zM8 10h1v1h-1zM9 10h1v1h-1zM14 10h1v1h-1zM16 10h1v1h-1zM19 10h1v1h-1zM21 10h1v1h-1zM23 10h1v1h-1zM28 10h1v1h-1zM31 10h1v1h-1zM33 10h1v1h-1zM34 10h1v1h-1zM2 11h1v1h-1zM3 11h1v1h-1zM4 11h1v1h-1zM6 11h1v1h-1zM7 11h1v1h-1zM9 11h1v1h-1zM11 11h1v1h-1zM12 11h1v1h-1zM13 11h1v1h-1zM14 11h1v1h-1zM18 11h1v1h-1zM20 11h1v1h-1zM21 11h1v1h-1zM22 11h1v1h-1zM23 11h1v1h-1zM24 11h1v1h-1zM25 11h1v1h-1zM26 11h1v1h-1zM28 11h1v1h-1zM29 11h1v1h-1zM31 11h1v1h-1zM32 11h1v1h-1zM33 11h1v1h-1zM34 11h1v1h-1zM3 12h1v1h-1zM4 12h1v1h-1zM7 12h1v1h-1zM8 12h1v1h-1zM9 12h1v1h-1zM10 12h1v1h-1zM11 12h1v1h-1zM14 12h1v1h-1zM16 12h1v1h-1zM19 12h1v1h-1zM24 12h1v1h-1zM25 12h1v1h-1zM26 12h1v1h-1zM27 12h1v1h-1zM28 12h1v1h-1zM29 12h1v1h-1zM30 12h1v1h-1zM31 12h1v1h-1zM33 12h1v1h-1zM34 12h1v1h-1zM5 13h1v1h-1zM6 13h1v1h-1zM9 13h1v1h-1zM11 13h1v1h-1zM15 13h1v1h-1zM16 13h1v1h-1zM18 13h1v1h-1zM20 13h1v1h-1zM24 13h1v1h-1zM25 13h1v1h-1zM27 13h1v1h-1zM28 13h1v1h-1zM29 13h1v1h-1zM31 13h1v1h-1zM33 13h1v1h-1zM34 13h1v1h-1zM2 14h1v1h-1zM3 14h1v1h-1zM6 14h1v1h-1zM8 14h1v1h-1zM10 14h1v1h-1zM12 14h1v1h-1zM14 14h1v1h-1zM17 14h1v1h-1zM20 14h1v1h-1zM30 14h1v1h-1zM31 14h1v1h-1zM33 14h1v1h-1zM3 15h1v1h-1zM4 15h1v1h-1zM9 15h1v1h-1zM11 15h1v1h-1zM13 15h1v1h-1zM18 15h1v1h-1zM20 15h1v1h-1zM24 15h1v1h-1zM27 15h1v1h-1zM31 15h1v1h-1zM32 15h1v1h-1zM33 15h1v1h-1zM3 16h1v1h-1zM4 16h1v1h-1zM8 16h1v1h-1zM9 16h1v1h-1zM10 16h1v1h-1zM12 16h1v1h-1zM13 16h1v1h-1zM16 16h1v1h-1zM17 16h1v1h-1zM18 16h1v1h-1zM19 16h1v1h-1zM20 16h1v1h-1zM24 16h1v1h-1zM26 16h1v1h-1zM28 16h1v1h-1zM29 16h1v1h-1zM30 16h1v1h-1zM31 16h1v1h-1zM4 17h1v1h-1zM5 17h1v1h-1zM11 17h1v1h-1zM13 17h1v1h-1zM15 17h1v1h-1zM18 17h1v1h-1zM21 17h1v1h-1zM22 17h1v1h-1zM23 17h1v1h-1zM26 17h1v1h-1zM27 17h1v1h-1zM28 17h1v1h-1zM29 17h1v1h-1zM32 17h1v1h-1zM3 18h1v1h-1zM5 18h1v1h-1zM6 18h1v1h-1zM8 18h1v1h-1zM9 18h1v1h-1zM10 18h1v1h-1zM11 18h1v1h-1zM12 18h1v1h-1zM13 18h1v1h-1zM14 18h1v1h-1zM16 18h1v1h-1zM17 18h1v1h-1zM18 18h1v1h-1zM20 18h1v1h-1zM21 18h1v1h-1zM22 18h1v1h-1zM23 18h1v1h-1zM24 18h1v1h-1zM26 18h1v1h-1zM27 18h1v1h-1zM28 18h1v1h-1zM30 18h1v1h-1zM31 18h1v1h-1zM32 18h1v1h-1zM2 19h1v1h-1zM3 19h1v1h-1zM4 19h1v1h-1zM6 19h1v1h-1zM10 19h1v1h-1zM12 19h1v1h-1zM14 19h1v1h-1zM16 19h1v1h-1zM17 19h1v1h-1zM19 19h1v1h-1zM20 19h1v1h-1zM22 19h1v1h-1zM25 19h1v1h-1zM26 19h1v1h-1zM27 19h1v1h-1zM28 19h1v1h-1zM30 19h1v1h-1zM31 19h1v1h-1zM33 19h1v1h-1zM34 19h1v1h-1zM2 20h1v1h-1zM3 20h1v1h-1zM4 20h1v1h-1zM7 20h1v1h-1zM8 20h1v1h-1zM10 20h1v1h-1zM13 20h1v1h-1zM14 20h1v1h-1zM16 20h1v1h-1zM17 20h1v1h-1zM18 20h1v1h-1zM19 20h1v1h-1zM24 20h1v1h-1zM26 20h1v1h-1zM29 20h1v1h-1zM30 20h1v1h-1zM32 20h1v1h-1zM33 20h1v1h-1zM2 21h1v1h-1zM5 21h1v1h-1zM7 21h1v1h-1zM12 21h1v1h-1zM13 21h1v1h-1zM14 21h1v1h-1zM16 21h1v1h-1zM21 21h1v1h-1zM24 21h1v1h-1zM25 21h1v1h-1zM30 21h1v1h-1zM34 21h1v1h-1zM2 22h1v1h-1zM7 22h1v1h-1zM8 22h1v1h-1zM9 22h1v1h-1zM10 22h1v1h-1zM11 22h1v1h-1zM13 22h1v1h-1zM14 22h1v1h-1zM20 22h1v1h-1zM22 22h1v1h-1zM24 22h1v1h-1zM26 22h1v1h-1zM27 22h1v1h-1zM29 22h1v1h-1zM31 22h1v1h-1zM32 22h1v1h-1zM2 23h1v1h-1zM3 23h1v1h-1zM7 23h1v1h-1zM9 23h1v1h-1zM11 23h1v1h-1zM12 23h1v1h-1zM13 23h1v1h-1zM17 23h1v1h-1zM20 23h1v1h-1zM23 23h1v1h-1zM25 23h1v1h-1zM26 23h1v1h-1zM27 23h1v1h-1zM28 23h1v1h-1zM29 23h1v1h-1zM31 23h1v1h-1zM34 23h1v1h-1zM4 24h1v1h-1zM6 24h1v1h-1zM7 24h1v1h-1zM8 24h1v1h-1zM12 24h1v1h-1zM13 24h1v1h-1zM14 24h1v1h-1zM18 24h1v1h-1zM19 24h1v1h-1zM20 24h1v1h-1zM25 24h1v1h-1zM26 24h1v1h-1zM28 24h1v1h-1zM32 24h1v1h-1zM33 24h1v1h-1zM34 24h1v1h-1zM3 25h1v1h-1zM4 25h1v1h-1zM6 25h1v1h-1zM7 25h1v1h-1zM9 25h1v1h-1zM10 25h1v1h-1zM13 25h1v1h-1zM14 25h1v1h-1zM15 25h1v1h-1zM18 25h1v1h-1zM20 25h1v1h-1zM21 25h1v1h-1zM24 25h1v1h-1zM25 25h1v1h-1zM29 25h1v1h-1zM30 25h1v1h-1zM31 25h1v1h-1zM34 25h1v1h-1zM2 26h1v1h-1zM4 26h1v1h-1zM6 26h1v1h-1zM8 26h1v1h-1zM10 26h1v1h-1zM11 26h1v1h-1zM17 26h1v1h-1zM19 26h1v1h-1zM24 26h1v1h-1zM26 26h1v1h-1zM27 26h1v1h-1zM28 26h1v1h-1zM29 26h1v1h-1zM30 26h1v1h-1zM33 26h1v1h-1zM34 26h1v1h-1zM10 27h1v1h-1zM11 27h1v1h-1zM14 27h1v1h-1zM17 27h1v1h-1zM18 27h1v1h-1zM19 27h1v1h-1zM20 27h1v1h-1zM21 27h1v1h-1zM22 27h1v1h-1zM26 27h1v1h-1zM30 27h1v1h-1zM31 27h1v1h-1zM33 27h1v1h-1zM2 28h1v1h-1zM3 28h1v1h-1zM4 28h1v1h-1zM5 28h1v1h-1zM6 28h1v1h-1zM7 28h1v1h-1zM8 28h1v1h-1zM10 28h1v1h-1zM11 28h1v1h-1zM13 28h1v1h-1zM16 28h1v1h-1zM21 28h1v1h-1zM22 28h1v1h-1zM24 28h1v1h-1zM25 28h1v1h-1zM26 28h1v1h-1zM28 28h1v1h-1zM30 28h1v1h-1zM2 29h1v1h-1zM8 29h1v1h-1zM10 29h1v1h-1zM12 29h1v1h-1zM13 29h1v1h-1zM14 29h1v1h-1zM16 29h1v1h-1zM18 29h1v1h-1zM22 29h1v1h-1zM23 29h1v1h-1zM25 29h1v1h-1zM26 29h1v1h-1zM30 29h1v1h-1zM31 29h1v1h-1zM32 29h1v1h-1zM34 29h1v1h-1zM2 30h1v1h-1zM4 30h1v1h-1zM5 30h1v1h-1zM6 30h1v1h-1zM8 30h1v1h-1zM11 30h1v1h-1zM13 30h1v1h-1zM14 30h1v1h-1zM17 30h1v1h-1zM19 30h1v1h-1zM22 30h1v1h-1zM25 30h1v1h-1zM26 30h1v1h-1zM27 30h1v1h-1zM28 30h1v1h-1zM29 30h1v1h-1zM30 30h1v1h-1zM32 30h1v1h-1zM33 30h1v1h-1zM2 31h1v1h-1zM4 31h1v1h-1zM5 31h1v1h-1zM6 31h1v1h-1zM8 31h1v1h-1zM10 31h1v1h-1zM12 31h1v1h-1zM14 31h1v1h-1zM15 31h1v1h-1zM20 31h1v1h-1zM21 31h1v1h-1zM22 31h1v1h-1zM23 31h1v1h-1zM24 31h1v1h-1zM29 31h1v1h-1zM32 31h1v1h-1zM33 31h1v1h-1zM34 31h1v1h-1zM2 32h1v1h-1zM4 32h1v1h-1zM5 32h1v1h-1zM6 32h1v1h-1zM8 32h1v1h-1zM10 32h1v1h-1zM12 32h1v1h-1zM13 32h1v1h-1zM14 32h1v1h-1zM16 32h1v1h-1zM19 32h1v1h-1zM20 32h1v1h-1zM21 32h1v1h-1zM23 32h1v1h-1zM24 32h1v1h-1zM26 32h1v1h-1zM27 32h1v1h-1zM28 32h1v1h-1zM29 32h1v1h-1zM31 32h1v1h-1zM32 32h1v1h-1zM2 33h1v1h-1zM8 33h1v1h-1zM12 33h1v1h-1zM13 33h1v1h-1zM14 33h1v1h-1zM15 33h1v1h-1zM17 33h1v1h-1zM18 33h1v1h-1zM19 33h1v1h-1zM20 33h1v1h-1zM21 33h1v1h-1zM26 33h1v1h-1zM27 33h1v1h-1zM28 33h1v1h-1zM29 33h1v1h-1zM30 33h1v1h-1zM34 33h1v1h-1zM2 34h1v1h-1zM3 34h1v1h-1zM4 34h1v1h-1zM5 34h1v1h-1zM6 34h1v1h-1zM7 34h1v1h-1zM8 34h1v1h-1zM10 34h1v1h-1zM12 34h1v1h-1zM13 34h1v1h-1zM14 34h1v1h-1zM17 34h1v1h-1zM18 34h1v1h-1zM19 34h1v1h-1zM23 34h1v1h-1zM30 34h1v1h-1zM32 34h1v1h-1z"/></svg><figcaption>iPhone<span>App Store</span></figcaption></figure>
           </div>
         </div>
+      </div>
+      <div class="set-section">
+        <div class="set-sec-title">Post command <span class="set-sec-note">(filo started by a script or another program)</span></div>
+        <div class="set-row"><label>Command</label>
+          <code class="cli-cmd" id="st-cli-cmd"></code>
+          <button class="btn sm" id="st-cli-copy">COPY</button>
+          <button class="ibtn cli-i" id="st-cli-help" aria-label="The commands" data-tip="The commands">i</button></div>
+        <div class="set-row" id="row-cli-install"><label>“filo” command in the Terminal</label>
+          <button class="btn sm" id="st-cli-install">INSTALL</button>
+          <span class="set-desc" id="st-cli-state"></span></div>
       </div>
       <div class="set-section">
         <div class="set-sec-title">Known servers <span class="set-sec-note" id="st-known-n"></span></div>

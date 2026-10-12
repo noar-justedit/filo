@@ -4,6 +4,384 @@ All notable changes to filo are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/lang/fr/).
 
+## [0.6.3] — 2026-10-12
+
+### Added
+
+- **Synchronized browsing shows what differs between the two sides**
+  (FileZilla's two codes, Noar): the name of an item only on this side is
+  highlighted in yellow, of a file newer on this side (or another size at the
+  same date) in green; the row itself is not coloured. Under each panel, the
+  count ("2 only here · 1 newer here"). A filter button beside the path
+  (shown while synchronized browsing is on) keeps only what differs. Only the
+  two folders shown are compared, not what their sub-folders hold; dates
+  within 2 s, or within the same minute for a server that lists minutes
+  only, count as the same.
+
+## [0.6.2] — 2026-10-12
+
+Code review (security, bugs, interface) before the first GitHub release.
+
+### Added
+
+- **DUAL SYNC is a sync between three places** (Noar: "une synchro 3 ways"):
+  what is put on the S-FTP BACKUP by hand (a file, a folder) comes to the
+  MASTER, and SYNCTHING takes it to the SLAVE; a file changed only on the
+  server comes too. Changed on both sides: the MASTER's version wins, the
+  server's is kept beside it. Deleted on the MASTER: deleted on the server.
+  Deleted only on the server: sent again. A MASTER that only sends
+  (LOCAL → REMOTE) brings nothing back.
+- Colours of the modes everywhere: the LIVE SYNC ring, the queue (title,
+  progress bar, graph, SPEED badge, glow) and the SYNCTHING queue take the
+  colour of what they move: FTP client green, SYNCTHING blue, S-FTP violet,
+  DUAL SYNC blue to violet. Checking files no longer turns the queue blue.
+- **Logo and icon in turquoise** (#19C9B4), instead of FileZilla's red.
+
+### Security
+
+- **The S-FTP BACKUP never deletes what this session does not know**: only a
+  path filo saw on this computer is deleted when it goes from here; what was
+  put on the server by hand is brought here, never deleted, so a backup
+  folder set by mistake on a shared folder is never emptied. The root of the
+  server is refused as a backup folder.
+- A local entry that cannot be read (a NAS hiccup) stops the backup pass
+  instead of looking deleted; nothing is deleted under a folder reached
+  twice through a link.
+- Names from a server can never leave the synced folder: LIVE SYNC builds
+  local paths with the same safe join as the file panels, and FTP listings
+  drop names containing `\`. A relayed file's part name must be a bare name.
+- A SLAVE takes the MASTER's direction and file filter only through
+  SYNCTHING's own link, no longer from the `.filo-session` file on the server
+  (anyone who can write there could have written it); only the name is taken
+  from there.
+- At start, filo checks that the port left by the previous Syncthing is a
+  Syncthing before sending it its key.
+
+### Fixed
+
+- The S-FTP BACKUP now takes over when the other computer goes away while the
+  folder is quiet (SYNCTHING sends no second status: filo looks again after
+  15 s).
+- DUAL SYNC: a file changed on both sides into the same file (SYNCTHING on
+  one side, the backup on the other) no longer makes a conflict copy on the
+  SLAVE; a file the S-FTP relay brought is not sent back up.
+- Backup copies held while SYNCTHING works: marked, so a copy paused by hand
+  is never resumed by filo, and a hold made before quitting is released
+  after the restart. Switching the S-FTP BACKUP off, or deleting the session,
+  stops its copies. A pass that finds SYNCTHING busy again holds its copies.
+- A deletion on the backup first removes the copies still queued under that
+  path. The status leaves "copying to the backup" when the copies are done
+  (or says how many failed). Faster passes on large folders.
+- Segment relay: the receiving filo no longer fails, now and then, when the
+  sender gives the file its name while a segment is being read.
+
+### Changed
+
+- One name per thing: S-FTP BACKUP everywhere (no more "Failsafe"),
+  "MODE ▾ → …" in every hint, AUTO in capitals, "Connections" in the
+  settings too, "LIVE SYNC “name”:" in the journal, "New session" as the
+  default name.
+- Colours from the palette only (no stray values), errors in red, buttons
+  and session tabs at the same heights and corners, hover states and labels
+  for screen readers on icon buttons. Unused styles and code removed.
+
+## [0.6.1] — 2026-10-12
+
+### Changed
+
+- Ring: IDLE gives way to **UP TO DATE** (both computers in step, or an S-FTP
+  session with nothing left to copy) and **ALL UP TO DATE** (DUAL SYNC: both
+  computers and the S-FTP BACKUP in step). The backup stops counting as up to
+  date as soon as SYNCTHING moves files again.
+- Speed graphs (ring and queue) move smoothly: they slide continuously, the
+  scale grows and shrinks gently, and SYNCTHING's rate (a new value every
+  2 s) is eased instead of drawn as steps.
+- Connection bar: **MODE** (CLIENT / LIVE SYNC) at its left switches between
+  the FTP client and the LIVE SYNC view, and stays at the same place in both;
+  its ▾ opens the LIVE SYNC menu (the LIVE SYNC button of the title bar is
+  gone). The connect button moved to the right of PASSWORD, under
+  "CONNECT".
+- Queue header: START, STOP and CLEAR (a broom; in the LOG tab it copies the
+  log) on the left; the whole queue's percentage, big, under the title; a
+  thin progress bar across the queue; the small ring, the speed figures over
+  the graph and the dot before the title are gone. Badges: SPEED, PEAK (the
+  fastest of the last minute), TIME LEFT, LEFT. Time elapsed in white.
+- "AUTO" in capitals; CHECKSUM green when on, grey when off (no longer
+  orange).
+
+## [0.6.0] — 2026-10-12
+
+### Added
+
+- **DUAL SYNC** (replaces SYNCTHING FAILSAFE): SYNCTHING first, the fastest
+  way. Once both computers are up to date and nothing moved for 30 s, the
+  MASTER makes the server folder an exact copy of its own folder
+  (**S-FTP BACKUP**): what is missing or changed is sent, what is no longer on
+  the MASTER is deleted on the server (each computer keeps its deleted files
+  in its own trash, `.filo-trash`). The SLAVE never writes the backup. When
+  SYNCTHING has files to move again, the backup copies pause, then carry on.
+  While the other computer cannot be reached, the files go through the server
+  as before. A local folder that reads empty while the server holds files
+  (a disk not mounted) deletes nothing.
+- **SYNCTHING queue** in the queue panel: the files moving with their
+  progress, the ones waiting, the last ones sent or received.
+- **LIVE SYNC menu** on the LIVE SYNC button: New session, Import session as
+  SLAVE, Connect / Disconnect (one line per session), Sessions….
+- **File filter as chips**, each with ×, and a field to add one: `aep` or
+  `.aep` becomes `*.aep`.
+
+### Changed
+
+- Ring: EST. TIME as MM:SS or H:MM:SS, without "~"; the ring fades when IDLE;
+  "S-FTP BACKUP" while the backup is written.
+- Session window: delete icon on each session (the bottom DELETE button is
+  gone), 2 WAYS by default, "Import a config" renamed "Import session", a
+  MASTER MODE / SLAVE MODE badge, shorter descriptions, REMOTE COMPUTER shows
+  its name and ID with COPY.
+- LIVE SYNC view: the role badge sits beside the computer's name; the SLAVE
+  badge is green when connected, red with an icon when not; LINK says local
+  network, internet or relay; ROLE is replaced by the sync way (SEND,
+  RECEIVE, 2 WAYS).
+- Default file filter shortened to `.DS_Store, ._*, Thumbs.db, *.tmp`. filo's
+  own working files (`*.filopart`, `*.filoold`, `.*.filoparts`) are no
+  longer shown and are always excluded. Filter entries may be separated by
+  commas, semicolons, `|` or new lines.
+
+### Removed
+
+- The button of the LIVE SYNC view that switched to the file panels (the
+  queue panel shows what moves). The LIVE SYNC menu still offers the switch.
+
+## [0.5.0] — 2026-10-12
+
+### Added
+
+- **LIVE SYNC sessions of three kinds**, with one name and one colour each,
+  everywhere in filo:
+  - **SYNCTHING** (blue): straight between two computers running filo, peer
+    to peer (Syncthing, shipped with filo), through the internet boxes or a
+    relay when no direct path exists, encrypted end to end. No server.
+  - **SYNCTHING FAILSAFE** (blue and violet): SYNCTHING while the remote
+    computer can be reached; when it cannot, each filo syncs with a folder on
+    a server and catches up from it. A file already identical on both sides
+    is neither copied again nor seen as a conflict.
+  - **S-FTP** (violet): a folder on an FTP, FTPS or SFTP server (as before).
+- **MASTER / SLAVE**: the computer that creates a session is its MASTER, the
+  one that imports it its SLAVE. The MASTER's version wins a file changed on
+  both computers; the other version is kept beside it, named after its
+  computer (`name.sync-conflict-<date>-from-<computer>.ext`), on the server
+  too in FAILSAFE. The SLAVE takes the MASTER's direction (the other way
+  round), session name and file filter, and follows their changes.
+- **One way to set a session up: the MASTER sends, the SLAVE imports.** The
+  MASTER saves a config file (SAVE CONFIG FILE…) or, for a SYNCTHING
+  session, gives its SYNCTHING ID (shown in the LIVE SYNC view). The SLAVE
+  opens LIVE SYNC → IMPORT A CONFIG: OPEN THE CONFIG FILE…, PASTE A
+  SYNCTHING ID… (typos caught by the ID's check characters), or, FAILSAFE,
+  FIND ON A SERVER… (the MASTER leaves `.filo-session` in the S-FTP folder,
+  never a password). The MASTER then accepts the SLAVE, and chooses the
+  session to share with it when it came by ID. The server password is typed
+  by the SLAVE.
+- **Trash** (SYNCTHING): a file deleted on one computer is deleted on the
+  other too, but into that computer's trash, `.filo-trash` inside the synced
+  folder: same disk (a 50 GB file is moved, not copied), never synced, never
+  emptied by filo. Its size and an icon to open it in the LIVE SYNC view.
+  S-FTP still deletes nothing.
+- **The LIVE SYNC view**: while a session is connected, the main window shows
+  it in place of the panels. At the top, LIVE SYNC and the session's name.
+  On the left, this computer (MASTER or SLAVE, name, system, IP, SYNCTHING
+  ID with copy and export, trash, folder). On the right, the remote computer
+  and, FAILSAFE, the server, each with CONNECTED or DISCONNECTED (NOT LINKED
+  YET, orange, until a SLAVE joins). In the centre, the session's mode badge
+  (its kind, in its colour, and its state: plugged green, plugged orange when
+  it cannot work, unplugged red; one click connects, disconnecting asks
+  first), and a ring that fills the frame (Presto's): state, percentage,
+  bytes, speed, files left, estimated time, the speed graph inside the ring,
+  and arrows on its sides showing which way files are moving.
+- **THIS COMPUTER**: its SYNCTHING ID, its port, the remote computers
+  accepted.
+- **`THIRD_PARTY_NOTICES.md`**: every component inside a filo build (the
+  184 Rust crates of the transfer engine, the JavaScript packages, Syncthing,
+  the icons and the font), its licence and its licence text, placed next to
+  the application in every build. Generated by `scripts/third-party-notices.js`.
+
+### Changed
+
+- **LIVE SYNC window**: CREATE A SESSION or IMPORT A CONFIG to start; the
+  three kinds in syncto's style; one form per kind (session name, bookmark,
+  direction, local folder, S-FTP folder with a server browser, AUTO WATCH
+  with its interval or Custom…, FILE FILTER) and CANCEL, SAVE, SAVE &
+  CONNECT. Directions in this order: 2 WAYS, LOCAL → REMOTE (or S-FTP),
+  REMOTE (or S-FTP) → LOCAL. "Exclude" is now FILE FILTER, "Server folder"
+  S-FTP FOLDER; USE PANEL is gone. Icons rather than text buttons, each with
+  a tooltip. On a SLAVE, what the MASTER decides is greyed, and SHARE is not
+  offered.
+- **LIVE SYNC is blue**: the button breathes blue while a session is on, is
+  grey when none is, orange when a session has a problem or a computer waits
+  for your answer.
+- **One badge design** across filo (LIVE SYNC, the queue, the connection
+  bar, the settings).
+- **Sharing an S-FTP session** with another team: a config file only (no
+  more text to copy, no more mail).
+- **File filters in SYNCTHING** are case-insensitive, as for S-FTP.
+
+### Fixed
+
+- **FAILSAFE switched on, SYNCTHING switched off**: the failsafe now works
+  (it waited for Syncthing as long as the other computer was online).
+- **FAILSAFE switched off**: the server is no longer used when the remote
+  computer goes away.
+- **A file deleted in SYNCTHING** (it is in the trash) is no longer brought back
+  by the S-FTP failsafe from the server.
+- **The SLAVE's direction** when it imports from the server (it took the
+  MASTER's for a moment), and a server copy that lags no longer beats a newer
+  file on the SLAVE at the first look.
+- **One missed look at Syncthing** no longer starts the failsafe while the
+  other computer is still there.
+- **SYNCTHING**: a Syncthing that stopped and could not restart is shown as an
+  error (it stayed "connected"); no second polling loop after the LIVE SYNC
+  view opens and closes; no Syncthing left running when quitting during a
+  change; the trash is excluded before a new folder starts; two conflict
+  copies of the same second never overwrite each other.
+- **"Already there" rule**: an unknown answer skips the file instead of
+  overwriting it.
+- Files left open after a network error during a download.
+- The LIVE SYNC view no longer rebuilds itself every second (tooltips and
+  clicks were sometimes lost). A deleted session takes its settings folder
+  with it. Errors of the LIVE SYNC window are shown instead of failing
+  silently. Long deletions on a server show their progress.
+- A key passphrase or a password that could not be saved (no keychain) now
+  says so.
+
+### Security
+
+- **`.filo-session` on the server**: a SLAVE ignores a file that does not
+  carry its MASTER's SYNCTHING ID (someone with write access to the server
+  folder could otherwise change its direction or filter).
+- **Config import**: the server part is checked again by filo, never taken as
+  the window sends it.
+- **`scripts/push_github.command`**: refuses to send without `.gitignore`,
+  and always leaves out `.env`, certificates and private keys.
+
+## [0.4.0] — 2026-10-11
+
+### Changed
+
+- **Time left and time elapsed in the queue header**, under its title; time
+  left in large type (the remaining data at the speed of the last 10 seconds,
+  so it does not jump at every tick).
+- **A running file shows** transferred / total, its speed, time elapsed and
+  time left; for a file in segments, the number of transfers at once alone
+  (details in its tooltip). "N at once" and "N of M done" are gone.
+- **Auto starts a file SENT in segments on one connection**, and adds more
+  only if they make it faster. Several connections writing into the same file
+  at several places held a NAS's disks back: on a DS920+, 21.8 GB sent in
+  1'53" on one connection, 2'42" on four (FileZilla: 2'01"). Received files
+  still start on four (2'12", FileZilla 3'13").
+
+- **AUTO SYNC is now LIVE SYNC**, everywhere: the button, the window, the
+  messages, the documentation, and the command line (`filo livesync`; the
+  earlier `filo sync` still works). Nothing to redo: saved syncs, shared
+  `.filosync` files and `filo-sync:` lines keep working as they are.
+- **The connection button is an icon only**: green plug in when connected,
+  red plug apart when not. The words are in its tooltip.
+- **Times in QUEUE, FAILED and DONE**: each file shows when it was queued or
+  started, when it finished, how long it took, and its average speed once
+  done. The duration counts from the last start of the file (after a pause or
+  a retry, that last pass).
+
+### Added
+
+- **Rust transfer engine for SFTP** (`engine/`, the program `filo-engine`):
+  the bytes of each file or segment go straight between the disk and the
+  network through it, outside Node, fingerprinted on the way; it also reads
+  files back for verification. In the app, on a DS920+ with a 21.8 GB file:
+  received in 2'12" and sent in 1'53", against 3'13" and 2'01" for FileZilla
+  right after on the same file. It applies the speed limit itself, logs in with a password,
+  keyboard-interactive or a key (OpenSSH, PEM, and PuTTY .ppk handed over as
+  PEM), and must see the server identity filo already checked. filo falls back
+  to its built-in engine when the program is missing or refused.
+  `scripts/bench-engine.command` measures it against OpenSSH.
+- **The builds include the Rust engine** (`scripts/engine-build.js`, run by
+  electron-builder before packing): Rust is needed on the build machine, and
+  for Windows built on a Mac, MinGW (`brew install mingw-w64`). Without them
+  the app is built anyway, with the built-in engine, and the build says so.
+
+## [0.3.5] — 2026-10-10
+
+### Added
+
+- **Move by drag and drop inside a panel**, local or server: drop files or
+  folders onto a folder of the same list, or onto ".." to move them up one
+  level. Never over something already there, never a folder into itself;
+  between two disks, it is refused (use the other panel to copy).
+- **Right-click on QUEUE, FAILED or DONE** to clear that list straight away
+  (the same questions as CLEAR when something would be lost).
+- **AUTO SYNC** (SYNC button, title bar): pairs of a local folder and a
+  server folder, kept in step LOCAL → SERVER, SERVER → LOCAL or 2 WAYS. The
+  local folder is watched, the server looked at on an interval. A file is
+  sent only once it is stable (same size and date on two looks 10 s apart).
+  Nothing is ever deleted; a deletion on one side is respected (not sent
+  again) and reported; a file changed on both sides is a conflict, left as it
+  is and reported. Each pair keeps its own exclusions.
+- **Share a sync with another team**: a `.filosync` file or a `filo-sync:`
+  line to paste (by mail, macOS share menu). It carries the server, the
+  folders, the direction (reversed for the receiver) and the server's
+  fingerprint, never a password. The receiver chooses the local folder.
+- **Segment relay** (SFTP): when one filo sends a large file in segments, the
+  other filo following the same sync downloads each segment as soon as it is
+  announced and verified, and assembles the file once the last one is there.
+- **Command line**: `filo upload | download | sync | queue | status`, with
+  `--wait`, `--json`, `--out`, `--background`, and exit codes for scripts.
+  It drives the filo that is open (started if needed) through a local channel
+  of this user only; no password on the command line. See `docs/CLI.md`.
+- **Settings → POST COMMAND**: the command for this computer (COPY), an (i)
+  button listing the commands with examples to copy, and on a Mac an INSTALL
+  button for the `filo` command in the Terminal (also in the filo menu).
+- **scripts/bench-nas.command**: a speed test against a NAS (SFTP, FTPS, FTP,
+  SMB and OpenSSH for reference), with few questions; it finds a folder where
+  the account may write.
+
+### Changed
+
+- **The connection button shows the state**: red NOT CONNECTED (plug apart),
+  green CONNECTED (plug in). Hovering says what a click does: CONNECT or
+  DISCONNECT.
+- **A file never starts a transfer by itself**: a double-click opens its menu,
+  Enter renames it. A folder still opens with a double-click or Enter.
+  Transfers: drag to the other panel, UPLOAD / DOWNLOAD, or the menu.
+- **HOME** written next to the house icon (the folder the server opens on).
+- **The speed graph only shows during a run**; it stays, frozen, while the
+  queue is paused, and goes when the queue finishes or is stopped.
+
+### Fixed
+
+- **SFTP downloads 2 to 3 times slower than they should be on a fast local
+  network.** The read depth (requests in flight) was sized on the average
+  round trip, which is mostly the queue of requests ahead: it asked for twice
+  itself every second, up to 1024 requests, even on a LAN. It is now sized on
+  the shortest round trip: one connection went from 129-218 MB/s to 400-440
+  MB/s on the test machine (OpenSSH: 414). Read-back verification of uploads
+  goes through the same path and gains as much.
+- **SFTP: a larger receive window, and larger requests when sending.**
+  filo grants the server a receive window covering what is in flight from
+  the first request (up to 32 MB; ssh2 kept 2 MB). Uploads ask for as much
+  per request as the server announces (OpenSSH, so every Synology: ~255 KB;
+  other servers: the size they take, which also removes a second small
+  write per request that ssh2 used to cut off). Downloads stay at 32 KB per
+  request: larger ones looked faster on a short test the NAS served from
+  memory, and were up to 3 times slower on a real 20 GB file read from its
+  disks. A resumed upload starts up to 16 MB before the end of the partial
+  file (was 2 MB), since that much may be in flight.
+  Measured on a DS920+ (2.5 Gb/s), a 20 GB file, Auto: upload 2'29",
+  download 2'30" (FileZilla 3.71: 3'04" and 2'40").
+- **The SFTP connection line in the log names the cipher** (and the MAC
+  when it is a separate one).
+- **Sites that log in with an SSH key could not transfer**: browsing worked,
+  but every upload and download was refused ("wrong user name, password or
+  key"). The key reached the transfer threads in a form the SSH library does
+  not take, and the login went without it. Present since transfers moved to
+  threads; password sites were not affected.
+
 ## [0.3.4] — 2026-10-10
 
 The first public release. Noar's interface requests, then a full code review

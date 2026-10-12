@@ -11,7 +11,7 @@
 // The bucket holds half a second, so a burst stays short.
 
 class Limiter {
-  constructor() { this.rate = 0; this.tokens = 0; this.last = Date.now(); this.waiters = []; this.timer = null; }
+  constructor() { this.rate = 0; this.tokens = 0; this.last = Date.now(); this.waiters = []; this.timer = null; this.watchers = new Set(); }
 
   setRate(bytesPerSecond) {
     const r = Math.max(0, Number(bytesPerSecond) || 0);
@@ -19,7 +19,11 @@ class Limiter {
     this.rate = r;
     this.tokens = Math.min(this.tokens, r / 2);
     if (!r) this._releaseAll();
+    for (const w of this.watchers) { try { w(r); } catch (_) {} }
   }
+
+  // The Rust engine applies the limit itself: it is told when it changes.
+  watch(fn) { this.watchers.add(fn); return () => this.watchers.delete(fn); }
 
   _refill() {
     const now = Date.now();

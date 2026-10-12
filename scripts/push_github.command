@@ -103,12 +103,17 @@ echo "Version on GitHub: ${PUB_VER:-none}   ·   version here: $VER"
 # Everything but .git is emptied, then the folder is copied in. Not rsync: its
 # quick check skips a file whose size and date match, and a file edited within
 # the same second as the download (same size: "0.1.0" → "0.1.1") stayed old.
+# .gitignore keeps secrets out: without it (an unzip tool that dropped the
+# hidden files), nothing is sent.
+[ -f "$SRC/.gitignore" ] || fail "No .gitignore in this folder (hidden files lost while unzipping?): nothing sent. Unzip again with the Finder."
 find "$TMP/repo" -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
 for e in "$SRC"/* "$SRC"/.[!.]* "$SRC"/..?*; do
   [ -e "$e" ] || [ -L "$e" ] || continue
-  case "$(basename "$e")" in .git|node_modules|dist) continue ;; esac
+  case "$(basename "$e")" in .git|node_modules|dist|.claude|vendor) continue ;; esac
   cp -Rp "$e" "$TMP/repo/" || fail "Copying the folder into the clone failed."
 done
+# Secrets and signing material never leave this Mac, whatever .gitignore says.
+find "$TMP/repo" -path "$TMP/repo/.git" -prune -o -type f \( -name '.env' -o -name '.env.*' -o -name '*.p12' -o -name '*.pfx' -o -name '*.cer' -o -name '*.provisionprofile' -o -name '*.keychain-db' -o -name 'id_rsa*' -o -name 'id_ed25519*' \) -print -exec rm -f {} + | sed 's/^/  left out (secret): /'
 find "$TMP/repo" -path "$TMP/repo/.git" -prune -o -name .DS_Store -type f -exec rm -f {} +
 # Scripts stay executable on GitHub, whatever the unzip tool did to them here.
 find . -path ./.git -prune -o -type f \( -name '*.command' -o -name '*.sh' \) -exec chmod +x {} +
@@ -118,7 +123,13 @@ case "${PUSH_GITHUB_RELEASE:-}" in
   yes) released=yes ;;
   no)  released=no ;;
   *)   code="$(curl -s -o /dev/null -w '%{http_code}' "https://api.github.com/repos/$SLUG/releases/tags/v$VER")"
-       if [ "$code" = "200" ]; then released=yes; else released=no; fi ;;
+       if [ "$code" = "200" ]; then released=yes
+       elif [ "$code" = "404" ]; then released=no
+       else
+         echo "Could not check the Release v$VER on GitHub (answer: ${code:-no network}; the API allows 60 checks per hour)."
+         echo "version.json is kept back to be safe. Run this script again later, or set PUSH_GITHUB_RELEASE=yes."
+         released=no
+       fi ;;
 esac
 held=no
 if [ "$FIRST" = "yes" ]; then

@@ -146,6 +146,7 @@ SEC('existing', async () => {
   eq(existing.resolve('resume', src, smaller), 'resume', 'resume a smaller target');
   eq(existing.resolve('resume', src, older), 'skip', 'resume: same size = done');
   eq(existing.resolve('resume', src, bigger), 'overwrite', 'resume: bigger target is not a partial copy');
+  eq(existing.resolve(undefined, src, older), 'skip', 'an unknown rule never overwrites');
   const taken = new Set(['clip.mov', 'clip (1).mov']);
   eq(await existing.freeName('clip.mov', async n => taken.has(n)), 'clip (2).mov', 'free name');
   eq(await existing.freeName('README', async () => false), 'README (1)', 'no extension');
@@ -280,6 +281,13 @@ SEC('auto tuner', () => {
   t.boost(4, 0); eq(t.limit(), 3, 'segments: never above the maximum');
   t = new AutoTuner({ max: 10, start: 2, now: 0 });
   t.serverRefused(2, 0); t.boost(4, 0); eq(t.limit(), 2, 'segments: never above a server limit');
+  // A file SENT in segments: the climb starts at 1, once, and only on a fresh run.
+  t = new AutoTuner({ max: 10, start: 2, now: 0 });
+  ok(t.startLow(1, 0) && t.limit() === 1, 'segments sent: starts at 1');
+  ok(!t.startLow(1, 0) && !t.boost(4, 0), 'segments sent: decided once (no later jump to 4)');
+  t = new AutoTuner({ max: 10, start: 2, now: 0 });
+  t.results.set(2, { bps: 100, fps: 1 });
+  ok(!t.startLow(1, 0) && t.limit() === 2, 'segments sent: nothing lowered once something was measured');
 });
 
 SEC('ftp passive: always the control host', async () => {
@@ -407,6 +415,14 @@ SEC('site manager order', () => {
 });
 
 SEC('preload bridge', () => {
+  // A channel registered twice makes Electron throw at startup, and every
+  // handler after it is missing: the window then cannot even connect.
+  const mainSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'main.js'), 'utf8');
+  const handled = [...mainSrc.matchAll(/ipcMain\.handle\('([\w-]+)'/g)].map(x => x[1]);
+  eq(handled.filter((c, i) => handled.indexOf(c) !== i), [], 'no channel registered twice');
+  const preSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'preload.js'), 'utf8');
+  const keys = [...preSrc.matchAll(/^\s*(\w+)\s*:/gm)].map(x => x[1]);
+  eq(keys.filter((k, i) => keys.indexOf(k) !== i), [], 'no bridge method defined twice');
   // Every argument a method receives must reach ipcRenderer: a bridge that
   // drops one makes no noise (syncto's shutdown never worked until 0.7.3).
   const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'preload.js'), 'utf8');
@@ -430,6 +446,10 @@ let SRV = null, EP = null;
 async function server(opts) {
   const root = scratch();
   const srv = await startSftpServer(Object.assign({ root }, opts || {}));
+  // A new server may get the port of an earlier one, with another key: the
+  // old identity must not make it look like an attack (an intermittent
+  // "identity has changed" in the suite).
+  known.delete(`sftp:127.0.0.1:${srv.port}`);
   const ep = { protocol: 'sftp', host: '127.0.0.1', port: srv.port, user: srv.username, password: srv.password };
   const r = await connectTrusting(ep);
   await r.close();
@@ -521,12 +541,91 @@ SEC('queue: inline lanes', async () => {
   await srv.close();
 });
 
+SEC('read depth: grows with the round trip, not with its own queue', async () => {
+  // The depth is sized on the shortest round trip. Sized on the average (which
+  // is mostly the queue of requests ahead), it doubled itself every second up
+  // to 1024, even on a LAN, and one connection ran 2 to 3 times slower.
+  const { PipelinedReader } = require('../src/main/proto/sftp-pipe');
+  const { Writable, pipeline } = require('stream');
+  const read = async (srvOpts, size) => {
+    const { srv, ep, root } = await server(srvOpts);
+    fs.writeFileSync(path.join(root, 'd.bin'), crypto.randomBytes(size));
+    const r = await connectTrusting(ep);
+    const rd = new PipelinedReader(r, '/d.bin', {});
+    let n = 0;
+    await new Promise((res, rej) => pipeline(rd, new Writable({ write(c, e, cb) { n += c.length; cb(); } }), e => (e ? rej(e) : res())));
+    await r.close(); await srv.close();
+    return { n, depth: rd.limit };
+  };
+  const lan = await read({}, 48 * 1024 * 1024);
+  ok(lan.n === 48 * 1024 * 1024 && lan.depth <= 128, `no latency: the depth stays low (${lan.depth})`);
+  // The rule itself: what a link needs, from the shortest round trip.
+  const rd = new PipelinedReader({}, '/x', {});
+  const tune = (bytesPerSec, minRttMs) => { rd.limit = 64; rd.rtt = minRttMs; rd.rttPrev = 0; rd.rttAt = Date.now(); rd.winBytes = bytesPerSec; rd.winStart = Date.now() - 1000; rd._retune(); return rd.limit; };
+  eq(tune(240e6, 0.3), 64, 'LAN, 240 MB/s, 0.3 ms: 64 requests are plenty');
+  eq(tune(20e6, 100), 123, '100 ms at 20 MB/s: twice what the link holds (123 requests)');
+  eq(tune(100e6, 150), 128, 'never more than double at once');
+  const far = await read({ latencyMs: 60 }, 24 * 1024 * 1024);
+  ok(far.n === 24 * 1024 * 1024 && far.depth > 64, `60 ms per reply: the depth grows (${far.depth})`);
+});
+
 SEC('queue: segments (worker threads)', async () => {
   const { srv, ep, root } = await server({ latencyMs: 2 });
   SRV = srv; EP = ep; SRV_ROOT = () => root;
   // 1 MB segments (FILO_TEST_SEGMENT_MB), from 2 MB: 5.5 MB = 6 segments.
   const { q } = await uploadDownloadCase('worker', { concurrency: 4 }, 5.5 * 1024 * 1024, 'segments');
   ok(q.logs.some(l => /6 segments/.test(l)), 'the big file was split in 6 segments');
+  await srv.close();
+});
+
+// The Rust engine (engine/): only when it is built (cargo build --release in
+// engine/) and not turned off (FILO_ENGINE=0). The other sections run through
+// it too when it is there; this one checks that it really is the engine that
+// moved the bytes, the speed limit, and the fall back to the built-in path.
+SEC('rust engine', async () => {
+  const { enginePath } = require('../src/main/proto/sftp-engine');
+  if (!enginePath()) { process.stdout.write(' (skipped: engine not built, or FILO_ENGINE=0)'); return; }
+  const { srv, ep, root } = await server();
+  SRV = srv; EP = ep; SRV_ROOT = () => root;
+  const d = scratch();
+  const f = randomFile(path.join(d, 'up.bin'), 6 * 1024 * 1024);
+  // Whole file and segments, both ways, with the checks.
+  for (const segments of [false, true]) {
+    let q = makeQueue(ep, Object.assign({}, SETTINGS, { segments, concurrency: 2 }), 'worker');
+    q.add([{ dir: 'up', type: 'file', local: f, remote: `/eng${segments}/up.bin`, size: 6 * 1024 * 1024, endpointId: 'e', endpointLabel: 't' }]);
+    let s = await runQueue(q); q.closeAll();
+    eq([s.done, s.failed], [1, 0], `segments=${segments}: sent`);
+    eq(sha(path.join(root, `eng${segments}`, 'up.bin')), sha(f), `segments=${segments}: identical on the server`);
+    ok(q.logs.some(l => /Rust engine: /.test(l)), `segments=${segments}: the Rust engine moved it`);
+    q = makeQueue(ep, Object.assign({}, SETTINGS, { segments, concurrency: 2 }), 'worker');
+    q.add([{ dir: 'down', type: 'file', local: path.join(d, `back${segments}.bin`), remote: `/eng${segments}/up.bin`, size: 6 * 1024 * 1024, endpointId: 'e', endpointLabel: 't' }]);
+    s = await runQueue(q); q.closeAll();
+    eq([s.done, s.failed], [1, 0], `segments=${segments}: received`);
+    eq(sha(path.join(d, `back${segments}.bin`)), sha(f), `segments=${segments}: identical on this disk`);
+  }
+  // The speed limit is applied by the engine: 6 MB at 2 MB/s takes 2.5 s at least.
+  {
+    const q = makeQueue(ep, Object.assign({}, SETTINGS, { segments: false, concurrency: 1, limitDown: 2 }), 'worker');
+    q.add([{ dir: 'down', type: 'file', local: path.join(d, 'slow.bin'), remote: '/engfalse/up.bin', size: 6 * 1024 * 1024, endpointId: 'e', endpointLabel: 't' }]);
+    const t0 = Date.now();
+    const s = await runQueue(q); q.closeAll();
+    const sec = (Date.now() - t0) / 1000;
+    eq([s.done, s.failed], [1, 0], 'limited: received');
+    ok(sec >= 2.5 && sec < 8, `limited to 2 MB/s: 6 MB took ${sec.toFixed(1)} s`);
+    ok(q.logs.some(l => /Rust engine: /.test(l)), 'limited: still the Rust engine');
+  }
+  // The engine refused (here: a password the engine is given wrong): the
+  // connection keeps the built-in engine, the file still arrives.
+  {
+    const r = await connectTrusting(ep);
+    const logs = [];
+    r.log = (lv, m) => logs.push(`${lv} ${m}`);
+    r.opts.password = 'not-the-password';
+    const got = await r.engineJob({ op: 'get', remote: '/engfalse/up.bin', local: path.join(d, 'x.bin'), start: 0, segment: false, hash: false }, () => {}, null, null);
+    eq(got, null, 'refused: the caller moves the bytes itself');
+    ok(r.engineOff && logs.some(l => /Rust engine not used/.test(l)), 'refused: said once in the log');
+    await r.close();
+  }
   await srv.close();
 });
 
@@ -774,6 +873,30 @@ SEC('queue: server connection limit', async () => {
   await srv.close();
 });
 
+SEC('key login through the transfer threads', async () => {
+  // Up to this fix, a site with a key could browse (main process) but every
+  // transfer was refused: the key, a Buffer, reached the thread as a plain
+  // Uint8Array, which ssh2 does not take, and the login went without it.
+  let k = null;
+  for (let i = 0; i < 20 && !k; i++) { const g = require('ssh2').utils.generateKeyPairSync('ed25519'); if (!(require('ssh2').utils.parseKey(g.private) instanceof Error)) k = g; }
+  const root = scratch();
+  const srv = await startSftpServer({ root, clientKey: k.public });
+  known.delete(`sftp:127.0.0.1:${srv.port}`);
+  const ep = { protocol: 'sftp', host: '127.0.0.1', port: srv.port, user: srv.username, privateKey: Buffer.from(k.private) };
+  const r = await connectTrusting(ep); await r.mkdir('/k'); await r.close();
+  const d = scratch();
+  const f = randomFile(path.join(d, 'k.bin'), 3 * 1024 * 1024);
+  let q = makeQueue(ep, Object.assign({}, SETTINGS, { segments: false }), 'worker');
+  q.add([{ dir: 'up', type: 'file', local: f, remote: '/k/k.bin', size: 3 * 1024 * 1024, endpointId: 'e', endpointLabel: 't' }]);
+  let s = await runQueue(q); q.closeAll();
+  eq([s.done, s.failed, sha(path.join(root, 'k', 'k.bin'))], [1, 0, sha(f)], 'upload with a key, through a thread');
+  q = makeQueue(ep, Object.assign({}, SETTINGS, { segments: false }), 'worker');
+  q.add([{ dir: 'down', type: 'file', local: path.join(d, 'back.bin'), remote: '/k/k.bin', size: 3 * 1024 * 1024, endpointId: 'e', endpointLabel: 't' }]);
+  s = await runQueue(q); q.closeAll();
+  eq([s.done, sha(path.join(d, 'back.bin'))], [1, sha(f)], 'download with a key, through a thread');
+  await srv.close();
+});
+
 SEC('review 0.3.4: no silent replace, kept progress', async () => {
   const MB = 1024 * 1024;
   // Two different files for one destination: the second is left out.
@@ -851,6 +974,298 @@ SEC('review 0.3.4: no silent replace, kept progress', async () => {
   ok(t.limit() >= 2 && t.cap === Infinity && !t.boosted, 'a new run forgets the server limit');
 });
 
+SEC('sync plan', () => {
+  const { plan } = require('../src/main/core/syncplan');
+  const M = obj => new Map(Object.entries(obj));
+  const F = (size, mtime) => ({ type: 'file', size, mtime });
+  let state = { files: {} }, seen = new Map(), now = 1e9;
+  const run = (direction, L, R, dt) => { now += dt == null ? 20000 : dt; const o = plan({ direction, L: M(L), R: M(R), state, seen, now, stableMs: 10000 }); state = { files: o.files }; return o; };
+  let o = run('up', { 'a.mov': F(10, 5000) }, {}, 0);
+  eq([o.copies.length, o.waiting], [0, 1], 'a new file waits until it is stable');
+  o = run('up', { 'a.mov': F(10, 5000) }, {});
+  eq(o.copies.map(c => c.from + c.rel + c.reason), ['la.movnew'], 'then it is sent');
+  o = run('up', { 'a.mov': F(10, 5000) }, { 'a.mov': F(10, 60000) });
+  eq([o.copies.length, state.files['a.mov'].pend], [0, undefined], 'the server copy is adopted (its own date), nothing sent again');
+  o = run('up', { 'a.mov': F(10, 5000) }, { 'a.mov': F(10, 60000) });
+  eq(o.copies.length, 0, 'in step: nothing to do');
+  run('up', { 'a.mov': F(12, 9000) }, { 'a.mov': F(10, 60000) }, 0);
+  o = run('up', { 'a.mov': F(12, 9000) }, { 'a.mov': F(10, 60000) });
+  eq(o.copies.map(c => c.reason), ['changed'], 'changed here: sent');
+  o = run('up', { 'a.mov': F(12, 9000) }, { 'a.mov': F(12, 120000) });
+  o = run('up', { 'a.mov': F(12, 9000) }, { 'a.mov': F(99, 180000) });
+  eq(o.copies.length, 0, 'up: changed on the server only: left alone');
+  o = run('up', { 'a.mov': F(13, 99000) }, { 'a.mov': F(98, 240000) });
+  eq(o.conflicts.length, 1, 'changed on both sides: a conflict, nothing copied');
+  // deletion on the other side is respected
+  state = { files: { 'b.mov': { l: { s: 5, m: 1000 }, r: { s: 5, m: 60000 } } } }; seen = new Map();
+  o = run('up', { 'b.mov': F(5, 1000) }, {});
+  eq([o.copies.length, o.respected.length], [0, 1], 'deleted on the server: not sent again');
+  o = run('up', {}, { 'b.mov': F(5, 60000) });
+  eq([o.copies.length, o.respected.length], [0, 0], 'up: deleted here: nothing deleted on the server');
+  // 2 WAYS
+  state = { files: {} }; seen = new Map();
+  run('both', {}, { 'c.mov': F(7, 3000) }, 0);
+  o = run('both', {}, { 'c.mov': F(7, 3000) });
+  eq(o.copies.map(c => c.from), ['r'], '2 WAYS: new on the server comes here');
+  // first contact
+  state = { files: {} }; seen = new Map();
+  o = run('up', { 'd.mov': F(5, 1000) }, { 'd.mov': F(5, 2000000) });
+  eq([o.copies.length, !!state.files['d.mov']], [0, true], 'first look, same size: taken as in step');
+  run('up', { 'e.mov': F(6, 9000000) }, { 'e.mov': F(5, 1000) }, 0);
+  o = run('up', { 'e.mov': F(6, 9000000) }, { 'e.mov': F(5, 1000) });
+  eq(o.copies.map(c => c.reason), ['newer'], 'first look, newer here: sent');
+  o = run('up', { 'f.mov': F(6, 1000) }, { 'f.mov': F(5, 9000000) });
+  eq(o.conflicts.length, 1, 'first look, newer on the server: a conflict');
+  o = run('up', { sub: { type: 'folder' } }, {});
+  eq(o.folders.map(f => f.to + f.rel), ['rsub'], 'a new folder is created on the other side');
+});
+
+SEC('auto sync with a real server', async () => {
+  const { Syncer } = require('../src/main/syncer');
+  const { srv, ep, root } = await server();
+  SRV = srv; EP = ep; SRV_ROOT = () => root;
+  const d = scratch();
+  const loc = path.join(d, 'Exports');
+  randomFile(path.join(loc, 'a.bin'), 70000);
+  randomFile(path.join(loc, 'sub', 'b.bin'), 50000);
+  fs.writeFileSync(path.join(loc, '.DS_Store'), 'x');
+  const pairs = [{ id: 'aaaaaaaaaaaaaaaa', name: 'Exports', siteId: 's1', local: loc, remote: '/sync/exports', direction: 'up', auto: false, interval: 5, exclude: '.DS_Store|*.filopart' }];
+  const prefs = { listSyncPairs: () => pairs, getSyncPair: id => pairs.find(p => p.id === id), getSite: () => ({ id: 's1' }) };
+  const q = makeQueue(ep, SETTINGS, 'inline');
+  const sy = new Syncer({ prefs, queue: q, log: () => {}, resolveEndpoint: async () => ep, createRemote: e => proto.createRemote(e), dir: path.join(d, 'state'), stableMs: 300 });
+  let r = await sy.run(pairs[0].id, 'test');
+  eq([r.copies, r.waiting], [0, 2], 'first run: the files are not stable yet');
+  await sleep(400);
+  r = await sy.run(pairs[0].id, 'test');
+  eq([r.copies, r.folders], [2, 1], 'second run: 2 files and a folder for the queue (.DS_Store excluded)');
+  await runQueue(q);
+  eq([sha(path.join(root, 'sync/exports/a.bin')), fs.existsSync(path.join(root, 'sync/exports/.DS_Store'))], [sha(path.join(loc, 'a.bin')), false], 'on the server, excluded file left out');
+  r = await sy.run(pairs[0].id, 'test');
+  eq(r.copies, 0, 'in step: nothing more');
+  randomFile(path.join(loc, 'a.bin'), 80000);
+  await sy.run(pairs[0].id, 'test'); await sleep(400);
+  r = await sy.run(pairs[0].id, 'test');
+  eq(r.copies, 1, 'a changed file is sent again');
+  await runQueue(q);
+  eq(sha(path.join(root, 'sync/exports/a.bin')), sha(path.join(loc, 'a.bin')), 'the server has the new version');
+  fs.unlinkSync(path.join(root, 'sync/exports/sub/b.bin'));
+  r = await sy.run(pairs[0].id, 'test');
+  eq([r.copies, r.respected.length], [0, 1], 'deleted on the server: not sent again');
+  // SERVER → LOCAL
+  const back = path.join(d, 'Back');
+  fs.mkdirSync(back);
+  pairs.push({ id: 'bbbbbbbbbbbbbbbb', name: 'Back', siteId: 's1', local: back, remote: '/sync/exports', direction: 'down', auto: false, interval: 5, exclude: '' });
+  await sy.run(pairs[1].id, 'test'); await sleep(400);
+  r = await sy.run(pairs[1].id, 'test');
+  await runQueue(q);
+  eq(sha(path.join(back, 'a.bin')), sha(path.join(loc, 'a.bin')), 'server → local');
+  // A local folder that is not there is never read as "everything deleted".
+  await sleep(1600);                                  // the "settling" re-runs are over
+  pairs[1].local = path.join(d, 'not-mounted');
+  r = await sy.run(pairs[1].id, 'test');
+  ok(r.ok === false && /not there/.test(r.error), 'missing local folder: the run stops '+ (r.ok === false ? '' : JSON.stringify(r)));
+  sy.stopAll(); q.closeAll();
+  await srv.close();
+});
+
+SEC('failsafe: the MASTER settings on the server', async () => {
+  const { Syncer } = require('../src/main/syncer');
+  const { srv, ep, root } = await server();
+  SRV = srv; EP = ep; SRV_ROOT = () => root;
+  const mk = (role, dir) => {
+    const pairs = [{ id: role === 'master' ? 'mmmmmmmmmmmmmmmm' : 'ssssssssssssssss', name: 'Rushes', via: 'hybrid', role, siteId: 's1', local: dir, remote: '/fs', direction: role === 'master' ? 'up' : 'down', auto: true, fsAuto: true, interval: 5, exclude: '', peer: { id: 'AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH', name: 'PC · Windows 11' } }];
+    const prefs = { listSyncPairs: () => pairs, getSyncPair: id => pairs.find(x => x.id === id), getSite: () => ({ id: 's1' }) };
+    return { pairs, prefs };
+  };
+  const dm = scratch(), ds = scratch();
+  fs.writeFileSync(path.join(dm, 'a.mov'), 'one');
+  fs.mkdirSync(path.join(dm, '.filo-trash')); fs.writeFileSync(path.join(dm, '.filo-trash', 'old.mov'), 'x');
+  fs.writeFileSync(path.join(dm, '.stignore'), '/.filo-trash');
+  const M = mk('master', dm);
+  const qm = makeQueue(ep, SETTINGS, 'inline');
+  let got = null;
+  const sm = new Syncer({ prefs: M.prefs, queue: qm, log: () => {}, resolveEndpoint: async () => ep, createRemote: e => proto.createRemote(e), dir: path.join(dm, '..', 'stm'), stableMs: 0, directFirst: () => false,
+    sessionFile: async () => ({ filo: 'direct', v: 1, name: 'Rushes', direction: 'up', exclude: '' }) });
+  await sm.run(M.pairs[0].id, 'test'); await sleep(50); await sm.run(M.pairs[0].id, 'test');
+  await runQueue(qm); qm.closeAll();
+  const sess = path.join(root, 'fs', '.filo-session');
+  ok(fs.existsSync(sess) && JSON.parse(fs.readFileSync(sess, 'utf8')).name === 'Rushes', 'the MASTER writes its session on the server');
+  ok(fs.existsSync(path.join(root, 'fs', 'a.mov')) && !fs.existsSync(path.join(root, 'fs', '.filo-trash')) && !fs.existsSync(path.join(root, 'fs', '.stignore')), 'files go, the trash and Syncthing\'s own files never');
+  const S2 = mk('slave', ds);
+  const qs = makeQueue(ep, SETTINGS, 'inline');
+  const ss = new Syncer({ prefs: S2.prefs, queue: qs, log: () => {}, resolveEndpoint: async () => ep, createRemote: e => proto.createRemote(e), dir: path.join(ds, '..', 'sts'), stableMs: 0, directFirst: () => false,
+    onSession: (pair, o) => { got = o; } });
+  await ss.run(S2.pairs[0].id, 'test'); await sleep(50); await ss.run(S2.pairs[0].id, 'test');
+  await runQueue(qs); qs.closeAll();
+  ok(got && got.name === 'Rushes' && got.direction === 'up', 'the SLAVE reads it');
+  ok(fs.existsSync(path.join(ds, 'a.mov')) && !fs.existsSync(path.join(ds, '.filo-session')), 'the SLAVE gets the files, never the session file');
+  // A file deleted here (it is in this side's trash) is not brought back from the server.
+  const ds2 = scratch();
+  fs.mkdirSync(path.join(ds2, '.filo-trash')); fs.writeFileSync(path.join(ds2, '.filo-trash', 'a.mov'), 'one');
+  const S3 = mk('slave', ds2);
+  const q3 = makeQueue(ep, SETTINGS, 'inline');
+  const s3 = new Syncer({ prefs: S3.prefs, queue: q3, log: () => {}, resolveEndpoint: async () => ep, createRemote: e => proto.createRemote(e), dir: path.join(ds2, '..', 'sts3'), stableMs: 0, directFirst: () => false, onSession: () => {} });
+  await s3.run(S3.pairs[0].id, 'test'); await sleep(50); const r3 = await s3.run(S3.pairs[0].id, 'test');
+  await runQueue(q3); q3.closeAll();
+  ok(!fs.existsSync(path.join(ds2, 'a.mov')) && r3.respected.some(x => x.rel === 'a.mov'), 'a file in the trash is not brought back by the failsafe');
+  S3.pairs[0].fsAuto = false;
+  const off = await s3.run(S3.pairs[0].id, 'failsafe');
+  ok(!off.ok && /off/.test(off.error), 'FAILSAFE switched off: the server is not used');
+  sm.stopAll(); ss.stopAll(); s3.stopAll();
+});
+
+SEC('dual sync: the server, a mirror of the MASTER', async () => {
+  const { Syncer } = require('../src/main/syncer');
+  const { mirrorPlan } = require('../src/main/core/syncplan');
+  // The plan alone.
+  const f = (size, mtime) => ({ type: 'file', size, mtime });
+  let mp = mirrorPlan({ L: new Map([['a', f(5, 1000)]]), R: new Map([['a', f(5, 9000)]]), state: { files: {} }, seen: new Map(), now: 0, stableMs: 0 });
+  eq([mp.uploads.length, mp.deletes.length], [0, 0], 'first look, same size: taken as the same file');
+  mp = mirrorPlan({ L: new Map([['a', f(5, 60500)]]), R: new Map([['a', f(5, 9000)]]), state: { files: mp.files }, seen: new Map([['l:a', { size: 5, mtime: 60500, at: 0 }]]), now: 10, stableMs: 0 });
+  eq(mp.uploads.map(u => u.rel), ['a'], 'changed here since, same size: sent again');
+  mp = mirrorPlan({ L: new Map(), R: new Map([['a', f(5, 1)], ['d', { type: 'folder' }], ['d/x', f(1, 1)]]), state: { files: { a: { l: { s: 5, m: 1 }, r: { s: 5, m: 1 } }, '/d': { dir: true } } }, seen: new Map(), now: 0, stableMs: 0, pull: true });
+  ok(mp.emptyGuard && !mp.deletes.length && !mp.downloads.some(d => d.rel === 'a'), 'local folder empty, server not: nothing deleted (a disk not connected?)');
+  const RD = () => new Map([['k', f(1, 1)], ['d', { type: 'folder' }], ['d/x', f(1, 1)]]);
+  mp = mirrorPlan({ L: new Map([['k', f(1, 1)]]), R: RD(), state: { files: { '/d': { dir: true }, 'd/x': { l: { s: 1, m: 1 }, r: { s: 1, m: 1 } } } }, seen: new Map(), now: 0, stableMs: 0 });
+  eq(mp.deletes.map(d => d.rel), ['d'], 'a folder gone here goes whole from the server');
+  mp = mirrorPlan({ L: new Map([['k', f(1, 1)]]), R: RD(), state: { files: {} }, seen: new Map([['r:d/x', { size: 1, mtime: 1, at: 0 }]]), now: 1, stableMs: 0, pull: true });
+  eq([mp.deletes.length, mp.localFolders, mp.downloads.map(d => d.rel)], [0, ['d'], ['d/x']], 'put on the server by hand: brought here (3 ways), never deleted');
+  mp = mirrorPlan({ L: new Map([['k', f(1, 1)]]), R: RD(), state: { files: {} }, seen: new Map(), now: 0, stableMs: 0, pull: false });
+  eq([mp.deletes.length, mp.downloads.length], [0, 0], 'the MASTER only sends: left on the server');
+  mp = mirrorPlan({ L: new Map([['k', f(1, 1)]]), R: new Map([['k', f(1, 1)], ['n.mov', f(9, 70000)]]), state: { files: { k: { l: { s: 1, m: 1 }, r: { s: 1, m: 1 } } } }, seen: new Map([['r:n.mov', { size: 9, mtime: 70000, at: 0 }]]), now: 1, stableMs: 0, pull: true });
+  eq(mp.downloads.map(d => d.rel), ['n.mov'], 'a new file on the server, the rest known: brought here');
+  mp = mirrorPlan({ L: new Map([['k', f(1, 1)]]), R: new Map([['k', f(1, 90000)]]), state: { files: { k: { l: { s: 1, m: 1 }, r: { s: 1, m: 1 } } } }, seen: new Map([['r:k', { size: 1, mtime: 90000, at: 0 }]]), now: 1, stableMs: 0, pull: true });
+  eq(mp.downloads.map(d => d.rel), ['k'], 'changed only on the server: brought here');
+  mp = mirrorPlan({ L: new Map([['k', f(2, 90000)]]), R: new Map([['k', f(3, 90000)]]), state: { files: { k: { l: { s: 1, m: 1 }, r: { s: 1, m: 1 } } } }, seen: new Map([['l:k', { size: 2, mtime: 90000, at: 0 }]]), now: 1, stableMs: 0, pull: true });
+  ok(mp.uploads.length === 1 && mp.uploads[0].keep, 'changed on both sides: the MASTER wins, the server\'s version is kept beside');
+  mp = mirrorPlan({ L: new Map([['k', f(1, 1)], ['d', { type: 'folder', partial: true }]]), R: RD(), state: { files: { 'd/x': { l: { s: 1, m: 1 }, r: { s: 1, m: 1 } } } }, seen: new Map(), now: 0, stableMs: 0 });
+  eq(mp.deletes.length, 0, 'nothing deleted under a folder not read whole here');
+  mp = mirrorPlan({ L: new Map([['v.mov', f(100, 5000)]]), R: new Map([['v.mov', f(100, 9000)]]), state: { files: { 'v.mov': { r: { s: 100, m: 9000 }, pend: 'l' } } }, seen: new Map(), now: 0, stableMs: 0 });
+  eq(mp.uploads.length, 0, 'a file the S-FTP relay brought here is not sent back up');
+  const { plan } = require('../src/main/core/syncplan');
+  const pc = plan({ direction: 'both', L: new Map([['v.mov', f(100, 70000)]]), R: new Map([['v.mov', f(100, 90000)]]), state: { files: { 'v.mov': { l: { s: 50, m: 1000 }, r: { s: 50, m: 1000 } } } }, seen: new Map(), now: 0, stableMs: 0, prefer: 'r' });
+  eq([pc.copies.length, pc.conflicts.length], [0, 0], 'DUAL SYNC: changed on both sides into the same file: no conflict copy');
+
+  // With a real server.
+  const { srv, ep, root } = await server();
+  SRV = srv; EP = ep; SRV_ROOT = () => root;
+  const dm = scratch();
+  fs.writeFileSync(path.join(dm, 'a.mov'), 'the master version');
+  fs.mkdirSync(path.join(dm, 'sub')); fs.writeFileSync(path.join(dm, 'sub', 'b.mov'), 'bbb');
+  fs.mkdirSync(path.join(dm, '.filo-trash')); fs.writeFileSync(path.join(dm, '.filo-trash', 'old.mov'), 'x');
+  const sr = path.join(root, 'mir');
+  fs.mkdirSync(path.join(sr, 'oldfolder'), { recursive: true });
+  fs.writeFileSync(path.join(sr, 'a.mov'), 'stale');
+  fs.writeFileSync(path.join(sr, 'old.mov'), 'deleted on the computers');
+  fs.writeFileSync(path.join(sr, 'oldfolder', 'x.mov'), 'x');
+  const pairs = [{ id: 'mmmmmmmmmmmmmmmn', name: 'Rushes', via: 'hybrid', role: 'master', siteId: 's1', local: dm, remote: '/mir', direction: 'both', auto: true, fsAuto: true, interval: 5, exclude: '', peer: { id: 'AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH', name: 'PC' } }];
+  const prefs = { listSyncPairs: () => pairs, getSyncPair: id => pairs.find(x => x.id === id), getSite: () => ({ id: 's1' }) };
+  const q = makeQueue(ep, SETTINGS, 'inline');
+  let ready = true;
+  const sm = new Syncer({ prefs, queue: q, log: () => {}, resolveEndpoint: async () => ep, createRemote: e => proto.createRemote(e), dir: path.join(dm, '..', 'stmir'), stableMs: 0,
+    directFirst: () => true, mirrorReady: () => ready, sessionFile: async () => ({ filo: 'direct', v: 1, name: 'Rushes' }) });
+  const pass = async () => { await sm.run(pairs[0].id, 'mirror'); await sleep(30); const x = await sm.run(pairs[0].id, 'mirror'); await runQueue(q); return x; };
+  let res = await pass();
+  ok(res.mirror, 'SYNCTHING done: the MASTER writes the mirror');
+  eq(fs.readFileSync(path.join(sr, 'a.mov'), 'utf8'), 'the master version', 'a different file on the server: replaced by the MASTER\'s');
+  ok(fs.existsSync(path.join(sr, 'sub', 'b.mov')), 'a missing file: sent');
+  ok(fs.existsSync(path.join(sr, 'old.mov')) && fs.existsSync(path.join(dm, 'old.mov')) && fs.existsSync(path.join(dm, 'oldfolder', 'x.mov')), 'put on the server by hand: kept there, and brought to the MASTER (3 ways)');
+  ok(fs.readdirSync(sr).some(n => /^a\.sync-conflict-.*-from-server\.mov$/.test(n)), 'different on the server at first look: the MASTER\'s goes, the server\'s is kept beside');
+  ok(fs.existsSync(path.join(sr, '.filo-session')) && !fs.existsSync(path.join(sr, '.filo-trash')), 'the session file stays, the trash never goes');
+  fs.unlinkSync(path.join(dm, 'sub', 'b.mov'));
+  res = await pass();
+  ok(!fs.existsSync(path.join(sr, 'sub', 'b.mov')) && fs.existsSync(path.join(sr, 'sub')), 'a file deleted here: deleted on the server');
+  fs.rmSync(path.join(dm, 'sub'), { recursive: true });
+  res = await pass();
+  ok(!fs.existsSync(path.join(sr, 'sub')), 'a folder deleted here: deleted on the server');
+  pairs[0].remote = '/';
+  res = await sm.run(pairs[0].id, 'mirror');
+  ok(!res.ok && /root/.test(res.error), 'the root of the server is never a backup folder');
+  pairs[0].remote = '/mir';
+  ready = false;
+  res = await sm.run(pairs[0].id, 'timer');
+  ok(res.standby, 'SYNCTHING not finished: the mirror waits');
+  ready = true; pairs[0].role = 'slave';
+  res = await sm.run(pairs[0].id, 'timer');
+  ok(res.standby, 'the SLAVE never writes the mirror');
+  q.closeAll(); sm.stopAll();
+
+  // Holds: only the copies held for SYNCTHING go on again, never one paused by hand.
+  pairs[0].role = 'master';
+  const items = new Map([['m1', { id: 'm1', type: 'file', status: 'queued', remote: '/mir/1', sync: { pairId: pairs[0].id, mirror: true } }], ['u1', { id: 'u1', type: 'file', status: 'paused', remote: '/mir/2', sync: { pairId: pairs[0].id, mirror: true } }]]);
+  const fq = { items, get: id => items.get(id), pauseItems: ids => ids.forEach(i => { items.get(i).status = 'paused'; }), resumeItems: ids => ids.forEach(i => { items.get(i).status = 'queued'; }), stopItems: ids => ids.forEach(i => { items.get(i).status = 'stopped'; }) };
+  const sh = new Syncer({ prefs, queue: fq, log: () => {}, dir: path.join(dm, '..', 'sth') });
+  sh.holdMirror(pairs[0].id, true);
+  ok(items.get('m1').status === 'paused' && items.get('m1').sync.held, 'SYNCTHING busy: the backup copy waits (marked, kept after a restart)');
+  sh.holdMirror(pairs[0].id, false);
+  eq([items.get('m1').status, items.get('u1').status], ['queued', 'paused'], 'SYNCTHING done: it goes on; the one paused by hand stays paused');
+  pairs[0].fsAuto = false; sh.apply(pairs[0]);
+  eq(items.get('m1').status, 'stopped', 'S-FTP BACKUP switched off: its copies stop');
+  pairs[0].fsAuto = true; sh.stopAll();
+
+  // When: SYNCTHING up to date for a while (the MASTER may write), busy again (the copies wait).
+  const { createDirect } = require('../src/main/direct-app');
+  const pr = new (require('../src/main/config').Prefs)(scratch()).load();
+  const hp = pr.saveSyncPair({ via: 'hybrid', role: 'master', name: 'H', siteId: 's1', remote: '/h', local: dm, direction: 'up', folderId: newFolderIdT('up'), peer: { id: 'AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH', name: 'MAC' }, auto: true, exclude: '' });
+  const calls = [];
+  const DF = createDirect({ prefs: pr, log: () => {}, send: () => {}, home: scratch(), bin: null, onStatus: () => {}, mirrorDelayMs: 80, onMirror: id => calls.push('mirror'), onBusy: (id, on) => calls.push(on ? 'hold' : 'go') });
+  DF.direct.emit('status', hp.id, { state: 'insync', peer: { connected: true } });
+  ok(!DF.mirrorReady(hp), 'just up to date: not yet');
+  await sleep(200);
+  ok(DF.mirrorReady(hp) && calls.includes('mirror'), 'up to date for a while: the mirror pass starts');
+  DF.direct.emit('status', hp.id, { state: 'syncing', peer: { connected: true } });
+  ok(!DF.mirrorReady(hp) && calls.includes('hold'), 'SYNCTHING busy again: the mirror\'s copies wait');
+  DF.direct.emit('status', hp.id, { state: 'insync', peer: { connected: true } });
+  ok(calls.includes('go'), 'and go on once it is done');
+  // The other computer gone and the folder quiet (Syncthing says nothing more): the backup still takes over.
+  let fo2 = 0;
+  const DG = createDirect({ prefs: pr, log: () => {}, send: () => {}, home: scratch(), bin: null, onStatus: () => {}, onFailover: () => fo2++, missRecheckMs: 60, mirrorDelayMs: 100000 });
+  DG.direct.emit('status', hp.id, { state: 'insync', peer: { connected: true } });
+  DG.direct.emit('status', hp.id, { state: 'offline', peer: { connected: false } });
+  ok(fo2 === 0, 'one missed look: not yet');
+  await sleep(150);
+  ok(fo2 === 1, 'no news after that: the S-FTP BACKUP takes over');
+});
+
+SEC('segment relay between two filo', async () => {
+  const { Syncer } = require('../src/main/syncer');
+  const { srv, ep, root } = await server();
+  SRV = srv; EP = ep; SRV_ROOT = () => root;
+  const d = scratch();
+  const MB = 1024 * 1024;
+  const src = randomFile(path.join(d, 'out', 'render.mov'), 6 * MB);
+  fs.mkdirSync(path.join(root, 'team'), { recursive: true });
+  // The sender: 6 segments of 1 MB, slowed down so the receiver can start early.
+  const qA = makeQueue(ep, Object.assign({}, SETTINGS, { limitUp: 1.5, concurrency: 2 }), 'inline');
+  qA.add([{ dir: 'up', type: 'file', local: src, remote: '/team/render.mov', size: 6 * MB, endpointId: 'e', endpointLabel: 't', relayOut: true }]);
+  let senderDoneAt = 0;
+  const senderDone = runQueue(qA, 90000).then(x => { senderDoneAt = Date.now(); return x; });
+  // The receiver: a SERVER → LOCAL sync with the relay.
+  const inbox = path.join(d, 'inbox'); fs.mkdirSync(inbox);
+  const pairs = [{ id: 'cccccccccccccccc', name: 'Team', siteId: 's1', local: inbox, remote: '/team', direction: 'down', auto: false, interval: 5, exclude: '.DS_Store|*.filopart|.*.filoparts', relay: true }];
+  const prefs = { listSyncPairs: () => pairs, getSyncPair: id => pairs.find(p => p.id === id), getSite: () => ({ id: 's1' }) };
+  const qB = makeQueue(ep, SETTINGS, 'inline');
+  let firstSegAt = 0;
+  qB.on('changed', () => { for (const it of qB.items.values()) if (!firstSegAt && it.seg && it.seg.chunks.some(c => c.st === 'd')) firstSegAt = Date.now(); });
+  const sy = new Syncer({ prefs, queue: qB, log: () => {}, resolveEndpoint: async () => ep, createRemote: e => proto.createRemote(e), dir: path.join(d, 'state'), stableMs: 300, relayPollMs: 300 });
+  let it = null;
+  for (let i = 0; i < 40 && !it; i++) {
+    await sleep(250);
+    await sy.run(pairs[0].id, 'test');
+    it = [...qB.items.values()].find(x => x.relay);
+  }
+  ok(!!it, 'the receiver found the file being sent');
+  await senderDone;
+  for (let i = 0; i < 120 && !(it.status === 'done'); i++) await sleep(250);
+  eq(it.status, 'done', 'the receiver finished');
+  ok(firstSegAt && firstSegAt < senderDoneAt - 500, `segments arrived before the sender had finished (${senderDoneAt - firstSegAt} ms earlier)`);
+  eq(sha(path.join(inbox, 'render.mov')), sha(src), 'the received file is the sender\'s, byte for byte');
+  eq(it.verify && it.verify.level, 'relay', 'every segment checked against the sender\'s hashes');
+  ok(!fs.existsSync(path.join(root, 'team', '.render.mov.filoparts')) && !fs.existsSync(path.join(inbox, 'render.mov.filopart')), 'no relay folder on the server, no partial file here');
+  sy.stopAll(); qA.closeAll(); qB.closeAll();
+  await srv.close();
+});
+
 SEC('verification catches corruption', async () => {
   // A server that stores something else than what it received.
   const d = scratch();
@@ -873,6 +1288,208 @@ SEC('verification catches corruption', async () => {
   try { await transfer.runFile(item, ctx); ok(false, 'a corrupted copy must not pass'); }
   catch (e) { ok(e.mismatch, `corruption detected by read-back (${e.message})`); }
   ok(!store.has('/v/v.bin'), 'and the real name was never given to it');
+});
+
+SEC('direct: rules and codes', () => {
+  const { toIgnore, directionOfOffer, newFolderId } = require('../src/main/direct');
+  const { normalizeSyncPair, FOLDER_ID, Prefs } = require('../src/main/config');
+  eq(toIgnore('*.tmp|/Cache/\n*/proxy/|  |.DS_Store'), ['(?i)*.tmp', '(?i)/Cache', '(?i)/*/proxy', '(?i).DS_Store'], 'exclusions become .stignore lines');
+  const { parseDeviceId } = require('../src/main/direct');
+  const RID = '6DXHEPR-5LCKNZ5-DU2ICUS-322SSXZ-3GP6M45-7P4LVMC-COPSNME-LGAIUAY';
+  eq([parseDeviceId(' ' + RID.toLowerCase().replace(/-/g, ' ') + '\n'), parseDeviceId(RID.slice(0, -1) + 'Z'), parseDeviceId('hello')], [RID, null, null], 'a pasted SYNCTHING ID is cleaned, a typo is caught');
+  eq(toIgnore('*.tmp, /Cache/; .DS_Store'), ['(?i)*.tmp', '(?i)/Cache', '(?i).DS_Store'], 'commas (and semicolons) separate a filter too');
+  eq(toIgnore('!/.filo-trash|#include x|//c|(?d)a.tmp|/b.txt:'), ['(?i)/.filo-trash', '(?i)a.tmp', '(?i)/b.txt'], 'Syncthing\'s own marks never get in');
+  const id = newFolderId('up');
+  ok(FOLDER_ID.test(id), `folder ID ${id} has the expected shape`);
+  eq(directionOfOffer(id), 'down', 'a folder sent by the other side is received here');
+  eq(directionOfOffer(newFolderId('both')), 'both', 'two ways stays two ways');
+  const dev = 'AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH';
+  const p = normalizeSyncPair({ via: 'direct', peer: { id: dev, name: 'PC' }, folderId: id, local: '/x', direction: 'up' });
+  eq([p.via, p.peer.id, p.folderId], ['direct', dev, id], 'a SYNCTHING pair keeps its fields');
+  eq(normalizeSyncPair({ via: 'direct', peer: { id: 'nope' }, folderId: 'bad' }).peer, null, 'a wrong device ID is dropped');
+  eq(normalizeSyncPair({}).via, 'server', 'an old pair is a server pair');
+  // The code given to the other computer: read back, checked.
+  const { createDirect } = require('../src/main/direct-app');
+  const prefs = new Prefs(scratch()).load();
+  const D = createDirect({ prefs, log: () => {}, send: () => {}, home: scratch(), bin: null });
+  const code = D.shareCode({ filo: 'direct', v: 1, device: dev, deviceName: 'MAC', folder: id, name: 'Exports', direction: 'down', exclude: '*.tmp' });
+  ok(code.startsWith('filo-direct:') && D.isCode('hello ' + code + ' bye'), 'the code is recognised inside a message');
+  return D.readCode('copied: ' + code + '\n').then(r => {
+    eq([r.direct.device, r.direct.folder, r.direct.direction, r.direct.name], [dev, id, 'down', 'Exports'], 'the code is read back');
+    return D.readCode('filo-direct:eyJmaWxvIjoiZGlyZWN0In0').then(() => ok(false, 'a code without a device is refused'), e => ok(/not a filo LIVE SYNC config/.test(e.message), 'a code without a device is refused'));
+  });
+});
+
+const newFolderIdT = d => require('../src/main/direct').newFolderId(d);
+SEC('direct with S-FTP failsafe: who works when', async () => {
+  const { Syncer } = require('../src/main/syncer');
+  const d = scratch();
+  const pairs = [{ id: 'bbbbbbbbbbbbbbbb', name: 'Rushes', via: 'hybrid', siteId: 's1', local: d, remote: '/x', direction: 'up', auto: false, fsAuto: true, interval: 5, exclude: '' }];
+  const prefs = { listSyncPairs: () => pairs, getSyncPair: id => pairs.find(p => p.id === id), getSite: () => ({ id: 's1' }) };
+  let direct = true, connects = 0;
+  const sy = new Syncer({ prefs, queue: null, log: () => {}, resolveEndpoint: async () => { connects++; throw new Error('no server in this test'); }, createRemote: () => null, dir: path.join(d, 'state'), directFirst: () => direct });
+  let r = await sy.run(pairs[0].id, 'timer');
+  ok(r.ok && r.standby && connects === 0, 'the other filo is reachable: the server is left alone');
+  eq(sy.statusOf(pairs[0].id).state, 'standby', 'and the session says standby');
+  direct = false;
+  r = await sy.run(pairs[0].id, 'failsafe');
+  ok(connects === 1, 'the other filo is not reachable: the failsafe goes to the server');
+  direct = 'wait';
+  r = await sy.run(pairs[0].id, 'start');
+  ok(r.standby && connects === 1, 'SYNCTHING still starting: the server waits');
+  sy.stopAll();
+  const { normalizeSyncPair } = require('../src/main/config');
+  eq(normalizeSyncPair({ via: 'hybrid' }).via, 'hybrid', 'a hybrid session keeps its kind');
+  eq(normalizeSyncPair({ watch: false }).watch, false, 'AUTO WATCH off is kept');
+  eq(normalizeSyncPair({}).watch, true, 'AUTO WATCH is on by default');
+  eq([normalizeSyncPair({}).role, normalizeSyncPair({ role: 'slave' }).role, normalizeSyncPair({}).fsAuto], ['master', 'slave', true], 'MASTER by default, SLAVE kept, failsafe on by default');
+  // The MASTER wins a conflict on the server too: its side copies, marked
+  // 'master' (the caller keeps the other version first).
+  const { plan } = require('../src/main/core/syncplan');
+  const L = new Map([['a.mov', { type: 'file', size: 10, mtime: 1000 }]]), R = new Map([['a.mov', { type: 'file', size: 20, mtime: 5000 }]]);
+  const st = { files: { 'a.mov': { l: { s: 5, m: 500 }, r: { s: 5, m: 500 } } } };
+  const seen = new Map([['l:a.mov', { size: 10, mtime: 1000, at: 0 }], ['r:a.mov', { size: 20, mtime: 5000, at: 0 }]]);
+  const base = plan({ direction: 'both', L, R, state: st, seen: new Map(seen), now: 99999, stableMs: 10 });
+  eq([base.conflicts.length, base.copies.length], [1, 0], 'without a MASTER: a conflict, left as it is');
+  const m = plan({ direction: 'both', L, R, state: st, seen: new Map(seen), now: 99999, stableMs: 10, prefer: 'l' });
+  eq([m.conflicts.length, m.copies.length, m.copies[0] && m.copies[0].from, m.copies[0] && m.copies[0].reason], [0, 1, 'l', 'master'], 'MASTER here: this side is sent');
+  const sl = plan({ direction: 'both', L, R, state: st, seen: new Map(seen), now: 99999, stableMs: 10, prefer: 'r' });
+  eq([sl.copies[0] && sl.copies[0].from], ['r'], 'SLAVE here: the server (the MASTER\'s) is brought');
+  // A SLAVE takes the MASTER's settings (direction the other way round).
+  const { createDirect } = require('../src/main/direct-app');
+  const pr = new (require('../src/main/config').Prefs)(scratch()).load();
+  const MID = 'AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH';
+  const sp = pr.saveSyncPair({ via: 'direct', role: 'slave', name: 'Old', local: d, direction: 'down', folderId: newFolderIdT('up'), peer: { id: MID, name: 'MAC' }, exclude: '' });
+  const DD = createDirect({ prefs: pr, log: () => {}, send: () => {}, home: scratch(), bin: null });
+  DD.takeSession(sp, { v: 1, master: 'MAC · macOS', masterId: MID, name: 'New name', masterDirection: 'both', exclude: '*.tmp' }, 'test');
+  const sp2 = pr.getSyncPair(sp.id);
+  eq([sp2.name, sp2.direction, sp2.exclude], ['New name', 'both', '*.tmp'], 'the SLAVE takes the MASTER\'s name, direction and filter');
+  DD.takeSession(sp2, { v: 1, masterId: 'ZZZZZZZ-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH', name: 'Intruder', masterDirection: 'up' }, 'test');
+  eq(pr.getSyncPair(sp.id).name, 'New name', 'settings from another computer are ignored');
+  // One way: the SLAVE pastes the MASTER's SYNCTHING ID (join); the MASTER
+  // accepts it and shares a SYNCTHING session (accept → shareTo).
+  const RID2 = '6DXHEPR-5LCKNZ5-DU2ICUS-322SSXZ-3GP6M45-7P4LVMC-COPSNME-LGAIUAY';
+  eq(DD.join('nope').ok, false, 'not an ID: refused');
+  const jn = await DD.join(RID2.toLowerCase());
+  ok(jn.ok && pr.listDirectDevices().some(x => x.id === RID2), 'the SLAVE trusts the MASTER it pasted');
+  const mp = pr.saveSyncPair({ via: 'direct', role: 'master', name: 'Quick', local: scratch(), direction: 'up', folderId: newFolderIdT('up'), exclude: '' });
+  const SID = 'AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHA';
+  ok(DD.accept({ id: SID, name: 'PC · Windows 11' }, [mp.id, sp.id]).ok, 'the MASTER accepts it');
+  eq([pr.getSyncPair(mp.id).peer && pr.getSyncPair(mp.id).peer.id, pr.getSyncPair(sp.id).peer.id], [SID, MID], 'and shares the chosen SYNCTHING session (never a SLAVE\'s one)');
+  DD.takeSession(pr.getSyncPair(sp.id), { v: 1, name: 'No ID', masterDirection: 'up' }, 'test');
+  eq(pr.getSyncPair(sp.id).name, 'New name', 'settings without the MASTER\'s ID are ignored');
+  // Who works when, on the SYNCTHING side: the SYNCTHING switch, and one missed look.
+  let fo = 0;
+  const DF = createDirect({ prefs: pr, log: () => {}, send: () => {}, home: scratch(), bin: null, onStatus: () => {}, onFailover: () => fo++ });
+  DF.direct.bin = 'fake';                                    // "available", never started here
+  const hp = pr.saveSyncPair({ via: 'hybrid', role: 'master', name: 'H', siteId: 's1', remote: '/h', local: d, direction: 'up', folderId: newFolderIdT('up'), peer: { id: MID, name: 'MAC' }, auto: true, exclude: '' });
+  DF.direct.emit('status', hp.id, { state: 'insync', peer: { id: MID, connected: true } });
+  eq(DF.directFirst(hp), true, 'SYNCTHING on and the other computer there: SYNCTHING works');
+  eq(DF.directFirst(Object.assign({}, hp, { auto: false })), false, 'SYNCTHING switched off: the failsafe works');
+  DF.direct.emit('status', hp.id, { state: 'error', error: 'busy' });
+  ok(fo === 0 && DF.directFirst(hp) === true, 'one missed look: no failover yet');
+  DF.direct.emit('status', hp.id, { state: 'error', error: 'busy' });
+  ok(fo === 1 && DF.directFirst(hp) === false, 'two missed looks: the failsafe takes over');
+  // The .filo-session file holds both: direction (the SLAVE's, read at import) and masterDirection.
+  DD.takeSession(pr.getSyncPair(sp.id), { v: 1, masterId: MID, name: 'New name', direction: 'down', masterDirection: 'up', exclude: '*.tmp' }, 'test');
+  eq(pr.getSyncPair(sp.id).direction, 'down', 'MASTER LOCAL -> REMOTE: the SLAVE is REMOTE -> LOCAL, whatever the file\'s "direction" key');
+});
+
+SEC('direct: two filo, peer to peer', async () => {
+  const { Direct, binPath, newFolderId } = require('../src/main/direct');
+  if (!binPath()) { process.stdout.write(' (skipped: no Syncthing, run node scripts/syncthing-fetch.js)'); return; }
+  const fa = scratch(), fb = scratch();
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const until = async (fn, ms) => { const t = Date.now() + (ms || 30000); while (Date.now() < t) { try { if (fn()) return true; } catch (_) {} await sleep(200); } return false; };
+  const logs = [];
+  const pa = 22300 + Math.floor(Math.random() * 300), pb = pa + 1;
+  const A = new Direct({ home: scratch(), log: (l, m) => logs.push('A ' + m), name: 'MAC', testing: { listen: [`tcp://127.0.0.1:${pa}`], addresses: {} } });
+  const B = new Direct({ home: scratch(), log: (l, m) => logs.push('B ' + m), name: 'PC', testing: { listen: [`tcp://127.0.0.1:${pb}`], addresses: {} } });
+  try {
+    const ida = await A.start(), idb = await B.start();
+    ok(ida && idb && ida !== idb, 'each filo has its own ID');
+    A.o.testing.addresses[idb] = `tcp://127.0.0.1:${pb}`; B.o.testing.addresses[ida] = `tcp://127.0.0.1:${pa}`;
+    A.setFast(true); B.setFast(true);
+    fs.writeFileSync(path.join(fa, 'clip.mov'), crypto.randomBytes(3 * 1024 * 1024));
+    fs.writeFileSync(path.join(fa, 'render.tmp'), 'x');
+    const fid = newFolderId('up');
+    const pairA = { id: 'a', name: 'Exports', local: fa, direction: 'up', auto: true, folderId: fid, peer: null, exclude: '*.tmp' };
+    const pairB = { id: 'b', name: 'Exports', local: fb, direction: 'down', auto: true, folderId: fid, peer: { id: ida, name: 'MAC' }, exclude: '*.tmp' };
+    const stB = {}; B.on('status', (id, st) => { stB[id] = st; });
+    const items = []; B.on('item', it => items.push(it));
+    await A.reconcile([pairA], []);
+    await B.reconcile([pairB], [{ id: ida, name: 'MAC' }]);
+    // A is asked about B (B imported A's code), and nothing moves before.
+    ok(await until(() => A.pending.devices.some(d => d.id === idb), 30000), 'the first computer is asked to accept the other');
+    ok(!fs.existsSync(path.join(fb, 'clip.mov')), 'nothing arrives before the user accepts');
+    let linked = null;
+    A.on('link', l => { linked = l; pairA.peer = l.peer; A.reconcile([pairA], [l.peer]); });
+    await A.reconcile([pairA], [{ id: idb, name: 'PC' }]);
+    ok(await until(() => linked, 30000), 'once accepted, the live sync links itself (folder offered back)');
+    ok(await until(() => fs.existsSync(path.join(fb, 'clip.mov')) && sha(path.join(fb, 'clip.mov')) === sha(path.join(fa, 'clip.mov')), 40000), 'the file arrives, identical');
+    ok(!fs.existsSync(path.join(fb, 'render.tmp')), 'an excluded file stays');
+    ok(await until(() => items.some(i => i.item === 'clip.mov' && i.pairId === 'b' && !i.error), 10000), 'the receiving side reports the file (journal, LIVE SYNC view)');
+    ok(await until(() => stB.b && stB.b.state === 'insync', 20000), `the receiving side says up to date (${stB.b && stB.b.state})`);
+    ok(stB.b.peer && stB.b.peer.connected && stB.b.peer.via === 'lan', 'connected, on the local network');
+    // Linked once: a new live sync from B is offered to A, no code needed.
+    const fid2 = newFolderId('up');
+    const fb2 = scratch();
+    await B.reconcile([pairB, { id: 'b2', name: 'Rushes', local: fb2, direction: 'up', auto: true, folderId: fid2, peer: { id: ida, name: 'MAC' }, exclude: '' }], [{ id: ida, name: 'MAC' }]);
+    ok(await until(() => A.pending.folders.some(f => f.folderId === fid2), 30000), 'a new live sync of the linked computer is offered');
+    const offer = A.pending.folders.find(f => f.folderId === fid2) || {};
+    eq([offer.name, offer.direction, offer.deviceId], ['Rushes', 'down', idb], 'the offer says what, which way, from whom');
+    // A deletion goes to the other computer's trash, never lost; the trash
+    // itself is never synced.
+    fs.mkdirSync(path.join(fa, '.filo-trash'), { recursive: true });
+    fs.writeFileSync(path.join(fa, '.filo-trash', 'old.mov'), 'x');
+    fs.unlinkSync(path.join(fa, 'clip.mov'));
+    await A.rescan(pairA);
+    ok(await until(() => !fs.existsSync(path.join(fb, 'clip.mov')) && fs.existsSync(path.join(fb, '.filo-trash', 'clip.mov')), 20000), 'a file deleted on one side goes to the trash of the other');
+    ok(!fs.existsSync(path.join(fb, '.filo-trash', 'old.mov')), 'the trash is never synced');
+    // MASTER / SLAVE: a file changed on both computers; the SLAVE's version
+    // is the newer one, Syncthing would keep it: the MASTER's wins.
+    const fc = scratch(), fd = scratch();
+    const fid3 = newFolderId('both');
+    const pC = { id: 'c', name: 'Edit', local: fc, direction: 'both', auto: true, folderId: fid3, peer: { id: idb, name: 'PC · Linux' }, exclude: '', role: 'master' };
+    const pD = { id: 'd', name: 'Edit', local: fd, direction: 'both', auto: true, folderId: fid3, peer: { id: ida, name: 'MAC · Linux' }, exclude: '', role: 'slave' };
+    A.on('item', it => { if (it.pairId === 'c' && !it.error) A.masterWins(pC, it.item); });
+    fs.writeFileSync(path.join(fc, 'cut.txt'), 'v1');
+    await A.reconcile([pairA, pC], [{ id: idb }]);
+    await B.reconcile([pairB, pD], [{ id: ida, name: 'MAC' }]);
+    ok(await until(() => fs.existsSync(path.join(fd, 'cut.txt')), 30000), 'a two-way session between MASTER and SLAVE runs');
+    pC.auto = false; pD.auto = false;
+    await A.reconcile([pairA, pC], [{ id: idb }]); await B.reconcile([pairB, pD], [{ id: ida, name: 'MAC' }]);
+    fs.writeFileSync(path.join(fc, 'cut.txt'), 'MASTER version');
+    await sleep(2100);
+    fs.writeFileSync(path.join(fd, 'cut.txt'), 'SLAVE version, newer');
+    pC.auto = true; pD.auto = true;
+    await A.reconcile([pairA, pC], [{ id: idb }]); await B.reconcile([pairB, pD], [{ id: ida, name: 'MAC' }]);
+    await A.rescan(pC); await B.rescan(pD);
+    const read = f => { try { return fs.readFileSync(f, 'utf8'); } catch (_) { return null; } };
+    const settled = () => read(path.join(fc, 'cut.txt')) === 'MASTER version' && read(path.join(fd, 'cut.txt')) === 'MASTER version'
+      && fs.readdirSync(fd).some(f => /^cut\.sync-conflict-\d{8}-\d{6}-from-PC\.txt$/.test(f) && read(path.join(fd, f)) === 'SLAVE version, newer');
+    ok(await until(settled, 45000), `the MASTER's version wins on both computers, the SLAVE's is kept beside it with its name (MASTER: ${fs.readdirSync(fc).map(f => f + '=' + read(path.join(fc, f))).join(', ')} | SLAVE: ${fs.readdirSync(fd).map(f => f + '=' + read(path.join(fd, f))).join(', ')})`);
+    // Paused: nothing moves.
+    pairA.auto = false; await A.reconcile([pairA], [{ id: idb }]);
+    fs.writeFileSync(path.join(fa, 'later.txt'), 'later');
+    await sleep(3000);
+    ok(!fs.existsSync(path.join(fb, 'later.txt')), 'paused: nothing is sent');
+    pairA.auto = true; await A.reconcile([pairA], [{ id: idb }]); await A.rescan(pairA);
+    ok(await until(() => fs.existsSync(path.join(fb, 'later.txt')), 30000), 'ON again: it goes');
+    // Restart keeps the same identity; a Syncthing left running is stopped.
+    const home = A.home;
+    await A.stop();
+    ok(!A.child, 'stopped cleanly');
+    const A2 = new Direct({ home, log: () => {}, testing: { listen: [`tcp://127.0.0.1:${pa}`], addresses: {} } });
+    eq(await A2.start(), ida, 'the same ID after a restart');
+    A2.child.removeAllListeners('exit');   // as if filo had crashed: Syncthing still runs
+    const A3 = new Direct({ home, log: (l, m) => logs.push('A3 ' + m), testing: { listen: [`tcp://127.0.0.1:${pa}`], addresses: {} } });
+    eq(await A3.start(), ida, 'a new filo takes over from a Syncthing left running');
+    ok(logs.some(l => /left by the previous filo/.test(l)), 'the old one was asked to stop');
+    await A3.stop();
+  } finally {
+    await A.stop().catch(() => {}); await B.stop().catch(() => {});
+  }
 });
 
 SEC('ftp (real servers, optional)', async () => {

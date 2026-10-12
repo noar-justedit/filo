@@ -46,8 +46,8 @@ function startSftpServer(opts) {
   // eight servers, so one run in thirty died on it — the intermittent failure
   // that went unnamed until each section got its own try. Generated again
   // until it parses; the product never generates keys, only this test does.
-  let key = null;
-  for (let tries = 0; tries < 20; tries++) {
+  let key = opts.hostKey ? { private: opts.hostKey } : null;
+  for (let tries = 0; !key && tries < 20; tries++) {
     const k = utils.generateKeyPairSync('ed25519');
     if (!(utils.parseKey(k.private) instanceof Error)) { key = k; break; }
   }
@@ -80,7 +80,15 @@ function startSftpServer(opts) {
         }
         if (ctx.method === 'password' && ctx.username === user && ctx.password === pass) { sessions++; counted = true; }
         if (ctx.method === 'password' && ctx.username === user && ctx.password === pass) return ctx.accept();
-        if (ctx.method === 'none') return ctx.reject(['password']);
+        // A key login, when the test gives the client's public key.
+        if (opts.clientKey && ctx.method === 'publickey' && ctx.username === user) {
+          const pub = utils.parseKey(opts.clientKey);
+          const same = ctx.key.algo === pub.type && Buffer.compare(ctx.key.data, pub.getPublicSSH()) === 0;
+          if (!same) return ctx.reject();
+          if (!ctx.signature) return ctx.accept();          // "would this key do?"
+          return pub.verify(ctx.blob, ctx.signature, ctx.hashAlgo) === true ? ctx.accept() : ctx.reject();
+        }
+        if (ctx.method === 'none') return ctx.reject(opts.clientKey ? ['password', 'publickey'] : ['password']);
         ctx.reject();
       });
       client.on('ready', () => {

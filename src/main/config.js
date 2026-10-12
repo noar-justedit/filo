@@ -34,6 +34,52 @@ const DEFAULT_SETTINGS = {
   confirmDelete: true,
 };
 
+// LIVE SYNC pairs. Excluded by default: system clutter and the temporary
+// names of filo and of the usual copy tools (a file still on its way).
+// Separated by commas (Noar, 12/10/2026: easier to type than |, still read).
+// Short: the system's own litter. filo's own work files are always left out,
+// without being listed (SYNC_ALWAYS_EXCLUDE).
+const DEFAULT_SYNC_EXCLUDE = '.DS_Store, ._*, Thumbs.db, *.tmp';
+const SYNC_ALWAYS_EXCLUDE = '*.filopart, *.filoold, .*.filoparts';
+function normalizeSyncPair(p) {
+  const o = p && typeof p === 'object' ? p : {};
+  const id = /^[0-9a-f]{16}$/.test(o.id) ? o.id : require('crypto').randomBytes(8).toString('hex');
+  return {
+    id,
+    name: String(o.name || 'New session').slice(0, 120),
+    siteId: typeof o.siteId === 'string' ? o.siteId : '',
+    local: typeof o.local === 'string' ? o.local : '',
+    remote: typeof o.remote === 'string' && o.remote ? o.remote : '/',
+    direction: ['up', 'down', 'both'].includes(o.direction) ? o.direction : 'up',
+    auto: !!o.auto,                                                           // connected
+    watch: o.watch !== false,                                                 // AUTO WATCH: the local folder is watched
+    // DIRECT + S-FTP FAILSAFE: the failsafe has its own connect switch.
+    fsAuto: o.fsAuto !== false,
+    // DIRECT: the computer that created the session is the MASTER (its
+    // version wins a conflict, its direction and settings are the
+    // session's); the one that imported it is the SLAVE.
+    role: o.role === 'slave' ? 'slave' : 'master',
+    interval: Math.max(1, Math.min(1440, parseInt(o.interval, 10) || 5)),     // minutes between server checks
+    exclude: o.exclude == null ? DEFAULT_SYNC_EXCLUDE : String(o.exclude).slice(0, 4000),
+    relay: o.relay !== false,                                                 // segments relay (SFTP)
+    // DIRECT (direct.js): the other side is another filo, reached peer to
+    // peer by the embedded Syncthing, not a server. siteId and remote are
+    // then unused; the folder is known to both filo by folderId.
+    // 'server' (S-FTP), 'direct' (Syncthing), 'hybrid' (DIRECT with S-FTP
+    // failsafe: Syncthing while the other filo is reachable, the server
+    // folder otherwise).
+    via: ['direct', 'hybrid'].includes(o.via) ? o.via : 'server',
+    peer: o.peer && DEVICE_ID.test(o.peer.id) ? { id: o.peer.id, name: String(o.peer.name || '').slice(0, 120) } : null,
+    folderId: typeof o.folderId === 'string' && FOLDER_ID.test(o.folderId) ? o.folderId : '',
+  };
+}
+// A Syncthing device ID (eight groups of seven) and filo's own folder IDs.
+const DEVICE_ID = /^[A-Z2-7]{7}(-[A-Z2-7]{7}){7}$/;
+const FOLDER_ID = /^filo-(up|down|both)-[0-9a-z]{12}$/;
+function normalizeDevice(d) {
+  return d && DEVICE_ID.test(d.id) ? { id: d.id, name: String(d.name || '').slice(0, 120) } : null;
+}
+
 const DEFAULT_NTFY = { enabled: false, server: 'https://ntfy.sh', topic: '' };
 
 function writeAtomic(file, text) {
@@ -91,6 +137,9 @@ class Prefs {
         ? d.quickHistory.filter(x => x && typeof x === 'object' && (typeof x.siteId === 'string' || (typeof x.host === 'string' && x.host))).slice(0, 15)
         : [],
       afterAction: ['none', 'quit', 'sleep', 'shutdown'].includes(d.afterAction) ? d.afterAction : 'none',
+      syncPairs: Array.isArray(d.syncPairs) ? d.syncPairs.slice(0, 200).map(normalizeSyncPair) : [],
+      // DIRECT: the other filo this machine accepted (their Syncthing IDs).
+      directDevices: Array.isArray(d.directDevices) ? d.directDevices.slice(0, 100).map(normalizeDevice).filter(Boolean) : [],
       window: d.window || null,
       ui: d.ui || {},
       lastLocalDir: d.lastLocalDir || '',
@@ -100,7 +149,10 @@ class Prefs {
 
   save(patch) {
     if (patch) Object.assign(this.data, patch);
-    try { writeAtomic(this.file, JSON.stringify(this.data, null, 2)); } catch (_) {}
+    // A disk full or a read-only profile: said in the journal (once per kind),
+    // not silent: sites, trusted identities and passwords would be lost.
+    try { writeAtomic(this.file, JSON.stringify(this.data, null, 2)); this.saveErr = null; }
+    catch (e) { if (this.saveErr !== e.code) { this.saveErr = e.code; if (this.onError) this.onError(`Settings not saved (${e.message})`); } }
   }
 
   // ── Settings ────────────────────────────────────────────────────────────
@@ -154,6 +206,37 @@ class Prefs {
     return this.listSites();
   }
 
+  // ── LIVE SYNC pairs ────────────────────────────────────────────────────
+  listSyncPairs() { return this.data.syncPairs.map(p => Object.assign({}, p)); }
+  getSyncPair(id) { return this.data.syncPairs.find(p => p.id === id) || null; }
+  saveSyncPair(pair) {
+    const prev = pair && pair.id ? this.getSyncPair(pair.id) : null;
+    const merged = normalizeSyncPair(Object.assign({}, prev || {}, pair || {}));
+    const i = this.data.syncPairs.findIndex(p => p.id === merged.id);
+    if (i >= 0) this.data.syncPairs[i] = merged; else this.data.syncPairs.push(merged);
+    this.save();
+    return merged;
+  }
+  deleteSyncPair(id) {
+    this.data.syncPairs = this.data.syncPairs.filter(p => p.id !== id);
+    this.save();
+  }
+
+  // ── DIRECT: the other filo this machine accepted ─────────────────────────
+  listDirectDevices() { return this.data.directDevices.map(d => Object.assign({}, d)); }
+  addDirectDevice(dev) {
+    const d = normalizeDevice(dev);
+    if (!d) return null;
+    const i = this.data.directDevices.findIndex(x => x.id === d.id);
+    if (i >= 0) { if (d.name) this.data.directDevices[i].name = d.name; } else this.data.directDevices.push(d);
+    this.save();
+    return d;
+  }
+  forgetDirectDevice(id) {
+    this.data.directDevices = this.data.directDevices.filter(d => d.id !== id);
+    this.save();
+  }
+
   deleteSite(id) {
     this.data.sites = this.data.sites.filter(s => s.id !== id);
     // A deleted site leaves the recent connections too (it would take a place
@@ -202,4 +285,4 @@ class Prefs {
   }
 }
 
-module.exports = { Prefs, DEFAULT_SETTINGS, normalizeSettings, writeAtomic };
+module.exports = { DEVICE_ID, FOLDER_ID, normalizeSyncPair, DEFAULT_SYNC_EXCLUDE, SYNC_ALWAYS_EXCLUDE, Prefs, DEFAULT_SETTINGS, normalizeSettings, writeAtomic };

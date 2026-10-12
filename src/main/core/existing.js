@@ -39,7 +39,7 @@ function resolve(rule, src, dst) {
       if (dst.size < src.size) return 'resume';
       if (dst.size === src.size) return 'skip';
       return 'overwrite';                                 // bigger than the source: not a partial copy of it
-    default: return 'overwrite';
+    default: return 'skip';                               // unknown rule: never overwrite by mistake
   }
 }
 

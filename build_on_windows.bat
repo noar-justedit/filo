@@ -65,6 +65,8 @@ echo.
 echo   Done.
 echo     Installer : dist\filo-Setup-%VER%.exe
 echo     Portable  : dist\filo-%VER%-win-x64.zip
+if exist "dist\win-unpacked\resources\filo-engine.exe" (echo   Rust engine: included.) else (echo   Rust engine: NOT included - the reason is on the [engine] lines above. filo works with its built-in engine.)
+if exist "dist\win-unpacked\resources\syncthing\syncthing.exe" (echo   SYNCTHING: included.) else (echo   SYNCTHING: NOT included - see the [direct] lines above.)
 echo   Not signed: on first launch SmartScreen warns - "More info" then "Run anyway".
 start "" "%~dp0dist"
 goto :end

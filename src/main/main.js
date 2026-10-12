@@ -31,13 +31,26 @@ const { createRemote, parseUrl, describe, DEFAULT_PORT, LABEL } = require('./pro
 const { setHostKeyPolicy } = require('./proto/sftp');
 const { setCertPolicy } = require('./proto/ftp');
 const { TransferQueue } = require('./core/queue');
+const SYNC = require('./syncer');
+const { Syncer } = SYNC;
+const { DEFAULT_SYNC_EXCLUDE } = require('./config');
+const { createDirect } = require('./direct-app');
 const { RemoteError } = require('./core/errors');
 const { walkRemote, deleteRemoteTree, safeLocalName, localJoin } = require('./core/scan');
 const sites = require('./core/sites');
-const { LABELS: EXISTING_LABELS } = require('./core/existing');
+const { LABELS: EXISTING_LABELS, ACTIONS: EXISTING_ACTIONS } = require('./core/existing');
 
 const IS_MAC = process.platform === 'darwin';
 const DEV    = process.argv.includes('--dev') && !app.isPackaged;   // never in a shipped build
+// The Rust transfer engine ships next to the app (electron-builder
+// extraResources); the transfer threads find it through this variable.
+if (app.isPackaged && !process.env.FILO_ENGINE_PATH) {
+  process.env.FILO_ENGINE_PATH = require('path').join(process.resourcesPath, process.platform === 'win32' ? 'filo-engine.exe' : 'filo-engine');
+}
+// SYNCTHING: Syncthing ships next to the app, in resources/syncthing/.
+if (app.isPackaged && !process.env.FILO_SYNCTHING_PATH) {
+  process.env.FILO_SYNCTHING_PATH = require('path').join(process.resourcesPath, 'syncthing', process.platform === 'win32' ? 'syncthing.exe' : 'syncthing');
+}
 const REPO   = 'https://github.com/noar-justedit/filo';
 
 // ── Update check (same mechanism as syncto: version.json on GitHub) ────────
@@ -101,8 +114,33 @@ function openExternalSafely(u) {
 let win = null;
 let prefs = null;
 let queue = null;
+let syncer = null;
+let D = null;            // SYNCTHING (direct-app.js)
+let directStopped = false;
 let powerBlockId = null;
 let quitting = false;
+
+// ── Started as a command (`filo upload …`, see cli.js and docs/CLI.md) ──────
+// Then this process opens no window: it hands the command to the running filo
+// (starting it if needed), prints what happens, and ends with an exit code.
+const CLI = require('./cli');
+const cliReq = CLI.parse(process.argv.slice(app.isPackaged ? 1 : 2));
+const BACKGROUND = process.argv.includes('--background');
+if (cliReq) {
+  if (app.dock) app.dock.hide();
+  app.disableHardwareAcceleration();
+  const write = l => { try { process.stdout.write(String(l).replace(/\n?$/, '\n')); } catch (_) {} };
+  CLI.client(cliReq, {
+    userData: app.getPath('userData'), version: appVersion(), write,
+    spawnApp: bg => {
+      const args = app.isPackaged ? [] : [app.getAppPath()];
+      if (bg) args.push('--background');
+      if (process.argv.includes('--no-sandbox')) args.push('--no-sandbox');   // Linux, started that way
+      require('child_process').spawn(process.execPath, args, { detached: true, stdio: 'ignore' }).unref();
+    },
+  }).then(code => app.exit(code)).catch(e => { write('filo: ' + e.message); app.exit(4); });
+  return;   // eslint-disable-line no-unreachable -- the rest is the application
+}
 
 // ── One filo at a time ─────────────────────────────────────────────────────
 // The queue lives in one file. Two copies of filo would each run it and each
@@ -237,7 +275,10 @@ async function withBrowser(fn, sess) {
 
 // Server identities the user has actually been shown (a TRUST_NEEDED that
 // went to the window). The 'trust' handler accepts nothing else: the window
-// cannot pin a fingerprint of its own making.
+// cannot pin a fingerprint of its own making. One exception, on purpose: a
+// config file the user imports carries its server's identity, shown in the
+// import dialog ("given by the file") and trusted when they confirm it
+// (serverImport); a different one already trusted here is refused.
 const trustOffers = new Map();
 const offerKey = t => `${t.kind}|${String(t.host).toLowerCase()}|${Number(t.port)}|${t.fingerprint}`;
 function offerTrust(t) {
@@ -283,7 +324,7 @@ function createWindow() {
   win.webContents.session.setPermissionCheckHandler(() => false);
   const blockNavigation = (e, url) => {
     let isOwn = false;
-    try { isOwn = url.startsWith('file://') && path.normalize(new URL(url).pathname) === path.normalize(OWN_PAGE); } catch (_) {}
+    try { isOwn = url.startsWith('file://') && path.normalize(require('url').fileURLToPath(url.split('#')[0])) === path.normalize(OWN_PAGE); } catch (_) {}
     if (!isOwn) { e.preventDefault(); openExternalSafely(url); }
   };
   win.webContents.on('will-navigate', blockNavigation);
@@ -295,7 +336,11 @@ function createWindow() {
     }) });
   });
   win.loadFile(OWN_PAGE);
-  win.once('ready-to-show', () => { win.show(); if (DEV) win.webContents.openDevTools({ mode: 'detach' }); });
+  win.once('ready-to-show', () => {
+    // Started by a command with --background: there, but out of the way.
+    if (BACKGROUND) { win.showInactive(); win.minimize(); } else win.show();
+    if (DEV) win.webContents.openDevTools({ mode: 'detach' });
+  });
   win.webContents.once('did-finish-load', () => setTimeout(checkForUpdate, 1500));
 
   let resizeTimer = null;
@@ -331,7 +376,13 @@ function createWindow() {
 function buildMenu() {
   const m = action => () => send('menu', { action });
   const template = [
-    ...(IS_MAC ? [{ role: 'appMenu' }] : []),
+    ...(IS_MAC ? [{ label: app.name, submenu: [
+      { role: 'about' }, { type: 'separator' },
+      { label: 'Settings…', accelerator: 'Cmd+,', click: m('settings') },
+      { label: 'Install the command line tool…', click: m('cli-install') },
+      { type: 'separator' }, { role: 'services' }, { type: 'separator' },
+      { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' }, { type: 'separator' }, { role: 'quit' },
+    ] }] : []),
     { label: 'File', submenu: [
       { label: 'Site Manager…', accelerator: 'CmdOrCtrl+S', click: m('sites') },
       { label: 'Quick Connect', accelerator: 'CmdOrCtrl+K', click: m('quick') },
@@ -368,6 +419,7 @@ function buildMenu() {
 // ── Lifecycle ──────────────────────────────────────────────────────────────
 app.whenReady().then(() => {
   prefs = new Prefs(app.getPath('userData')).load();
+  prefs.onError = m => log('error', m);
   const policy = {
     known: (kind, host, port) => prefs.knownHost(kind, host, port),
     remember: (kind, host, port, fp) => { prefs.rememberHost(kind, host, port, fp); log('info', `Remembered the identity of ${host}:${port}: ${fp}`); },
@@ -392,6 +444,44 @@ app.whenReady().then(() => {
   queue.on('blocked', b => { if (b && b.trust) offerTrust(b.trust); send('queue-blocked', b); });
   queue.on('finished', s => onQueueFinished(s));
 
+  syncer = new Syncer({
+    prefs, queue, log,
+    directFirst: pair => (D ? D.directFirst(pair) : false),
+    mirrorReady: pair => (D ? D.mirrorReady(pair) : false),
+    // FAILSAFE: the MASTER's settings on the server, and the SLAVE taking them.
+    sessionFile: pair => (D ? D.sessionFile(pair) : null),
+    onSession: (pair, o) => { if (D) D.takeSession(pair, o, 'from the server'); },
+    hostName: () => require('./direct').hostName(),
+    resolveEndpoint,
+    createRemote: ep => createRemote(ep, { log }),
+    dir: path.join(app.getPath('userData'), 'sync'),
+  });
+  syncer.on('status', id => { const p = prefs.getSyncPair(id); if (!p || p.via !== 'direct') send('sync-status', { id, status: statusFor(id) }); });
+  D = createDirect({
+    prefs, log, send, home: path.join(app.getPath('userData'), 'direct'),
+    onStatus: id => send('sync-status', { id, status: statusFor(id) }),
+    // A hybrid pair lost the other filo: its S-FTP failsafe takes over at once.
+    onFailover: id => {
+      const p = prefs.getSyncPair(id);
+      if (!p || p.via !== 'hybrid' || !p.fsAuto) return;      // FAILSAFE switched off: nothing goes by the server
+      log('info', `LIVE SYNC “${p.name}”: the other computer is not reachable, the S-FTP BACKUP takes over`);
+      syncer.holdMirror(id, false);                          // mirror copies held for SYNCTHING: they go on
+      setTimeout(() => syncer.run(id, 'failsafe'), 2000);
+    },
+    // DUAL SYNC: SYNCTHING has finished, the MASTER mirrors its folder on the
+    // server; SYNCTHING busy again, the mirror's copies wait.
+    onMirror: id => { const p = prefs.getSyncPair(id); if (p && p.via === 'hybrid' && p.role !== 'slave' && p.fsAuto) syncer.run(id, 'mirror'); },
+    onBusy: (id, on) => { syncer.holdMirror(id, on); if (on) syncer.staleMirror(id); },
+    serverShare: pair => shareOf(pair),
+    serverImport,
+    // A SLAVE took new settings from its MASTER: another direction means what
+    // the S-FTP part remembered no longer applies.
+    onPairChanged: (pair, was) => { if (was && was.direction !== pair.direction) syncer.forgetState(pair.id); syncer.apply(pair, { runNow: false }); },
+  });
+  // AUTO pairs start a few seconds after the window, not in its way.
+  setTimeout(() => { syncer.applyAll(); D.apply(); }, 3000);
+  CLI.serve(app.getPath('userData'), handleCli, log);
+
   buildMenu();
   createWindow();
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
@@ -413,7 +503,16 @@ app.on('before-quit', e => {
   if (queue && queue.state === 'running' && !confirmQuit()) { e.preventDefault(); return; }
   quitting = true;
 });
-app.on('will-quit', () => {
+app.on('will-quit', e => {
+  // SYNCTHING: Syncthing closes its database properly before filo goes (a few
+  // seconds at most), then the quit goes on.
+  if (D && D.running() && !directStopped) {
+    e.preventDefault();
+    directStopped = true;
+    D.stop().catch(() => {}).then(() => app.quit());
+    return;
+  }
+  try { if (syncer) syncer.stopAll(); } catch (_) {}
   try { if (queue) { queue.pause(); queue.closeAll(); } } catch (_) {}
   try { if (browser.remote) browser.remote.close(); } catch (_) {}
 });
@@ -428,6 +527,7 @@ function holdSleep(on) {
 // the action chosen in the title bar (the window runs the 30 s countdown).
 let lastFinished = null;   // what the end action is allowed to rely on
 function onQueueFinished(summary) {
+  if (summary.syncOnly) { send('queue-finished', Object.assign({ afterAction: 'none' }, summary)); return; }
   lastFinished = { at: Date.now(), clean: !summary.failed && !summary.stopped && !summary.paused };
   const cfg = prefs.ntfy();
   if (cfg.enabled && cfg.topic) {
@@ -436,6 +536,551 @@ function onQueueFinished(summary) {
   }
   send('queue-finished', Object.assign({ afterAction: prefs.data.afterAction }, summary));
 }
+
+// ── IPC: LIVE SYNC ─────────────────────────────────────────────────────────
+// A pair's status for the window. Hybrid (SYNCTHING FAILSAFE): the
+// SYNCTHING status, with the S-FTP one under `server`.
+function statusFor(id) {
+  const p = prefs.getSyncPair(id);
+  if (!p) return {};
+  if (p.via === 'direct') return D.statusOf(id);
+  if (p.via === 'hybrid') return Object.assign({}, D.statusOf(id), { server: syncer.statusOf(id) });
+  return syncer.statusOf(id);
+}
+const allSyncStatus = () => { const o = {}; for (const p of prefs.listSyncPairs()) o[p.id] = statusFor(p.id); return o; };
+// An IPC answer is always { ok, error } when something goes wrong, never a
+// thrown exception (the window shows the message).
+const guard = fn => async (...a) => { try { return await fn(...a); } catch (e) { log('error', e.message); return { ok: false, error: e.message }; } };
+ipcMain.handle('sync-list', () => ({ pairs: prefs.listSyncPairs(), status: allSyncStatus(), defaultExclude: DEFAULT_SYNC_EXCLUDE, direct: { available: D.direct.available, pending: D.pending() } }));
+ipcMain.handle('sync-save', guard((_, pair) => {
+  const prev = pair && pair.id ? prefs.getSyncPair(pair.id) : null;
+  const p = D.prepareSave(pair);
+  if (p.via === 'server') {
+    const dir = absLocal(p.local);
+    if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) throw new Error('Choose an existing local folder.');
+    p.local = dir;
+  }
+  const saved = prefs.saveSyncPair(p);
+  // Other folders or another server: what was remembered no longer applies.
+  if (prev && (prev.local !== saved.local || prev.remote !== saved.remote || prev.siteId !== saved.siteId || prev.direction !== saved.direction || prev.via !== saved.via)) syncer.forgetState(saved.id);
+  syncer.apply(saved);
+  if (saved.via !== 'server' || (prev && prev.via !== 'server')) D.apply();
+  return { ok: true, pair: saved, pairs: prefs.listSyncPairs(), status: allSyncStatus() };
+}));
+ipcMain.handle('sync-delete', guard((_, id) => {
+  const prev = prefs.getSyncPair(id);
+  syncer.unschedule(id);
+  syncer.forgetState(id);
+  // Its copies held for SYNCTHING would wait forever: stopped (review 0.6.2).
+  if (prev && prev.via === 'hybrid') syncer.stopPairItems(id);
+  prefs.deleteSyncPair(id);
+  if (prev && prev.via !== 'server') {
+    // Its control folder (MASTER → SLAVE settings) goes with it, once
+    // Syncthing has let go of it.
+    D.apply().then(() => { if (prev.folderId) { try { fs.rmSync(D.direct.ctlDir(prev), { recursive: true, force: true }); } catch (_) {} } });
+  }
+  return { ok: true, pairs: prefs.listSyncPairs(), status: allSyncStatus() };
+}));
+ipcMain.handle('sync-run', guard((_, id) => {
+  const p = prefs.getSyncPair(String(id));
+  if (p && p.via === 'direct') return D.rescan(p);
+  if (p && p.via === 'hybrid' && D.directFirst(p) === true) return D.rescan(p);
+  return syncer.run(String(id), 'now');
+}));
+// CONNECT / DISCONNECT a live sync (its AUTO, or SYNCTHING's ON).
+// which: 'st' (Syncthing), 'fs' (the S-FTP failsafe) or nothing (all of it).
+ipcMain.handle('sync-connect', guard((_, id, on, which) => {
+  const p = prefs.getSyncPair(String(id));
+  if (!p) return { ok: false, error: 'This live sync no longer exists.' };
+  const patch = which === 'st' ? { auto: !!on } : which === 'fs' ? { fsAuto: !!on } : { auto: !!on, fsAuto: !!on };
+  const saved = prefs.saveSyncPair(Object.assign({}, p, patch));
+  log('info', `LIVE SYNC “${saved.name}”: ${which === 'st' ? 'SYNCTHING ' : which === 'fs' ? 'S-FTP BACKUP ' : ''}${on ? 'connected' : 'disconnected'}`);
+  syncer.apply(saved);
+  if (saved.via !== 'server') D.apply();
+  return { ok: true, pair: saved, pairs: prefs.listSyncPairs(), status: allSyncStatus() };
+}));
+// This computer's trash of a SYNCTHING session (size; open it).
+ipcMain.handle('trash-info', guard((_, id) => { const p = prefs.getSyncPair(String(id)); return p && p.via !== 'server' ? require('./direct-app').trashInfo(p) : null; }));
+ipcMain.handle('trash-open', guard(async (_, id) => {
+  const p = prefs.getSyncPair(String(id));
+  if (!p || p.via === 'server') return { ok: false, error: 'This session has no trash.' };
+  const dir = require('./direct-app').trashInfo(p).dir;
+  try { fs.mkdirSync(dir, { recursive: true }); } catch (_) {}
+  const err = await shell.openPath(dir);
+  return err ? { ok: false, error: err } : { ok: true };
+}));
+// FAILSAFE: a session the MASTER left on a server (.filo-session), found by
+// the SLAVE from a bookmark and a folder.
+ipcMain.handle('sync-remote-session', async (_, siteId, dir) => {
+  try {
+    const list = await pickConnection(siteId);
+    const { readSmall } = require('./core/transfer');
+    const text = await readSmall(list, posix.join(dir || '/', SYNC.SESSION_FILE), 200000).catch(() => null);
+    if (!text) return { ok: false, error: 'No filo session in this folder: the MASTER writes it at its first S-FTP check.' };
+    return await readImportText(text);
+  } catch (e) { return { ok: false, error: e.message }; }
+});
+
+// This computer, for the LIVE SYNC view.
+ipcMain.handle('live-info', () => {
+  const { hostName, osLabel } = require('./direct');
+  const ips = [];
+  for (const [name, list] of Object.entries(require('os').networkInterfaces())) {
+    for (const a of list || []) if (!a.internal && a.family === 'IPv4' && !/^169\.254\./.test(a.address)) ips.push({ name, address: a.address });
+  }
+  return { name: hostName(), os: osLabel(), ips, version: app.getVersion() };
+});
+// The folders of a server, for BROWSE in the S-FTP form. Its own connection
+// (never the browsing one), closed after a minute of rest.
+const pickConn = { siteId: null, conn: null, t: null, busy: Promise.resolve() };
+// One request at a time (two quick clicks never open two connections), and
+// the idle timer restarts at each request.
+function pickConnection(siteId) {
+  const job = pickConn.busy.then(async () => {
+    if (pickConn.t) { clearTimeout(pickConn.t); pickConn.t = null; }
+    if (pickConn.siteId !== siteId || !pickConn.conn) {
+      if (pickConn.conn) { try { pickConn.conn.close(); } catch (_) {} }
+      pickConn.conn = null;
+      const c = createRemote(await resolveEndpoint('site:' + siteId), { log });
+      await c.connect();
+      pickConn.conn = c; pickConn.siteId = siteId;
+    }
+    pickConn.t = setTimeout(() => { try { if (pickConn.conn) pickConn.conn.close(); } catch (_) {} pickConn.conn = null; }, 60000);
+    return pickConn.conn;
+  });
+  pickConn.busy = job.catch(() => {});
+  return job;
+}
+ipcMain.handle('sync-remote-list', async (_, siteId, dir) => {
+  try {
+    const c = await pickConnection(siteId);
+    let where = dir;
+    if (!where) where = (await c.home().catch(() => '/')) || '/';
+    const list = await c.list(where);
+    const dirs = list.filter(e => e.type === 'folder' || (e.type === 'symlink' && e.linkTo === 'folder')).map(e => e.name).sort((a, b) => a.localeCompare(b));
+    return { ok: true, dir: where, dirs };
+  } catch (e) {
+    if (pickConn.conn) { try { pickConn.conn.close(); } catch (_) {} pickConn.conn = null; }
+    const err = e && e.code ? e : RemoteError.from(e);
+    return { ok: false, error: err.code === 'NEEDS_PASSWORD' ? 'This bookmark has no saved password: connect to it once from the bar, or save its password in the site manager.' : err.code === 'TRUST_NEEDED' ? 'This server is not trusted yet: connect to it once from the bar and accept its identity.' : (err.message || String(err)) };
+  }
+});
+
+// ── IPC: SYNCTHING (another filo, peer to peer: direct-app.js) ─────────────────
+ipcMain.handle('direct-info', (_, start) => D.info(!!start));
+ipcMain.handle('direct-accept', guard((_, dev, share) => Object.assign(D.accept(dev, share), { pairs: prefs.listSyncPairs(), status: allSyncStatus() })));
+ipcMain.handle('direct-refuse', guard((_, dev) => D.refuse(dev)));
+ipcMain.handle('direct-forget', guard((_, id) => D.forget(String(id))));
+ipcMain.handle('direct-offer-accept', guard((_, req) => {
+  const r = D.offerAccept(Object.assign({}, req, { local: req && req.local ? absLocal(req.local) : '' }));
+  return Object.assign(r, { pairs: prefs.listSyncPairs(), status: allSyncStatus() });
+}));
+ipcMain.handle('direct-join', guard(async (_, text) => {
+  const r = await D.join(String(text || '').slice(0, 400));
+  return Object.assign(r, { pairs: prefs.listSyncPairs(), status: allSyncStatus() });
+}));
+ipcMain.handle('direct-offer-dismiss', guard((_, req) => D.offerDismiss(req || {})));
+ipcMain.handle('direct-fast', (_, on) => { D.setFast(!!on); return true; });
+// A SYNCTHING ID (this computer's, or a remote one), by mail or in a text file.
+ipcMain.handle('direct-id-share', async (_, req) => {
+  try {
+    const { DEVICE_ID } = require('./config');
+    const id = String((req && req.id) || '');
+    if (!DEVICE_ID.test(id)) return { ok: false, error: 'This is not a SYNCTHING ID.' };
+    const name = String((req && req.name) || '').slice(0, 120);
+    const text = `filo SYNCTHING ID${name ? ' of ' + name : ''}:\n${id}\n\n(MODE ▾ → Sessions… → THIS COMPUTER shows it in filo. It is not a secret: a computer still has to be accepted by hand.)\n`;
+    if (req.how === 'email') { shell.openExternal(`mailto:?subject=${encodeURIComponent('filo SYNCTHING ID' + (name ? ' · ' + name : ''))}&body=${encodeURIComponent(text)}`); return { ok: true }; }
+    const safe = (name || 'filo').replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').trim() || 'filo';
+    const res = await dialog.showSaveDialog(win, { title: 'Export the SYNCTHING ID', defaultPath: path.join(app.getPath('desktop'), `${safe} SYNCTHING ID.txt`), filters: [{ name: 'Text', extensions: ['txt'] }] });
+    if (res.canceled || !res.filePath) return { ok: false, cancelled: true };
+    fs.writeFileSync(res.filePath, text);
+    return { ok: true, path: res.filePath };
+  } catch (e) { return { ok: false, error: e.message }; }
+});
+
+// ── A sync shared between two teams ────────────────────────────────────────
+// Team A exports a pair: a small ".filosync" file (or the same thing as a line
+// of text, "filo-sync:…", to paste in any chat). It holds the server, the
+// server folder, the direction FOR THE OTHER TEAM (A sends, B receives), the
+// exclusions, and the server's identity (its fingerprint, as A's filo knows
+// it), so B's first connection is checked against it. NEVER a password: B
+// types it once at import, and it goes to B's own keychain.
+const SHARE_PREFIX = 'filo-sync:';
+const OTHER_SIDE = { up: 'down', down: 'up', both: 'both' };
+function identityKind(protocol) { return protocol === 'sftp' ? 'sftp' : protocol === 'ftp' ? null : 'ftps'; }
+function shareOf(pair) {
+  const site = prefs.getSite(pair.siteId);
+  if (!site) throw new Error('Choose the site of this live sync first.');
+  const port = Number(site.port) || DEFAULT_PORT[site.protocol];
+  const kind = identityKind(site.protocol);
+  return {
+    filo: 'sync', v: 1, name: pair.name,
+    server: { protocol: site.protocol, host: site.host, port, user: site.user || '', transferMode: site.transferMode || 'passive', fingerprint: (kind && prefs.knownHost(kind, site.host, port)) || '' },
+    remote: pair.remote, direction: OTHER_SIDE[pair.direction], exclude: pair.exclude, interval: pair.interval, relay: pair.relay !== false,
+  };
+}
+function shareCode(o) { return SHARE_PREFIX + Buffer.from(JSON.stringify(o), 'utf8').toString('base64url'); }
+function parseShare(text) {
+  const t = String(text || '').trim();
+  if (t.length > 200000) throw new Error('This is not a filo live sync.');
+  let o;
+  const i = t.indexOf(SHARE_PREFIX);
+  try {
+    if (i >= 0) {
+      const m = /^[A-Za-z0-9_-]+/.exec(t.slice(i + SHARE_PREFIX.length));
+      o = JSON.parse(Buffer.from(m ? m[0] : '', 'base64url').toString('utf8'));
+    } else o = JSON.parse(t);
+  } catch (_) { throw new Error('This is not a filo live sync (or it was cut while being copied).'); }
+  const sv = o && o.server;
+  if (!o || o.filo !== 'sync' || !sv || !LABEL[sv.protocol]) throw new Error('This is not a filo live sync.');
+  const host = String(sv.host || '').trim();
+  if (!host || /[\s@/\\]|:\/\//.test(host) || host.length > 255) throw new Error('The server address in this live sync cannot be read.');
+  const port = parseInt(sv.port, 10) || DEFAULT_PORT[sv.protocol];
+  if (port < 1 || port > 65535) throw new Error('The server port in this live sync cannot be read.');
+  return {
+    name: String(o.name || 'Shared live sync').slice(0, 120),
+    server: { protocol: sv.protocol, host, port, user: String(sv.user || '').slice(0, 200), transferMode: sv.transferMode === 'active' ? 'active' : 'passive', fingerprint: /^SHA256:([A-Za-z0-9+/=]{20,80}|[0-9A-Fa-f:]{64,100})$/.test(sv.fingerprint || '') ? sv.fingerprint : '' },
+    remote: remotePath(o.remote || '/'),
+    direction: ['up', 'down', 'both'].includes(o.direction) ? o.direction : 'down',
+    exclude: o.exclude == null ? DEFAULT_SYNC_EXCLUDE : String(o.exclude).slice(0, 4000),
+    interval: Math.max(1, Math.min(1440, parseInt(o.interval, 10) || 5)),
+    relay: o.relay !== false,
+  };
+}
+function siteForShare(sh) {
+  const sv = sh.server;
+  return prefs.data.sites.find(s => s.protocol === sv.protocol && String(s.host).toLowerCase() === sv.host.toLowerCase()
+    && (Number(s.port) || DEFAULT_PORT[s.protocol]) === sv.port && (s.user || '') === sv.user) || null;
+}
+async function shareAny(pair) { return pair.via === 'server' ? shareOf(pair) : D.shareOf(pair); }
+function codeAny(sh) { return sh.filo === 'direct' ? D.shareCode(sh) : shareCode(sh); }
+ipcMain.handle('sync-share', async (_, id) => {
+  try {
+    const pair = prefs.getSyncPair(String(id));
+    if (!pair) return { ok: false, error: 'This live sync no longer exists.' };
+    if (pair.via !== 'server') { const sh = await D.shareOf(pair); return { ok: true, code: D.shareCode(sh), share: sh, direct: true }; }
+    const sh = shareOf(pair);
+    return { ok: true, code: shareCode(sh), share: sh };
+  } catch (e) { return { ok: false, error: e.message }; }
+});
+ipcMain.handle('sync-share-save', async (_, id) => {
+  try {
+    const pair = prefs.getSyncPair(String(id));
+    if (!pair) return { ok: false, error: 'This live sync no longer exists.' };
+    const sh = await shareAny(pair);
+    const safe = pair.name.replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').trim() || 'sync';
+    const res = await dialog.showSaveDialog(win, { title: 'Save the sync to share', defaultPath: path.join(app.getPath('desktop'), safe + '.filosync'), filters: [{ name: 'filo sync', extensions: ['filosync'] }] });
+    if (res.canceled || !res.filePath) return { ok: false, cancelled: true };
+    fs.writeFileSync(res.filePath, JSON.stringify(Object.assign({ _about: sh.filo === 'direct' ? 'A filo SYNCTHING live sync to import in filo on the other computer (MODE ▾ → Import session as SLAVE).' : 'A filo LIVE SYNC to import in filo (MODE ▾ → Import session as SLAVE). No password inside.' }, sh), null, 2));
+    return { ok: true, path: res.filePath };
+  } catch (e) { return { ok: false, error: e.message }; }
+});
+ipcMain.handle('sync-share-reveal', (_, p) => { try { shell.showItemInFolder(absLocal(p)); return true; } catch (_) { return false; } });
+// macOS: the system's Share menu (Mail, Messages, AirDrop, WhatsApp…).
+ipcMain.handle('sync-share-native', (_, p) => {
+  try {
+    if (!IS_MAC) return false;
+    const { ShareMenu } = require('electron');
+    new ShareMenu({ filePaths: [absLocal(p)] }).popup({ window: win });
+    return true;
+  } catch (_) { return false; }
+});
+// Import, step 1: read and explain (from pasted text, or a .filosync file).
+ipcMain.handle('sync-import-read', async (_, text) => {
+  try {
+    let t = text;
+    if (t == null) {
+      const res = await dialog.showOpenDialog(win, { title: 'Open a filo sync', properties: ['openFile'], filters: [{ name: 'filo sync', extensions: ['filosync', 'json', 'txt'] }] });
+      if (res.canceled || !res.filePaths.length) return { ok: false, cancelled: true };
+      const st = fs.statSync(res.filePaths[0]);
+      if (st.size > 200000) return { ok: false, error: 'This is not a filo live sync.' };
+      t = fs.readFileSync(res.filePaths[0], 'utf8');
+    }
+    return await readImportText(t);
+  } catch (e) { return { ok: false, error: e.message }; }
+});
+async function readImportText(t) {
+  {
+    if (D.isCode(t)) {
+      const r = await D.readCode(t);
+      // SYNCTHING FAILSAFE: the server part is read like a shared live sync.
+      if (r.ok && r.direct.failsafe) {
+        const sh = parseShare(JSON.stringify(Object.assign({ filo: 'sync', name: r.direct.name, direction: r.direct.direction }, r.direct.failsafe)));
+        r.direct.failsafe = sh;
+        r.server = serverReadInfo(sh);
+      }
+      return r;
+    }
+    const sh = parseShare(t);
+    return Object.assign({ ok: true, share: sh }, serverReadInfo(sh));
+  }
+}
+function serverReadInfo(sh) {
+  const site = siteForShare(sh);
+  const kind = identityKind(sh.server.protocol);
+  const known = kind ? prefs.knownHost(kind, sh.server.host, sh.server.port) : null;
+  return {
+    site: site ? { id: site.id, name: site.name, hasPassword: !!site.passwordEnc || site.logon === 'key' || site.logon === 'anonymous' } : null,
+    identity: !kind ? 'none' : !sh.server.fingerprint ? (known ? 'known' : 'unknown') : !known ? 'from-file' : known === sh.server.fingerprint ? 'same' : 'different',
+    vault: secrets.available(),
+  };
+}
+// The server of a shared live sync: its identity pinned, the site found or
+// made, the password (if typed) in this machine's keychain. Throws when the
+// identity differs from the one already trusted.
+function serverImport(sh, pw) {
+  const kind = identityKind(sh.server.protocol);
+  if (kind && sh.server.fingerprint) {
+    const known = prefs.knownHost(kind, sh.server.host, sh.server.port);
+    if (known && known !== sh.server.fingerprint) throw new Error('The server identity in this live sync differs from the one this machine already trusts. Ask the other side: the server may have changed, or the code is not theirs.');
+    if (!known) { prefs.rememberHost(kind, sh.server.host, sh.server.port, sh.server.fingerprint); log('info', `Trusted ${sh.server.host}:${sh.server.port} as given by the shared live sync: ${sh.server.fingerprint}`); }
+  }
+  let site = siteForShare(sh);
+  let warn = null;
+  pw = typeof pw === 'string' ? pw : '';
+  if (!site) {
+    const blob = pw ? secrets.encrypt(pw) : null;
+    if (pw && !blob) warn = 'This machine has no keychain filo can use: the password is kept until filo quits, then asked again. AUTO cannot start on its own after a restart.';
+    site = prefs.saveSite({ name: sh.name, folder: 'Shared', protocol: sh.server.protocol, host: sh.server.host, port: sh.server.port, user: sh.server.user, logon: blob ? 'normal' : 'ask', transferMode: sh.server.transferMode, remoteDir: sh.remote }, { passwordEnc: blob });
+  } else if (pw) {
+    const blob = secrets.encrypt(pw);
+    if (blob && site.logon !== 'key') prefs.saveSite(Object.assign({}, site, { logon: 'normal' }), { passwordEnc: blob });
+    else if (!blob) warn = 'This machine has no keychain filo can use: the password is kept until filo quits.';
+  }
+  if (pw) memSecrets.set('site:' + site.id, Object.assign(memSecrets.get('site:' + site.id) || {}, { password: pw }));
+  return { site, warn, remote: sh.remote, interval: sh.interval };
+}
+// Import, step 2: the site (found or made), the server's identity, the pair.
+ipcMain.handle('sync-import-apply', guard((_, req) => {
+  if (req && req.direct) {
+    // The server part is read again here: never trusted as the window sends it.
+    if (req.direct.failsafe) req = Object.assign({}, req, { direct: Object.assign({}, req.direct, { failsafe: parseShare(JSON.stringify(Object.assign({ filo: 'sync', name: req.direct.name, direction: req.direct.direction }, req.direct.failsafe))) }) });
+    const r = D.importApply(Object.assign({}, req, { local: req.local ? absLocal(req.local) : '' }));
+    if (r.ok) syncer.apply(r.pair);
+    return Object.assign(r, { pairs: prefs.listSyncPairs(), status: allSyncStatus(), sites: prefs.listSites() });
+  }
+  try {
+    const sh = parseShare(JSON.stringify(Object.assign({ filo: 'sync' }, req.share)));
+    const localDir = absLocal(req.local);
+    if (!fs.existsSync(localDir) || !fs.statSync(localDir).isDirectory()) return { ok: false, error: 'Choose an existing local folder.' };
+    const { site, warn } = serverImport(sh, req.password);
+    const pair = prefs.saveSyncPair({ name: sh.name, siteId: site.id, local: localDir, remote: sh.remote, direction: sh.direction, exclude: sh.exclude, interval: sh.interval, relay: sh.relay, auto: req.auto !== false });
+    syncer.apply(pair);
+    return { ok: true, pair, warn, pairs: prefs.listSyncPairs(), status: allSyncStatus(), sites: prefs.listSites() };
+  } catch (e) { return { ok: false, error: e.message }; }
+}));
+
+// ── Commands from the command line (cli.js) ────────────────────────────────
+function findByName(list, key, what) {
+  const k = String(key || '').trim();
+  const byId = list.find(x => x.id === k);
+  if (byId) return byId;
+  const same = list.filter(x => String(x.name).toLowerCase() === k.toLowerCase());
+  if (same.length === 1) return same[0];
+  if (same.length > 1) throw Object.assign(new Error(`several ${what}s are named "${k}": use its id (${same.map(x => x.id).join(', ')})`), { code: 3 });
+  throw Object.assign(new Error(`no ${what} named "${k}"`), { code: 3 });
+}
+// Waits for these queue items to end; reports progress on the way.
+function waitItems(ids, emit, gone) {
+  return new Promise(resolve => {
+    const want = new Set(ids);
+    let lastEmit = 0;
+    const check = () => {
+      const its = [...want].map(id => queue.get(id));
+      const end = it => !it || ['done', 'skipped', 'failed', 'stopped'].includes(it.status);
+      const now = Date.now();
+      if (now - lastEmit > 2000) {
+        lastEmit = now;
+        const total = its.reduce((a, it) => a + (it ? it.size || 0 : 0), 0), doneB = its.reduce((a, it) => a + (it ? Math.min(it.size || 0, it.done || 0) : 0), 0);
+        emit({ type: 'progress', files: its.length, finished: its.filter(end).length, bytes: doneB, total, message: `${its.filter(end).length}/${its.length} files · ${Math.floor(total ? (doneB / total) * 100 : 0)} %` });
+      }
+      // The server refused the account (or its identity changed): the queue
+      // stopped and waits for someone at the window. A program waiting would
+      // wait forever: it is told now. (A Pause from the window, on the other
+      // hand, is waited out: Start resumes it.)
+      const b = queue.blocked;
+      // (A refused site stops the whole queue, these files included.)
+      if (b && queue.state !== 'running' && its.some(it => it && !end(it))) {
+        queue.removeListener('changed', kick); queue.removeListener('state', kick);
+        clearInterval(t); clearTimeout(pend);
+        resolve({ code: 3, files: its.length, error: `${b.endpointLabel || 'the server'}: ${b.message} (the queue is stopped)` });
+        return;
+      }
+      if (its.every(end) || gone()) {
+        queue.removeListener('changed', kick); queue.removeListener('state', kick);
+        clearInterval(t); clearTimeout(pend);
+        const count = s => its.filter(it => it && it.status === s).length;
+        const failed = count('failed') + count('stopped') + its.filter(it => !it).length;
+        const errors = its.filter(it => it && it.status === 'failed').slice(0, 50).map(it => ({ file: it.dir === 'up' ? it.remote : it.local, error: it.error }));
+        resolve({ code: failed ? 1 : 0, files: its.length, done: count('done'), skipped: count('skipped'), failed, errors,
+          message: failed ? `${failed} of ${its.length} files failed` : `${its.length} file${its.length === 1 ? "" : "s"} done` });
+      }
+    };
+    // A queue of thousands of files changes all the time: looked at, at most,
+    // four times a second (not at every change).
+    let pend = null;
+    const kick = () => { if (!pend) pend = setTimeout(() => { pend = null; check(); }, 250); };
+    const t = setInterval(check, 1000);
+    queue.on('changed', kick);
+    queue.on('state', kick);
+    check();
+  });
+}
+async function cliAdd(req, emit) {
+  const site = findByName(prefs.data.sites, req.site, 'site');
+  const endpointId = 'site:' + site.id;
+  const base = { endpointId, endpointLabel: site.name };
+  const specs = [];
+  if (req.cmd === 'upload') {
+    const target = remotePath(req.to);
+    for (const p of req.args) {
+      const src = absLocal(p);
+      const st = await fs.promises.stat(src).catch(() => null);
+      if (!st) throw Object.assign(new Error(`not found: ${src}`), { code: 2 });
+      const name = path.basename(src);
+      if (st.isDirectory()) {
+        const root = posix.join(target, name);
+        specs.push(Object.assign({ dir: 'up', type: 'folder', local: src, remote: root }, base));
+        await local.walk(src, e => specs.push(Object.assign({ dir: 'up', type: e.type, local: e.path, remote: posix.join(root, e.rel), size: e.size || 0 }, base)));
+      } else specs.push(Object.assign({ dir: 'up', type: 'file', local: src, remote: posix.join(target, name), size: st.size }, base));
+    }
+  } else {
+    const target = absLocal(req.to);
+    await fs.promises.mkdir(target, { recursive: true });
+    let ep;
+    try { ep = await resolveEndpoint(endpointId); }
+    catch (e) { throw Object.assign(new Error(e.code === 'NEEDS_PASSWORD' ? `the site "${site.name}" has no saved password: save it in the site manager, or use a key` : e.message), { code: 3 }); }
+    const r = createRemote(ep, { log });
+    try {
+      await r.connect();
+      for (const p of req.args) {
+        const src = remotePath(p);
+        const st = await r.stat(src);
+        if (!st) throw Object.assign(new Error(`not on the server: ${src}`), { code: 2 });
+        const name = posix.basename(src);
+        if (st.type === 'folder') {
+          const root = path.join(target, safeLocalName(name));
+          specs.push(Object.assign({ dir: 'down', type: 'folder', local: root, remote: src }, base));
+          await walkRemote(r, src, e => specs.push(Object.assign({ dir: 'down', type: e.type, local: localJoin(root, e.rel), remote: e.path, size: e.size || 0 }, base)));
+        } else specs.push(Object.assign({ dir: 'down', type: 'file', local: path.join(target, safeLocalName(name)), remote: src, size: st.size }, base));
+      }
+    } catch (e) {
+      if (e.code === 2) throw e;
+      throw Object.assign(new Error(RemoteError.from(e).message), { code: e.code === 'TRUST_NEEDED' ? 3 : 4 });
+    } finally { try { r.close(); } catch (_) {} }
+  }
+  const added = queue.add(specs);
+  const ids = [...added, ...(added.revived || []).map(x => x.id)];
+  if (added.revived && added.revived.length) queue.retry(added.revived.map(x => x.id), 'resume');
+  // Files already in the queue for the same thing: waited for too.
+  for (const sp of specs) {
+    if (sp.type !== 'file') continue;
+    const it = [...queue.items.values()].find(x => x.dir === sp.dir && x.local === sp.local && x.remote === sp.remote && x.endpointId === endpointId && x.status !== 'done');
+    if (it && !ids.includes(it.id)) ids.push(it.id);
+  }
+  if (queue.state !== 'running' && queue.state !== 'paused') queue.start();
+  const fileIds = ids.filter(id => { const it = queue.get(id); return it && it.type === 'file'; });
+  emit({ type: 'queued', files: fileIds.length, conflict: added.conflict || 0, message: `${fileIds.length} file${fileIds.length === 1 ? '' : 's'} in the queue (${site.name})${added.conflict ? `, ${added.conflict} left out (same destination as another file)` : ''}` });
+  return fileIds;
+}
+async function handleCli(req, emit, gone) {
+  try {
+    switch (req.cmd) {
+      case 'status': return { code: 0, queue: { state: queue.state, counts: queue.counts() }, syncs: prefs.listSyncPairs().map(p => ({ id: p.id, name: p.name, auto: p.auto, via: p.via, status: statusFor(p.id) })), message: `queue ${queue.state}` };
+      case 'queue': {
+        const a = req.args[0];
+        if (a === 'start') queue.start(); else if (a === 'pause') queue.pause(); else queue.stopAll();
+        return { code: 0, state: queue.state, message: `queue ${queue.state}` };
+      }
+      case 'upload': case 'download': {
+        log('info', `Command line: ${req.cmd} ${req.args.length} item${req.args.length === 1 ? '' : 's'} (${req.site})`);
+        const ids = await cliAdd(req, emit);
+        if (!req.wait) return { code: 0, files: ids.length, message: 'added to the queue' };
+        return await waitItems(ids, emit, gone);
+      }
+      case 'livesync': {
+        const pair = findByName(prefs.data.syncPairs, req.pair, 'live sync');
+        log('info', `Command line: live sync "${pair.name}"`);
+        if (pair.via === 'direct') {
+          const d = await D.rescan(pair);
+          if (!d.ok) return { code: 3, error: d.error };
+          return { code: 0, copies: 0, conflicts: [], message: 'SYNCTHING: the folder is checked now; the other filo receives the changes while both are open' };
+        }
+        const say = r => emit({ type: 'livesync', copies: r.copies, conflicts: r.conflicts.length, waiting: r.waiting || 0, message: `${r.copies} file${r.copies === 1 ? '' : 's'} to copy${r.conflicts.length ? `, ${r.conflicts.length} conflict${r.conflicts.length === 1 ? '' : 's'}` : ''}${r.waiting ? `, ${r.waiting} not stable yet (checked again in a few seconds)` : ''}` });
+        let r = await syncer.run(pair.id, 'command line');
+        if (!r || r.ok === false) return { code: 3, error: (r && r.error) || 'the live sync did not run' };
+        say(r);
+        const ids = [...(r.ids || [])];
+        let copies = r.copies, conflicts = r.conflicts;
+        // With --wait, a file not stable yet (still being written, or simply
+        // seen for the first time) is looked at again until it can be sent:
+        // "wait" means everything that is in the folder now.
+        const settle = (SYNC.STABLE_MS || 10000) + 1000;
+        while (req.wait && r.waiting && !gone()) {
+          await new Promise(res => setTimeout(res, settle));
+          if (gone()) break;
+          r = await syncer.run(pair.id, 'command line');
+          if (!r || r.ok === false) return { code: 3, error: (r && r.error) || 'the live sync did not run' };
+          say(r);
+          for (const id of r.ids || []) if (!ids.includes(id)) ids.push(id);
+          copies += r.copies; conflicts = r.conflicts;
+        }
+        if (!req.wait || !ids.length) return { code: 0, copies, conflicts, waiting: r.waiting || 0, message: copies ? 'sent to the queue' : 'nothing to copy' };
+        const w = await waitItems(ids, emit, gone);
+        return Object.assign(w, { conflicts });
+      }
+      default: return { code: 2, error: `unknown command ${req.cmd}` };
+    }
+  } catch (e) {
+    return { code: e.code && Number.isInteger(e.code) ? e.code : 4, error: e.message };
+  }
+}
+
+// ── The command line, seen from the Settings (POST COMMAND) ───────────────
+// What to type to reach this filo from a terminal or another program, and on
+// a Mac the "filo" command itself: a three-line script in /usr/local/bin that
+// starts this filo (a script, not a link: a link to the binary inside the
+// .app makes macOS look for the app's resources in the wrong place).
+const CLI_LINK = '/usr/local/bin/filo';
+const cliWrapper = () => `#!/bin/sh\n# Installed by filo (Settings, POST COMMAND). Starts filo's command line.\nexec "${process.execPath}" "$@"\n`;
+function cliInfo() {
+  const exe = process.env.APPIMAGE || process.execPath;
+  const q = x => (/[\s"'$`\\]/.test(x) ? `"${x.replace(/(["$`\\])/g, '\\$1')}"` : x);
+  const info = { platform: process.platform, packaged: app.isPackaged, exe, installed: false, stale: false, canInstall: false, command: '' };
+  if (!app.isPackaged) { info.command = `${q(process.execPath)} ${q(app.getAppPath())}`; return info; }
+  if (IS_MAC) {
+    info.canInstall = true;
+    let text = null; try { text = fs.readFileSync(CLI_LINK, 'utf8'); } catch (_) {}
+    info.installed = !!text && text.includes(process.execPath);
+    info.stale = !!text && !info.installed && text.includes('Installed by filo');
+    info.command = info.installed ? 'filo' : q(exe);
+  } else if (process.platform === 'linux') {
+    // The .deb puts a "filo" command in /usr/bin; an AppImage is its own file.
+    let onPath = false;
+    try { onPath = !process.env.APPIMAGE && fs.realpathSync('/usr/bin/filo') === fs.realpathSync(process.execPath); } catch (_) {}
+    info.installed = onPath;
+    info.command = onPath ? 'filo' : q(exe);
+  } else info.command = `"${exe}"`;
+  return info;
+}
+ipcMain.handle('cli-info', () => cliInfo());
+ipcMain.handle('cli-install', async () => {
+  if (!IS_MAC || !app.isPackaged) return { ok: false, error: 'Only for an installed filo on a Mac.' };
+  // Written to a temporary file first, then copied with administrator rights
+  // (macOS asks for the Mac's password itself: filo never sees it).
+  const tmp = path.join(app.getPath('temp'), `filo-cli-${process.pid}.sh`);
+  fs.writeFileSync(tmp, cliWrapper(), { mode: 0o755 });
+  const sh = `mkdir -p /usr/local/bin && cp ${JSON.stringify(tmp)} ${CLI_LINK} && chmod 755 ${CLI_LINK}`;
+  const script = `do shell script ${JSON.stringify(sh)} with administrator privileges with prompt "filo wants to install the \\"filo\\" command."`;
+  try {
+    await new Promise((resolve, reject) => require('child_process').execFile('osascript', ['-e', script], (err, _o, se) => (err ? reject(new Error(String(se || err.message).trim())) : resolve())));
+    log('info', `Command line installed: ${CLI_LINK}`);
+    return { ok: true, info: cliInfo() };
+  } catch (e) {
+    return { ok: false, cancelled: /-128|cancel/i.test(e.message), error: e.message };
+  } finally { try { fs.unlinkSync(tmp); } catch (_) {} }
+});
+ipcMain.handle('cli-help', () => CLI.HELP);
 
 // ── IPC: basics ────────────────────────────────────────────────────────────
 ipcMain.handle('get-version', () => appVersion());
@@ -560,6 +1205,60 @@ ipcMain.handle('local-rename', async (_, from, toName) => {
     return { ok: true };
   } catch (e) { return { ok: false, error: e.message }; }
 });
+// Moving inside one panel (drag and drop onto a folder, or onto ".."): a
+// rename into another folder. Never over something already there, never a
+// folder into itself. Another disk is refused: that is a copy, not a move.
+function insideOf(child, parent, sep) {
+  // Case only counts on Linux (macOS and Windows disks ignore it).
+  const fold = process.platform === 'linux' ? x => x : x => x.toLowerCase();
+  const c = fold(child), p = fold(parent);
+  return c === p || c.startsWith(p.endsWith(sep) ? p : p + sep);
+}
+ipcMain.handle('local-move', async (_, paths, target) => {
+  const errors = [], moved = [];
+  let dest;
+  try { dest = absLocal(target); } catch (e) { return { ok: false, errors: ['The destination is not a folder.'], moved }; }
+  for (const p of Array.isArray(paths) ? paths : []) {
+    let from;
+    try { from = absLocal(p); } catch (_) { continue; }
+    const name = path.basename(from);
+    const to = path.join(dest, name);
+    try {
+      if (path.dirname(from) === dest) continue;                        // already there
+      if (insideOf(dest, from, path.sep)) { errors.push(`${name}: a folder cannot go inside itself.`); continue; }
+      if (fs.existsSync(to)) { errors.push(`${name}: something with that name is already in the destination.`); continue; }
+      await fs.promises.rename(from, to);
+      moved.push(name);
+    } catch (e) {
+      errors.push(`${name}: ${e.code === 'EXDEV' ? 'another disk: drag it to the other panel or copy it instead.' : e.message}`);
+    }
+  }
+  if (moved.length) log('info', `Moved ${moved.length} item${moved.length > 1 ? 's' : ''} to ${dest}`);
+  return { ok: !errors.length, moved, errors };
+});
+ipcMain.handle('remote-move', async (_, paths, target) => {
+  const errors = [], moved = [];
+  const dest = remotePath(target);
+  const sess = browserSession();
+  for (const p of Array.isArray(paths) ? paths : []) {
+    const from = remotePath(p);
+    const name = posix.basename(from);
+    const to = posix.join(dest, name);
+    try {
+      if (from === '/' || posix.dirname(from) === dest) continue;
+      if (dest === from || dest.startsWith(from + '/')) { errors.push(`${name}: a folder cannot go inside itself.`); continue; }
+      if (await withBrowser(r => r.stat(to), sess)) { errors.push(`${name}: something with that name is already in the destination.`); continue; }
+      await withBrowser(r => r.rename(from, to), sess);
+      moved.push(name);
+    } catch (e) {
+      errors.push(`${name}: ${RemoteError.from(e).message}`);
+      if (e && e.code === 'SERVER_CHANGED') break;
+    }
+  }
+  if (moved.length) log('info', `Moved ${moved.length} item${moved.length > 1 ? 's' : ''} to ${dest}`);
+  return { ok: !errors.length, moved, errors };
+});
+
 // To the Trash / Recycle Bin, never straight to oblivion.
 ipcMain.handle('local-delete', async (_, paths) => {
   const errors = [];
@@ -629,9 +1328,11 @@ ipcMain.handle('connect', async (_, req) => {
     if (browser.remote) { try { browser.remote.close(); } catch (_) {} }
     Object.assign(browser, { endpointId, remote, label: ep.label || describe(ep), ep });
 
+    let warn = null;
     if (site && req.savePassword && req.password && site.logon === 'normal') {
       const blob = secrets.encrypt(req.password);
       if (blob) prefs.saveSite({ id: site.id }, { passwordEnc: blob });
+      else warn = 'This machine has no keychain filo can use: the password was not saved.';
     }
     prefs.pushQuick(site ? { siteId: site.id } : quickEndpoints.get(endpointId));
     let home = '/';
@@ -648,6 +1349,7 @@ ipcMain.handle('connect', async (_, req) => {
       home, startDir, serverHash: algos, canSetMTime: !!remote.canSetMTime,
       localDir: site && site.localDir && fs.existsSync(site.localDir) ? site.localDir : null,
       quickHistory: prefs.data.quickHistory,
+      warn,
     };
   } catch (e) {
     const r = errOut(e);
@@ -699,7 +1401,7 @@ ipcMain.handle('remote-list', async (_, dir) => {
 });
 ipcMain.handle('remote-mkdir', async (_, dir, name) => {
   try {
-    if (/[/]/.test(name)) return { ok: false, error: 'A name cannot contain "/".' };
+    if (/[/]/.test(name) || name === '.' || name === '..' || !String(name || '').trim()) return { ok: false, error: 'This name is not allowed (no "/", not "." or "..").' };
     const p = posix.join(remotePath(dir), String(name));
     await withBrowser(r => r.mkdir(p));
     return { ok: true, path: p };
@@ -707,7 +1409,7 @@ ipcMain.handle('remote-mkdir', async (_, dir, name) => {
 });
 ipcMain.handle('remote-rename', async (_, from, toName) => {
   try {
-    if (/[/]/.test(toName)) return { ok: false, error: 'A name cannot contain "/".' };
+    if (/[/]/.test(toName) || toName === '.' || toName === '..' || !String(toName || '').trim()) return { ok: false, error: 'This name is not allowed (no "/", not "." or "..").' };
     const f = remotePath(from);
     const t = posix.join(posix.dirname(f), String(toName));
     const sess = browserSession();
@@ -750,15 +1452,16 @@ ipcMain.handle('remote-url', (_, p) => {
 // req: { dir: 'up'|'down', sources: [{ path, type, size, mtime }], target, start, existing }
 // Folders are walked here and become one item per file, plus one per folder
 // so that empty folders arrive too.
-let scanToken = null;
+// Every listing in progress (two can overlap): CANCEL, PAUSE and STOP reach them all.
+const scanTokens = new Set();
 ipcMain.handle('queue-add', async (_, req) => {
   const endpointId = req.endpointId || browser.endpointId;
   if (!endpointId) return { ok: false, error: 'Connect to a server first.' };
   const label = endpointLabel(endpointId);
-  scanToken = { cancelled: false };
-  const token = scanToken;
+  const token = { cancelled: false };
+  scanTokens.add(token);
   const specs = [];
-  const base = { endpointId, endpointLabel: label, existing: req.existing || null };
+  const base = { endpointId, endpointLabel: label, existing: EXISTING_ACTIONS.includes(req.existing) ? req.existing : null };
   const scanSess = { endpointId };
   let found = 0, lastSent = 0;
   const tick = () => { found++; const now = Date.now(); if (now - lastSent > 200) { lastSent = now; send('scan-progress', { found }); } };
@@ -821,13 +1524,13 @@ ipcMain.handle('queue-add', async (_, req) => {
     flush();
     send('scan-progress', { found, done: true });
     return errOut(e);
-  }
+  } finally { scanTokens.delete(token); }
 });
-ipcMain.handle('scan-cancel', () => { if (scanToken) scanToken.cancelled = true; return true; });
+ipcMain.handle('scan-cancel', () => { for (const t of scanTokens) t.cancelled = true; return true; });
 ipcMain.handle('queue-start', () => { queue.start(); return queue.state; });
-ipcMain.handle('queue-pause', () => { if (scanToken) scanToken.noStart = true; queue.pause(); return queue.state; });
+ipcMain.handle('queue-pause', () => { for (const t of scanTokens) t.noStart = true; queue.pause(); return queue.state; });
 // Stop everything also stops a folder listing still adding files.
-ipcMain.handle('queue-stop-all', () => { if (scanToken) scanToken.cancelled = true; queue.stopAll(); return queue.state; });
+ipcMain.handle('queue-stop-all', () => { for (const t of scanTokens) t.cancelled = true; queue.stopAll(); return queue.state; });
 ipcMain.handle('queue-item-pause', (_, ids) => { queue.pauseItems(ids || []); return true; });
 ipcMain.handle('queue-item-resume', (_, ids) => { queue.resumeItems(ids || []); return true; });
 ipcMain.handle('queue-item-stop', (_, ids) => { queue.stopItems(ids || []); return true; });
@@ -835,7 +1538,7 @@ ipcMain.handle('queue-remove', (_, ids) => { queue.remove(ids || []); return que
 ipcMain.handle('queue-retry', (_, ids, mode) => { queue.retry(ids || [], mode === 'restart' ? 'restart' : 'resume'); return queue.counts(); });
 ipcMain.handle('queue-clear', (_, tab) => { queue.clear(tab); return queue.counts(); });
 ipcMain.handle('queue-page', (_, tab, offset, limit) => queue.page(tab, offset, limit));
-ipcMain.handle('queue-answer', (_, askId, rule, all) => queue.answer(askId, rule, !!all));
+ipcMain.handle('queue-answer', (_, askId, rule, all) => queue.answer(askId, EXISTING_ACTIONS.includes(rule) && rule !== 'ask' ? rule : 'skip', !!all));
 ipcMain.handle('queue-reveal', (_, id) => {
   const it = queue.get(id);
   if (!it) return false;
@@ -860,6 +1563,7 @@ ipcMain.handle('sites-save', (_, site, password, passphrase) => {
     }
     if (passphrase !== undefined && passphrase !== null) {
       patch.passphraseEnc = passphrase === '' ? null : secrets.encrypt(passphrase);
+      if (passphrase !== '' && !patch.passphraseEnc) warn = 'This machine has no keychain filo can use: the key passphrase was not saved and will be asked at each connection.';
     }
     const saved = prefs.saveSite(site, patch);
     return { ok: true, site: saved, sites: prefs.listSites(), warn };

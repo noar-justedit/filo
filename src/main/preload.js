@@ -24,6 +24,9 @@ const api = {
   afterRun    : (action, clean) => inv('after-action-run', action, clean),
   openExternal: (u)           => inv('open-external', u),
   copyText    : (t)           => inv('copy-text', t),
+  cliInfo     : ()            => inv('cli-info'),
+  cliInstall  : ()            => inv('cli-install'),
+  cliHelp     : ()            => inv('cli-help'),
 
   ntfySave    : (patch)       => inv('ntfy-save', patch),
   ntfyTest    : (patch)       => inv('ntfy-test', patch),
@@ -36,6 +39,7 @@ const api = {
   localRoots  : ()            => inv('local-roots'),
   localMkdir  : (dir, name)   => inv('local-mkdir', dir, name),
   localRename : (from, name)  => inv('local-rename', from, name),
+  localMove   : (paths, target) => inv('local-move', paths, target),
   localDelete : (paths)       => inv('local-delete', paths),
   localReveal : (p)           => inv('local-reveal', p),
   localOpen   : (p)           => inv('local-open', p),
@@ -51,6 +55,32 @@ const api = {
   remoteList  : (dir)         => inv('remote-list', dir),
   remoteMkdir : (dir, name)   => inv('remote-mkdir', dir, name),
   remoteRename: (from, name)  => inv('remote-rename', from, name),
+  remoteMove  : (paths, target) => inv('remote-move', paths, target),
+  syncList    : ()            => inv('sync-list'),
+  syncSave    : (pair)        => inv('sync-save', pair),
+  syncDelete  : (id)          => inv('sync-delete', id),
+  syncRun     : (id)          => inv('sync-run', id),
+  syncShare   : (id)          => inv('sync-share', id),
+  syncShareSave: (id)         => inv('sync-share-save', id),
+  syncShareReveal: (p)        => inv('sync-share-reveal', p),
+  syncShareNative: (p)        => inv('sync-share-native', p),
+  syncImportRead: (text)      => inv('sync-import-read', text),
+  syncImportApply: (req)      => inv('sync-import-apply', req),
+  directInfo  : (start)       => inv('direct-info', !!start),
+  directAccept: (dev, share)  => inv('direct-accept', dev, share),
+  directRefuse: (dev)         => inv('direct-refuse', dev),
+  directForget: (id)          => inv('direct-forget', id),
+  directOfferAccept: (req)    => inv('direct-offer-accept', req),
+  directOfferDismiss: (req)   => inv('direct-offer-dismiss', req),
+  directJoin  : (text)        => inv('direct-join', text),
+  directFast  : (on)          => inv('direct-fast', !!on),
+  syncConnect : (id, on, which) => inv('sync-connect', id, !!on, which),
+  trashInfo   : (id)          => inv('trash-info', id),
+  trashOpen   : (id)          => inv('trash-open', id),
+  syncRemoteSession: (siteId, dir) => inv('sync-remote-session', siteId, dir),
+  syncRemoteList: (siteId, dir) => inv('sync-remote-list', siteId, dir),
+  liveInfo    : ()            => inv('live-info'),
+  directIdShare: (req)        => inv('direct-id-share', req),
   remoteDelete: (items)       => inv('remote-delete', items),
   remoteDeleteCancel: ()      => inv('remote-delete-cancel'),
   remoteUrl   : (p)           => inv('remote-url', p),
@@ -81,7 +111,7 @@ const api = {
 
   on: (channel, cb) => {
     const allowed = ['queue-progress', 'queue-changed', 'queue-state', 'queue-ask', 'queue-ask-closed', 'queue-blocked',
-      'queue-finished', 'log', 'scan-progress', 'delete-progress', 'menu', 'update-available'];
+      'queue-finished', 'log', 'scan-progress', 'delete-progress', 'menu', 'update-available', 'sync-status', 'sync-pairs', 'direct-pending', 'live-queue'];
     if (!allowed.includes(channel)) throw new Error('Unknown channel ' + channel);
     const h = (_, payload) => cb(payload);
     ipcRenderer.on(channel, h);

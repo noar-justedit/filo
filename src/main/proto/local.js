@@ -23,14 +23,16 @@ function modeString(mode, isDir, isLink) {
 const OS_LITTER = new Set(['Thumbs.db', 'desktop.ini', '$RECYCLE.BIN', 'System Volume Information']);
 function isHiddenName(name) { return name.startsWith('.') || OS_LITTER.has(name); }
 
-async function list(dir) {
+async function list(dir, strict) {
   const names = await fsp.readdir(dir);
   const out = [];
   // lstat in batches: a card with 4 000 clips listed one stat at a time over a
   // slow reader takes seconds; 32 at once takes a fraction of that.
   for (let i = 0; i < names.length; i += 32) {
     const batch = names.slice(i, i + 32);
-    const stats = await Promise.all(batch.map(n => fsp.lstat(path.join(dir, n)).catch(() => null)));
+    // strict: an entry that cannot be read (not one that vanished) is an
+    // error, not a missing file (the DUAL SYNC mirror deletes what is missing).
+    const stats = await Promise.all(batch.map(n => fsp.lstat(path.join(dir, n)).catch(e => { if (strict && e.code !== 'ENOENT') throw e; return null; })));
     for (let j = 0; j < batch.length; j++) {
       const st = stats[j];
       if (!st) continue;
@@ -155,21 +157,24 @@ async function setMTime(p, ms) {
 
 // Walks a folder for the queue: every sub-folder (so empty ones are recreated
 // too) and every file, with a hard stop on links that loop.
-async function walk(root, onEntry, token) {
+async function walk(root, onEntry, token, opts) {
   const seen = new Set();
+  const strict = !!(opts && opts.strict);
   async function go(dir, rel) {
     if (token && token.cancelled) return;
     let real;
-    try { real = await fsp.realpath(dir); } catch (_) { real = dir; }
-    if (seen.has(real)) return;
+    try { real = await fsp.realpath(dir); } catch (e) { if (strict) throw e; real = dir; }
+    // A folder already walked (a link back to it): strict callers are told
+    // it was not read here, so nothing under it is taken as deleted.
+    if (seen.has(real)) { if (strict && rel) onEntry({ rel, type: 'folder', path: dir, partial: true }); return; }
     seen.add(real);
-    const entries = await list(dir);
+    const entries = await list(dir, strict);
     entries.sort((a, b) => a.name.localeCompare(b.name));
     for (const e of entries) {
       const r = rel ? rel + '/' + e.name : e.name;
       const full = path.join(dir, e.name);
       const isDir = e.type === 'folder' || (e.type === 'symlink' && e.linkTo === 'folder');
-      if (isDir) { onEntry({ rel: r, type: 'folder', path: full }); await go(full, r); }
+      if (isDir) { if (!(strict && seen.has(await fsp.realpath(full).catch(() => full)))) onEntry({ rel: r, type: 'folder', path: full }); await go(full, r); }
       else if (e.type === 'file' || (e.type === 'symlink' && e.linkTo === 'file')) onEntry({ rel: r, type: 'file', path: full, size: e.size, mtime: e.mtime });
     }
   }

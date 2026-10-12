@@ -19,6 +19,7 @@ const posix = require('path').posix;
 const crypto = require('crypto');
 const { PipelinedReader, PipelinedWriter, XFER_CONCURRENCY, XFER_CHUNK } = require('./sftp-pipe');
 const { RemoteError } = require('../core/errors');
+const { Engine, enginePath } = require('./sftp-engine');
 
 let ssh2 = null;
 function getSsh2() { if (!ssh2) ssh2 = require('ssh2'); return ssh2; }
@@ -49,6 +50,22 @@ const HASH_COMMANDS = [
   { algo: 'sha256', cmd: p => `shasum -a 256 -b -- ${shellQuote(p)}`, len: 64 },
   { algo: 'md5',    cmd: p => `md5sum -b -- ${shellQuote(p)}`, len: 32 },
 ];
+
+// The key as the Rust engine reads it. OpenSSH and PEM keys go as they are;
+// a PuTTY key (.ppk, what FileZilla users have) is read here by ssh2 and
+// handed over as PEM, already deciphered: through the pipe, in memory only.
+function engineKey(privateKey, passphrase) {
+  if (!privateKey) return { key: '', passphrase: '' };
+  const text = Buffer.from(privateKey).toString('utf8');
+  if (/^PuTTY-User-Key-File-/.test(text)) {
+    try {
+      const k = getSsh2().utils.parseKey(Buffer.from(privateKey), passphrase || undefined);
+      const one = Array.isArray(k) ? k[0] : k;
+      if (one && !(one instanceof Error) && typeof one.getPrivatePEM === 'function') return { key: one.getPrivatePEM(), passphrase: '' };
+    } catch (_) {}
+  }
+  return { key: text, passphrase: passphrase || '' };
+}
 
 class SftpRemote {
   // opts: { host, port, user, password, privateKey, passphrase, acceptFingerprint }
@@ -141,6 +158,7 @@ class SftpRemote {
       let seenKey = null, refusal = null;
       cfg.hostVerifier = key => {
         const fp = fingerprintOf(key);
+        this.hostFingerprint = fp;          // the identity checked here: the Rust engine must see the same
         const known = hostKeyPolicy && hostKeyPolicy.known ? hostKeyPolicy.known('sftp', host, port) : null;
         if (known && known !== fp) { refusal = { changed: true, known, fp }; return false; }
         if (!known && this.opts.acceptFingerprint !== fp) { refusal = { unknown: true, fp }; return false; }
@@ -169,6 +187,9 @@ class SftpRemote {
         reject(err);
       };
 
+      // What the two sides agreed on (cipher, MAC): shown in the log, and
+      // what a speed comparison needs to know first.
+      conn.on('handshake', n => { this.algos = n; });
       conn.on('ready', () => {
         conn.sftp((err, sftp) => {
           if (err) return bail(err);
@@ -185,7 +206,8 @@ class SftpRemote {
           conn.on('end', () => lost());
           sftp.on('error', lost);
           sftp.on('close', () => lost());
-          this.log('info', `Connected to ${host}:${port} (SFTP)`);
+          const a = this.algos && this.algos.cs;
+          this.log('info', `Connected to ${host}:${port} (SFTP${a ? `, ${a.cipher}${/gcm|poly1305/.test(a.cipher) ? '' : ' + ' + a.mac}` : ''})`);
           resolve();
         });
       });
@@ -213,7 +235,9 @@ class SftpRemote {
   }
 
   _wantWindow(bytes) {
-    this._windowTarget = Math.min(64 * 1024 * 1024, Math.max(this._windowTarget, bytes));
+    // At most 32 MB: larger, ssh2 slowed down instead (64 MB: 137 MB/s against
+    // 378 with 32 MB on the test machine; 48 MB left reads at 100-150 MB/s).
+    this._windowTarget = Math.min(32 * 1024 * 1024, Math.max(this._windowTarget, bytes));
     if (this.sftp) { try { this._topUp(this.sftp); } catch (_) {} }
   }
 
@@ -229,6 +253,7 @@ class SftpRemote {
 
   async close() {
     this.closing = true;
+    if (this._engine) { this._engine.kill(); this._engine = null; }
     for (const s of this._streams) { try { s.destroy(); } catch (_) {} }
     this._streams.clear();
     try { if (this.conn) this.conn.end(); } catch (_) {}
@@ -236,7 +261,53 @@ class SftpRemote {
   }
 
   // Abort whatever is running on this connection, the fastest way there is.
-  abort() { this._die(Object.assign(new Error('Stopped.'), { aborted: true })); }
+  abort() {
+    if (this._engine) this._engine.abort();
+    this._die(Object.assign(new Error('Stopped.'), { aborted: true }));
+  }
+
+  // ── The Rust engine (proto/sftp-engine.js) ──────────────────────────────
+  // Moves one file, or a range of one, between a local path and a remote
+  // path. Resolves { bytes, hash } (hash: xxHash64 of the bytes, in order,
+  // when asked), or null when the engine is not usable for this connection:
+  // the caller then moves the bytes itself, as before.
+  async engineJob(job, onBytes, token, limiter) {
+    if (this.engineOff) return null;
+    if (!enginePath() || !this.hostFingerprint) {
+      // Said once per connection, so a build without the engine is visible.
+      this.engineOff = true;
+      this.log('info', process.env.FILO_ENGINE === '0' ? 'Rust engine turned off (FILO_ENGINE=0): the built-in engine moves the files.'
+        : !enginePath() ? 'Rust engine not in this build: the built-in engine moves the files.'
+        : 'Rust engine not used (server identity unknown): the built-in engine moves the files.');
+      return null;
+    }
+    if (!this._engine) {
+      const o = this.opts;
+      this._engine = new Engine({
+        host: o.host, port: this.port, user: o.user, password: o.password,
+        ...engineKey(o.privateKey, o.passphrase),
+        fingerprint: this.hostFingerprint,
+      }, this.log);
+    }
+    try {
+      // Said as soon as the engine is connected, not at the end of its first
+      // job (a large segment over the internet can take minutes).
+      if (!this._engine.cipher) {
+        await this._engine.start();
+        this.log('info', `Rust engine: ${this.opts.host}:${this.port} (${this._engine.cipher})`);
+      }
+      return await this._engine.run(job, onBytes, token, limiter);
+    } catch (e) {
+      if (!e.engineRefused) throw e;
+      // It could not start, log in, or saw another identity: this connection
+      // keeps the built-in engine (nothing was moved yet).
+      this.engineOff = true;
+      try { this._engine.kill(); } catch (_) {}
+      this._engine = null;
+      this.log('warn', `Rust engine not used for ${this.opts.host}: ${e.message} The built-in engine moves the files.`);
+      return null;
+    }
+  }
 
   _mapStat(st, name) {
     const isLink = typeof st.isSymbolicLink === 'function' ? st.isSymbolicLink() : false;
@@ -324,14 +395,32 @@ class SftpRemote {
 
   get canSetMTime() { return true; }
 
+  // The size of one request. OpenSSH (every Synology, most Linux servers)
+  // announces what it takes ("limits@openssh.com", ~254 KB); ssh2 reads it at
+  // connection and also caps what it sends to it. Others keep ssh2's safe
+  // size (~31 KB): asking 32 KB there was split by ssh2 into a read of 31 KB
+  // and a second one for the last 800 bytes.
+  // Reading: 32 KB at most, whatever the server allows. 254 KB requests looked
+  // faster on a short test (260 MB/s, 10/10/2026 14:05, a file the NAS held in
+  // memory) and were 3 to 4 times SLOWER on a real one: 20 GB on the DS920+,
+  // 10/10/2026 15:54, one connection: 45-56 MB/s with 254 KB adaptive, 173 with
+  // 32 KB adaptive, FileZilla 125, OpenSSH 184. The adaptive depth still goes
+  // up to 32 MB in flight (1024 × 32 KB), so long links keep their ceiling.
+  // Writing: as large as the server takes (sending was not slower with it).
+  _chunk(kind) {
+    const s = this.sftp;
+    const max = Number(s && (kind === 'read' ? s._maxReadLen : s._maxWriteLen)) || XFER_CHUNK;
+    return Math.max(4096, Math.min(max, kind === 'read' ? XFER_CHUNK : 256 * 1024));
+  }
+
   createReadStream(p, start, end) {
     if (this.dead) throw this.dead;
-    return this._track(new PipelinedReader(this, normalize(p), { start, end }));
+    return this._track(new PipelinedReader(this, normalize(p), { start, end, chunkSize: this._chunk('read') }));
   }
 
   createWriteStream(p, start, opts) {
     if (this.dead) throw this.dead;
-    return this._track(new PipelinedWriter(this, normalize(p), Object.assign({ start }, opts || {})));
+    return this._track(new PipelinedWriter(this, normalize(p), Object.assign({ start, chunkSize: this._chunk('write') }, opts || {})));
   }
 
   // Segments (core/segments.js): a range of a file, read or written by this
@@ -340,8 +429,9 @@ class SftpRemote {
   // Many writes are in flight at once and a server may complete them in any
   // order: after a cut, the end of a partial file can be written while a piece
   // before it is not. A resumed upload therefore starts this far before the
-  // end of what the server holds (64 × 32 KB = 2 MB, sent again).
-  get resumeMargin() { return XFER_CONCURRENCY * XFER_CHUNK; }
+  // end of what the server holds (64 requests: 2 MB with 32 KB requests,
+  // 16 MB with OpenSSH's 254 KB, sent again).
+  get resumeMargin() { return XFER_CONCURRENCY * Math.max(XFER_CHUNK, this._chunk('write')); }
 
   downloadRange(p, destination, start, end) {
     const { pipeline } = require('stream');

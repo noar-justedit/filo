@@ -33,7 +33,7 @@ const path = require('path');
 const posix = path.posix;
 const { dropPart } = require('./transfer');
 const { RemoteError } = require('./errors');
-const { AutoTuner, SEGMENT_START } = require('./autotune');
+const { AutoTuner, SEGMENT_START, SEGMENT_UP_START } = require('./autotune');
 const { createLane } = require('./lane');
 
 const RETRY_DELAYS_S = [5, 15, 30, 60, 120];
@@ -135,6 +135,12 @@ class TransferQueue extends EventEmitter {
         endpointId: s.endpointId,
         endpointLabel: s.endpointLabel || '',
         existing: s.existing || null,
+        // LIVE SYNC: which pair and which relative path this item serves.
+        sync: s.sync && typeof s.sync === 'object' ? { pairId: String(s.sync.pairId), rel: String(s.sync.rel) } : undefined,
+        // Segment relay: an upload that announces its segments (relayOut),
+        // or a download that takes them as they are announced (relay).
+        relayOut: s.relayOut ? true : undefined,
+        relay: s.relay && typeof s.relay === 'object' ? cleanRelay(s.relay) : undefined,
         status: 'queued',
         done: 0,
         attempts: 0,
@@ -160,6 +166,40 @@ class TransferQueue extends EventEmitter {
   }
 
   get(id) { return this.items.get(id); }
+
+  // Segment relay, receiving side: what the sender has announced so far
+  // (o: { endpointId, endpointLabel, local, remote, sync, relay: { id, size,
+  // mtime, segSize, count, part, hashes: { index: xxh64 }, final } }).
+  // Creates the download the first time, then wakes the segments that
+  // became available. Returns the item.
+  relayOffer(o) {
+    const key = it => `${it.endpointId}|${it.local}|${it.remote}`;
+    const want = `${o.endpointId}|${o.local}|${o.remote}`;
+    let it = [...this.items.values()].find(x => x.dir === 'down' && x.type === 'file' && !x.removed && x.status !== 'done' && key(x) === want);
+    const r = cleanRelay(o.relay);
+    if (it && it.relay && it.relay.id !== r.id && !this._unitsOf(it).length) { this.remove([it.id]); it = null; }   // the sender started again
+    if (!it) {
+      const ids = this.add([{ dir: 'down', type: 'file', local: o.local, remote: o.remote, size: r.size, endpointId: o.endpointId, endpointLabel: o.endpointLabel, existing: 'skip', sync: o.sync, relay: r }]);
+      it = ids.length ? this.items.get(ids[0]) : null;
+      if (this.state === 'stopped' && it) this.start();
+      return it;
+    }
+    if (!it.relay || it.relay.id !== r.id) return it;          // still letting go of an earlier attempt
+    it.relay.hashes = Object.assign({}, it.relay.hashes, r.hashes);
+    if (r.final) it.relay.final = true;
+    if (it.seg && it.seg.relayId === r.id) {
+      for (let i = 0; i < it.seg.chunks.length; i++) {
+        const c = it.seg.chunks[i], h = it.relay.hashes[i];
+        if (h && !c.hash) c.hash = h;
+        if (c.st === 'w' && (h || it.relay.final)) c.st = 'p';
+      }
+    }
+    if (['failed', 'stopped'].includes(it.status) && !this._unitsOf(it).length) this.retry([it.id], 'resume');
+    this._changed();
+    if (this.state === 'running') this._pump();
+    else if (this.state === 'stopped') this.start();
+    return it;
+  }
 
   counts() {
     const c = { queued: 0, running: 0, waiting: 0, asking: 0, paused: 0, done: 0, failed: 0, stopped: 0, skipped: 0, total: 0, bytesLeft: 0 };
@@ -195,6 +235,7 @@ class TransferQueue extends EventEmitter {
       note: it.note || '', verify: it.verify || null, attempts: it.attempts || 0,
       phase: it.phase || '', vdone: it.vdone || 0, speed: it.speed || 0,
       endpointLabel: it.endpointLabel, retryAt: it.retryAt || 0, offset: it.offset || 0, segs,
+      addedAt: it.addedAt || 0, startedAt: it.startedAt || 0, finishedAt: it.finishedAt || 0,
     };
   }
 
@@ -213,7 +254,7 @@ class TransferQueue extends EventEmitter {
       const len = c.e - c.s || 1;
       if (c.st === 'd') { st += 'd'; f += String.fromCharCode(148); return; }
       const got = (Number(c.got) || 0) + (live.get(i) || 0);
-      st += c.st === 'r' ? 'r' : c.retryAt && c.retryAt > now ? 'w' : 'p';
+      st += c.st === 'r' ? 'r' : c.st === 'w' || (c.retryAt && c.retryAt > now) ? 'w' : 'p';
       f += String.fromCharCode(48 + Math.max(0, Math.min(100, Math.floor((got / len) * 100))));
     });
     return { n: ch.length, segSize: ch.length > 1 ? ch[0].e - ch[0].s : (ch[0] ? ch[0].e : 0), size: it.seg.size || it.size, st, f };
@@ -431,12 +472,17 @@ class TransferQueue extends EventEmitter {
       const ch = it.seg.chunks;
       const idx = ch.findIndex(c => c.st === 'p' && (!c.retryAt || c.retryAt <= now));
       if (idx >= 0) {
-        if (this.tuner && !this.tuner.boosted && this.settings().concurrency === 'auto' && this.tuner.boost(SEGMENT_START)) {
-          this.log('info', `Auto: ${this.tuner.limit()} simultaneous transfers (a file in segments)`);
+        if (this.tuner && !this.tuner.boosted && this.settings().concurrency === 'auto') {
+          if (it.dir === 'up' ? this.tuner.startLow(SEGMENT_UP_START) : this.tuner.boost(SEGMENT_START)) {
+            this.log('info', it.dir === 'up'
+              ? `Auto: ${this.tuner.limit()} transfer at a time (a file sent in segments: more only if it is faster)`
+              : `Auto: ${this.tuner.limit()} simultaneous transfers (a file in segments)`);
+          }
         }
         return { kind: 'seg', it, idx };
       }
-      if (!it._finalizing && ch.every(c => c.st === 'd') && !this._unitsOf(it).length) return { kind: 'final', it };
+      // A relayed file is only finished once the sender has given it its name.
+      if (!it._finalizing && ch.every(c => c.st === 'd') && (!it.relay || it.relay.final) && !this._unitsOf(it).length) return { kind: 'final', it };
     }
     for (const id of this.order) {
       const it = this.items.get(id);
@@ -507,6 +553,9 @@ class TransferQueue extends EventEmitter {
       errors: [...this.items.values()].filter(i => i.status === 'failed' && (i.finishedAt || 0) >= (r.startedAt || 0)).slice(0, 20).map(i => ({ name: displayName(i), message: i.error })),
       endpointLabel: [...new Set([...this.items.values()].filter(i => i.finishedAt >= (r.startedAt || 0)).map(i => i.endpointLabel))].filter(Boolean).join(', '),
     };
+    // A run made only of LIVE SYNC copies: no "queue finished" notice and no
+    // end action (a sync every few minutes must not shut the machine down).
+    summary.syncOnly = ![...this.items.values()].some(i => i.type === 'file' && !i.sync && (i.finishedAt || 0) >= (r.startedAt || 0));
     this.log(summary.failed ? 'warn' : 'info', `Queue finished: ${summary.done} done, ${summary.failed} failed, ${summary.skipped} skipped`);
     this.emit('state', this.state);
     this.emit('finished', summary);
@@ -640,6 +689,7 @@ class TransferQueue extends EventEmitter {
         if (res.status === 'done') { this.run.done++; if (res.verify && res.verify.level !== 'size') this.run.verified++; }
         else this.run.skipped++;
       }
+      this.emit('item-done', it, res.status);
       if (res.status === 'done') {
         const v = res.verify;
         this.log('info', `✓ ${it.dir === 'up' ? 'Uploaded' : 'Downloaded'} ${it.dir === 'up' ? it.remote : it.local}${v ? ' — ' + verifyText(v) : ''}`);
@@ -883,7 +933,7 @@ class TransferQueue extends EventEmitter {
     // offset and done: how much of a stopped file is already in place,
     // so that after a relaunch "resume or start again?" is still asked, and
     // START AGAIN still applies.
-    const keep = ['id', 'dir', 'type', 'local', 'remote', 'size', 'endpointId', 'endpointLabel', 'existing', 'status', 'attempts', 'error', 'note', 'verify', 'resume', 'restartFromZero', 'mismatchCount', 'addedAt', 'finishedAt', 'seg', 'ownTarget', 'offset', 'done'];
+    const keep = ['id', 'dir', 'type', 'local', 'remote', 'size', 'endpointId', 'endpointLabel', 'existing', 'status', 'attempts', 'error', 'note', 'verify', 'resume', 'restartFromZero', 'mismatchCount', 'addedAt', 'finishedAt', 'seg', 'ownTarget', 'offset', 'done', 'sync', 'relayOut', 'relay'];
     let list = this.order.map(id => this.items.get(id)).filter(Boolean);
     const finished = list.filter(i => i.status === 'done' || i.status === 'skipped');
     if (finished.length > KEEP_FINISHED) {
@@ -893,7 +943,7 @@ class TransferQueue extends EventEmitter {
     const out = list.map(it => {
       const o = {};
       for (const k of keep) if (it[k] !== undefined && it[k] !== null) o[k] = it[k];
-      if (o.seg) o.seg = Object.assign({}, o.seg, { chunks: o.seg.chunks.map(c => (c.st === 'd' ? { s: c.s, e: c.e, st: 'd' } : { s: c.s, e: c.e, st: 'p', got: c.got || 0 })) });
+      if (o.seg) o.seg = Object.assign({}, o.seg, { chunks: o.seg.chunks.map(c => Object.assign(c.st === 'd' ? { s: c.s, e: c.e, st: 'd' } : { s: c.s, e: c.e, st: c.st === 'w' ? 'w' : 'p', got: c.got || 0 }, c.hash ? { hash: c.hash } : {})) });
       if (ACTIVE.has(o.status) || o.status === 'waiting') o.status = 'queued';
       return o;
     });
@@ -916,10 +966,21 @@ class TransferQueue extends EventEmitter {
   }
 }
 
+function cleanRelay(r) {
+  const hashes = {};
+  for (const [k, v] of Object.entries((r && r.hashes) || {})) if (/^\d+$/.test(k) && /^[0-9a-f]{8,64}$/.test(String(v))) hashes[k] = String(v);
+  return {
+    id: String(r.id || '').slice(0, 32), size: Math.max(0, Number(r.size) || 0), mtime: Number(r.mtime) || 0,
+    segSize: Math.max(1, Number(r.segSize) || 1), count: Math.max(0, Number(r.count) || 0),
+    part: String(r.part || ''), hashes, final: !!r.final,
+  };
+}
+
 // What a lane needs to know about an item: plain data, no timers or samples.
 function plainItem(it) {
   const o = {};
-  for (const k of ['id', 'dir', 'type', 'local', 'remote', 'size', 'existing', 'resume', 'restartFromZero', 'offset', 'seg', 'ownTarget']) if (it[k] !== undefined) o[k] = it[k];
+  for (const k of ['id', 'dir', 'type', 'local', 'remote', 'size', 'existing', 'resume', 'restartFromZero', 'offset', 'seg', 'ownTarget', 'relayOut', 'relay']) if (it[k] !== undefined) o[k] = it[k];
+  if (o.relay) o.relay = JSON.parse(JSON.stringify(o.relay));
   if (o.seg) o.seg = JSON.parse(JSON.stringify(o.seg));
   return o;
 }
@@ -933,6 +994,7 @@ function verifyText(v) {
   if (v.level === 'server') return `verified (${L[v.algo]} computed by the server)`;
   if (v.level === 'readback') return 'verified (read back, xxHash64)';
   if (v.level === 'received') return 'verified (copy = bytes received, xxHash64)';
+  if (v.level === 'relay') return "verified (each segment = the sender's file, xxHash64)";
   return 'size checked';
 }
 

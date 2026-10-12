@@ -4,6 +4,9 @@
 # Dependencies and build output
 node_modules/
 dist/
+engine/target/
+engine/dist/
+vendor/
 
 # macOS / editors
 .DS_Store

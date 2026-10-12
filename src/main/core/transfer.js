@@ -113,6 +113,21 @@ async function ensureLocalDir(dir) {
   }
 }
 
+// The bytes of a file, or of a range of one, moved by the Rust engine when
+// this connection has it (SFTP, proto/sftp-engine.js): straight between the
+// disk and the network, fingerprinted on the way when asked. Returns
+// { bytes, hash }, or null: then the built-in path below moves them, as
+// before. The speed limit (core/throttle.js) is handed over to the engine,
+// and followed when it changes during the transfer.
+// `phase` is what the progress counts (a read-back is 'verify', and is not
+// held back by the speed limit, as on the built-in path).
+async function engineMove(ctx, job, phase) {
+  const r = ctx.remote;
+  if (!r || typeof r.engineJob !== 'function') return null;
+  const p = phase || 'transfer';
+  return r.engineJob(job, n => ctx.onBytes(n, p), ctx.token, p === 'transfer' ? ctx.limiter : null);
+}
+
 // ctx: { remote, settings, token, onBytes(n, phase), ask(item, src, dst), log }
 // Returns { status: 'done'|'skipped', note, verify: { level, algo } }.
 async function runFile(item, ctx) {
@@ -196,14 +211,18 @@ async function upload(item, ctx) {
 
   // Fingerprint while sending, when the whole file goes through.
   const streamAlgo = offset === 0 && settings.verify ? 'xxh64' : null;
-  const tap = new Tap(streamAlgo ? await createHasher(streamAlgo) : null, n => ctx.onBytes(n, 'transfer'), ctx.limiter);
-  if (offset < src.size || offset === 0) {
+  let streamHash = null;
+  const eng = offset < src.size ? await engineMove(ctx, { op: 'put', local: item.local, remote: writePath, start: offset, end: src.size, segment: false, hash: !!streamAlgo }) : null;
+  if (eng) streamHash = eng.hash;
+  else if (offset < src.size || offset === 0) {
+    const tap = new Tap(streamAlgo ? await createHasher(streamAlgo) : null, n => ctx.onBytes(n, 'transfer'), ctx.limiter);
     const rs = local.createReadStream(item.local, offset);
     rs.on('error', e => tap.destroy(e));
     rs.pipe(tap);
     ctx.token.onAbort = () => { rs.destroy(); tap.destroy(Object.assign(new Error('Stopped.'), { aborted: true })); };
     await remote.upload(tap, writePath, offset);
     ctx.token.onAbort = null;
+    streamHash = tap.digest();
   }
   if (ctx.token.cancelled) throw Object.assign(new RemoteError('Stopped.'), { aborted: true });
 
@@ -213,7 +232,7 @@ async function upload(item, ctx) {
     throw new RemoteError(`The server holds ${landed ? landed.size : 0} bytes of ${src.size}.`, { network: true, sizeMismatch: true });
   }
 
-  const verify = await verifyUpload(item, ctx, writePath, src, tap.digest(), streamAlgo, offset);
+  const verify = await verifyUpload(item, ctx, writePath, src, streamHash, streamAlgo, offset);
 
   if (useTemp) {
     const target = await recheckTarget(item, ctx, src, finalPath, !!dst);
@@ -288,6 +307,8 @@ async function promote(remote, from, to, knownThere) {
 
 // What the remote side holds, fingerprinted by reading it back.
 async function readBackHash(remote, p, ctx) {
+  const eng = await engineMove(Object.assign({}, ctx, { remote }), { op: 'get', remote: p, local: '-', start: 0, segment: false, hash: true }, 'verify');
+  if (eng) return eng.hash;
   const tap = new Tap(await createHasher('xxh64'), n => ctx.onBytes(n, 'verify'));
   const sink = nullSink();
   tap.pipe(sink);
@@ -338,7 +359,51 @@ function mismatch(offset, msg) {
 }
 
 // ── Download ──────────────────────────────────────────────────────────────
+// A relayed file (see "Segment relay"): the segments come from the sender's
+// partial file as they are announced; the queue turns a waiting segment ('w')
+// into a pending one ('p') when its ".done" appears.
+async function prepareRelay(item, ctx) {
+  const r = item.relay;
+  await ensureLocalDir(path.dirname(item.local));
+  let finalPath = item.local;
+  const src = { size: r.size, mtime: r.mtime };
+  const dst = await local.stat(finalPath);
+  if (dst && dst.type === 'file' && dst.size === r.size && !item.ownTarget) return { status: 'skipped', note: 'Already there' };
+  if (dst) {
+    const { action } = await decide(item, ctx, src, dst);
+    if (action === 'skip') return { status: 'skipped', note: 'Already there' };
+    if (action === 'rename') {
+      const dir = path.dirname(finalPath);
+      finalPath = path.join(dir, await existing.freeName(path.basename(finalPath), async n => !!(await local.stat(path.join(dir, n)))));
+      item.local = finalPath;
+    }
+  }
+  const writePath = finalPath + PART;
+  const prev = item.seg;
+  const part = await local.stat(writePath);
+  const keep = !!(prev && prev.relayId === r.id && prev.writePath === writePath && part && part.type === 'file');
+  if (!keep) { const fd = await require('fs').promises.open(writePath, 'w'); await fd.close(); }
+  const chunks = makeChunks(r.size, r.segSize).map((c, i) => {
+    const old = keep ? prev.chunks[i] : null;
+    const o = old && old.st === 'd' ? { s: c.s, e: c.e, st: 'd' } : { s: c.s, e: c.e, st: 'w', got: old ? Math.max(0, Number(old.got) || 0) : 0 };
+    const h = r.hashes && r.hashes[i];
+    if (h) o.hash = h;
+    if (o.st === 'w' && (h || r.final)) o.st = 'p';
+    return o;
+  });
+  item.seg = { writePath, finalPath, useTemp: true, replacing: !!dst, size: r.size, verify: 'relay', algo: 'xxh64', chunks, relayId: r.id };
+  item.resume = { srcSize: r.size, srcMtime: r.mtime };
+  item.ownTarget = false;
+  item.restartFromZero = false;
+  const doneBytes = chunks.reduce((a, c) => a + (c.st === 'd' ? c.e - c.s : (c.got || 0)), 0);
+  item.offset = doneBytes;
+  ctx.onBytes(doneBytes, 'resume');
+  ctx.log('info', `${path.basename(finalPath)}: relayed, ${chunks.length} segments; ${chunks.filter(c => c.st !== 'w').length} already on the server`);
+  return { status: 'segmented' };
+}
+
 async function download(item, ctx) {
+  if (item.relay) return prepareRelay(item, ctx);
   const { remote, settings } = ctx;
   const src = await remote.stat(item.remote);
   if (!src) throw new RemoteError('This file is no longer on the server.', { fatal: true });
@@ -379,16 +444,26 @@ async function download(item, ctx) {
   if (offset) ctx.log('info', `Resuming ${path.basename(finalPath)} at ${offset} bytes`);
 
   const streamAlgo = offset === 0 && settings.verify ? 'xxh64' : null;
-  const tap = new Tap(streamAlgo ? await createHasher(streamAlgo) : null, n => ctx.onBytes(n, 'transfer'), ctx.limiter);
-  const sink = new local.LocalSink(writePath, offset);
-  tap.pipe(sink);
-  const sinkDone = finished(sink);
-  sinkDone.catch(() => {});
-  ctx.token.onAbort = () => { tap.destroy(Object.assign(new Error('Stopped.'), { aborted: true })); sink.destroy(); };
-  if (offset < src.size || offset === 0) await remote.download(item.remote, tap, offset);
-  else tap.end();
-  await sinkDone;
-  ctx.token.onAbort = null;
+  let streamHash = null;
+  // The engine writes in order, so the partial file is always an exact
+  // prefix (resuming from its size stays right), and cuts any old tail.
+  const eng = offset < src.size ? await engineMove(ctx, { op: 'get', remote: item.remote, local: writePath, start: offset, end: src.size, segment: false, hash: !!streamAlgo }) : null;
+  if (eng) streamHash = eng.hash;
+  else {
+    const tap = new Tap(streamAlgo ? await createHasher(streamAlgo) : null, n => ctx.onBytes(n, 'transfer'), ctx.limiter);
+    const sink = new local.LocalSink(writePath, offset);
+    tap.pipe(sink);
+    const sinkDone = finished(sink);
+    sinkDone.catch(() => {});
+    ctx.token.onAbort = () => { tap.destroy(Object.assign(new Error('Stopped.'), { aborted: true })); sink.destroy(); };
+    try {
+      if (offset < src.size || offset === 0) await remote.download(item.remote, tap, offset);
+      else tap.end();
+      await sinkDone;
+    } catch (e) { sink.destroy(); throw e; }       // the local file is closed, even on a network error
+    ctx.token.onAbort = null;
+    streamHash = tap.digest();
+  }
   if (ctx.token.cancelled) throw Object.assign(new RemoteError('Stopped.'), { aborted: true });
 
   const landed = await local.stat(writePath);
@@ -396,7 +471,7 @@ async function download(item, ctx) {
     throw new RemoteError(`Received ${landed ? landed.size : 0} bytes of ${src.size}.`, { network: true, sizeMismatch: true });
   }
 
-  const verify = await verifyDownload(item, ctx, writePath, src, tap.digest(), streamAlgo, offset);
+  const verify = await verifyDownload(item, ctx, writePath, src, streamHash, streamAlgo, offset);
 
   if (useTemp) {
     const target = await recheckTarget(item, ctx, src, finalPath, !!dst);
@@ -491,6 +566,51 @@ function segmentSizeFor(size) {
 }
 const SEGMENT_SIZE = TEST_SEG || SEG_MAX;     // the largest; kept for the tests
 
+// ── Segment relay (LIVE SYNC, SFTP) ─────────────────────────────────────
+// A large file sent in segments can be fetched by another filo while it is
+// still arriving. Next to the partial file, the sender keeps a small folder,
+// ".<name>.filoparts", holding:
+//   info.json   size, segment size, an id for this attempt, the partial name;
+//   <n>.done    one per segment fully on the server: its xxHash64, computed
+//               from the sender's own file.
+// A receiving filo downloads each segment as soon as its ".done" appears,
+// checks it against that hash, writes it at its place in its own .filopart,
+// and finishes once the sender has given the file its real name. Nothing to
+// merge: the segments are already where they belong.
+const RELAY_SUFFIX = '.filoparts';
+function relayDirFor(finalPath) { return posix.join(posix.dirname(finalPath), '.' + posix.basename(finalPath) + RELAY_SUFFIX); }
+async function writeSmall(remote, p, text) {
+  const { Readable } = require('stream');
+  await remote.upload(Readable.from([Buffer.from(String(text))]), p, 0);
+}
+async function readSmall(remote, p, max) {
+  const st = await remote.stat(p);
+  if (!st || st.type !== 'file' || st.size > (max || 65536)) return null;
+  const parts = [];
+  const sink = new Writable({ write(c, _e, cb) { parts.push(c); cb(); } });
+  await remote.downloadRange(p, sink, 0, st.size);
+  await finished(sink).catch(() => {});
+  return Buffer.concat(parts).toString('utf8');
+}
+async function dropRelayDir(remote, dir) {
+  try {
+    for (const e of await remote.list(dir)) { try { await remote.unlink(posix.join(dir, e.name)); } catch (_) {} }
+    await remote.rmdir(dir);
+  } catch (_) {}
+}
+async function startRelay(item, ctx, src, keep, chunks, writePath, finalPath) {
+  const { remote } = ctx;
+  const dir = relayDirFor(finalPath);
+  const prev = keep && item.seg && item.seg.relay;
+  if (!prev) await dropRelayDir(remote, dir);              // markers of an earlier attempt mean nothing now
+  try { await remote.mkdir(dir); } catch (_) {}
+  const id = prev ? prev.id : require('crypto').randomBytes(6).toString('hex');
+  await writeSmall(remote, posix.join(dir, 'info.json'), JSON.stringify({
+    v: 1, id, size: src.size, mtime: src.mtime || 0, segSize: chunks[0].e - chunks[0].s, count: chunks.length, part: posix.basename(writePath),
+  }));
+  return { dir, id };
+}
+
 function segmentable(remote, settings, size) {
   return !!(remote && remote.canSegment) && settings.segments !== false && size >= SEGMENT_MIN_FILE;
 }
@@ -522,7 +642,12 @@ async function prepareSegments(item, ctx, src, t) {
     else { const fd = await require('fs').promises.open(t.writePath, 'w'); await fd.close(); }
   }
   const chunks = keep ? prev.chunks.map(c => (c.st === 'd' ? { s: c.s, e: c.e, st: 'd' } : { s: c.s, e: c.e, st: 'p', got: Math.max(0, Math.min(c.e - c.s, Number(c.got) || 0)) })) : makeChunks(src.size, segmentSizeFor(src.size));
-  item.seg = { writePath: t.writePath, finalPath: t.finalPath, useTemp: t.useTemp, replacing: t.replacing, size: src.size, verify, algo, chunks };
+  let relay = null;
+  if (up && item.relayOut) {
+    try { relay = await startRelay(item, ctx, src, keep, chunks, t.writePath, t.finalPath); }
+    catch (e) { ctx.log('warn', `${posix.basename(t.finalPath)}: the segment relay could not start (${e.message}); sent as usual`); }
+  }
+  item.seg = { writePath: t.writePath, finalPath: t.finalPath, useTemp: t.useTemp, replacing: t.replacing, size: src.size, verify, algo, chunks, relay };
   item.resume = { srcSize: src.size, srcMtime: src.mtime };
   item.restartFromZero = false;
   const doneBytes = chunks.reduce((a, c) => a + (c.st === 'd' ? c.e - c.s : (c.got || 0)), 0);
@@ -550,7 +675,53 @@ async function runSegment(item, idx, ctx) {
   const start = c.s + got;
   const len = c.e - start;
   const check = seg.verify === 'chunk';
-  if (item.dir === 'down') {
+  // A relayed file: read from the sender's partial file until it has its name.
+  const from = item.dir === 'down' && item.relay && !item.relay.final ? item.relay.part : item.remote;
+  // Everything of this segment was already in place when it stopped (the
+  // engine reports exactly what is): nothing to move, only the checks.
+  if (len === 0 && got > 0) {
+    if (item.dir === 'up') await afterSegmentUpload(item, idx, ctx, got, null, check);
+    else if (c.hash) {
+      const l = await hashFile(seg.writePath, 'xxh64', n => ctx.onBytes(n, 'verify'), ctx.token, c.s, c.e);
+      if (l !== c.hash) throw new MismatchError(`Segment ${idx + 1}: differs from the sender's file.`, { mismatch: true, network: true, segment: true });
+    }
+    if (ctx.token.cancelled) throw Object.assign(new RemoteError('Stopped.'), { aborted: true });
+    return { status: 'segment-done' };
+  }
+  let eng = null;
+  if (len > 0) {
+    try {
+      eng = item.dir === 'down'
+        ? await engineMove(ctx, { op: 'get', remote: from, local: seg.writePath, start, end: c.e, segment: true, hash: check })
+        : await engineMove(ctx, { op: 'put', local: item.local, remote: seg.writePath, start, end: c.e, segment: true, hash: check || !!seg.relay });
+    } catch (e) {
+      // What is surely in place: written in order (download), or acknowledged
+      // without a gap by the server (upload).
+      ctx.onBytes(got + (e.kept || 0), 'segkeep');
+      // A relayed file whose partial name went away while this segment read
+      // it: the sender has just given it its name. Read from there next try
+      // (review 0.6.2: the receiver used to fail here, now and then).
+      if (item.dir === 'down' && item.relay && from !== item.remote && /no such file|ENOENT|not found|not exist|no longer exists/i.test(String(e && e.message))) {
+        item.relay.final = true;
+        throw new RemoteError(`Segment ${idx + 1}: the sender has just finished; read again from ${posix.basename(item.remote)}.`, { network: true });
+      }
+      throw e;
+    }
+  }
+  if (eng && item.dir === 'down') {
+    if (eng.bytes !== len) { ctx.onBytes(got + eng.bytes, 'segkeep'); throw new RemoteError(`Segment ${idx + 1}: received ${eng.bytes} bytes of ${len}.`, { network: true, sizeMismatch: true }); }
+    if (check) {
+      const l = await hashFile(seg.writePath, 'xxh64', null, ctx.token, start, c.e);
+      if (l !== eng.hash) throw new MismatchError(`Segment ${idx + 1}: the copy on disk differs from what was received.`, { mismatch: true, network: true, segment: true });
+    }
+    if (c.hash) {
+      const l = await hashFile(seg.writePath, 'xxh64', n => ctx.onBytes(n, 'verify'), ctx.token, c.s, c.e);
+      if (l !== c.hash) throw new MismatchError(`Segment ${idx + 1}: differs from the sender's file.`, { mismatch: true, network: true, segment: true });
+    }
+  } else if (eng) {
+    if (eng.bytes !== len) throw new RemoteError(`Segment ${idx + 1}: sent ${eng.bytes} bytes of ${len}.`, { network: true, sizeMismatch: true });
+    await afterSegmentUpload(item, idx, ctx, got, eng.hash, check);
+  } else if (item.dir === 'down') {
     const tap = new Tap(check ? await createHasher('xxh64') : null, n => ctx.onBytes(n, 'transfer'), ctx.limiter);
     const sink = new local.LocalSink(seg.writePath, start, { segment: true });
     tap.pipe(sink);
@@ -558,10 +729,11 @@ async function runSegment(item, idx, ctx) {
     sinkDone.catch(() => {});
     ctx.token.onAbort = () => { tap.destroy(Object.assign(new Error('Stopped.'), { aborted: true })); sink.destroy(); };
     try {
-      await remote.downloadRange(item.remote, tap, start, c.e);
+      await remote.downloadRange(from, tap, start, c.e);
       await sinkDone;
     } catch (e) {
       ctx.onBytes(got + Math.max(0, sink.pos - start), 'segkeep');
+      sink.destroy();
       throw e;
     }
     ctx.token.onAbort = null;
@@ -571,8 +743,13 @@ async function runSegment(item, idx, ctx) {
       const l = await hashFile(seg.writePath, 'xxh64', null, ctx.token, start, c.e);
       if (l !== tap.digest()) throw new MismatchError(`Segment ${idx + 1}: the copy on disk differs from what was received.`, { mismatch: true, network: true, segment: true });
     }
+    if (c.hash) {
+      // Relayed: the segment on this disk must be the sender's, byte for byte.
+      const l = await hashFile(seg.writePath, 'xxh64', n => ctx.onBytes(n, 'verify'), ctx.token, c.s, c.e);
+      if (l !== c.hash) throw new MismatchError(`Segment ${idx + 1}: differs from the sender's file.`, { mismatch: true, network: true, segment: true });
+    }
   } else {
-    const tap = new Tap(check ? await createHasher('xxh64') : null, n => ctx.onBytes(n, 'transfer'), ctx.limiter);
+    const tap = new Tap(check || seg.relay ? await createHasher('xxh64') : null, n => ctx.onBytes(n, 'transfer'), ctx.limiter);
     const rs = local.createReadStream(item.local, start, c.e);
     rs.on('error', e => tap.destroy(e));
     rs.pipe(tap);
@@ -584,31 +761,57 @@ async function runSegment(item, idx, ctx) {
     }
     ctx.token.onAbort = null;
     if (tap.bytes !== len) throw new RemoteError(`Segment ${idx + 1}: sent ${tap.bytes} bytes of ${len}.`, { network: true, sizeMismatch: true });
-    if (check) {
-      // The whole segment is read back from the server. Resumed, it is
-      // compared with the local file itself (the stream saw only the end).
-      const back = new Tap(await createHasher('xxh64'), n => ctx.onBytes(n, 'verify'));
-      const sink = nullSink();
-      back.pipe(sink);
-      ctx.token.onAbort = () => back.destroy(Object.assign(new Error('Stopped.'), { aborted: true }));
-      await remote.downloadRange(seg.writePath, back, c.s, c.e);
-      await finished(sink);
-      ctx.token.onAbort = null;
-      const want = got ? await hashFile(item.local, 'xxh64', null, ctx.token, c.s, c.e) : tap.digest();
-      if (back.digest() !== want) throw new MismatchError(`Segment ${idx + 1}: what the server holds differs from what was sent.`, { mismatch: true, network: true, segment: true });
-    }
+    await afterSegmentUpload(item, idx, ctx, got, tap.digest(), check);
   }
   if (ctx.token.cancelled) throw Object.assign(new RemoteError('Stopped.'), { aborted: true });
   return { status: 'segment-done' };
+}
+
+// A segment is on the server: check it (read back) when asked, and announce
+// it to a receiving filo (relay). `sent` is the fingerprint of what this unit
+// sent: all of the segment, unless it was resumed.
+async function afterSegmentUpload(item, idx, ctx, got, sent, check) {
+  const { remote } = ctx;
+  const seg = item.seg;
+  const c = seg.chunks[idx];
+  {
+    if (check) {
+      // The whole segment is read back from the server. Resumed, it is
+      // compared with the local file itself (the stream saw only the end).
+      let held = null;
+      const eng = await engineMove(ctx, { op: 'get', remote: seg.writePath, local: '-', start: c.s, end: c.e, segment: true, hash: true }, 'verify');
+      if (eng) held = eng.hash;
+      else {
+        const back = new Tap(await createHasher('xxh64'), n => ctx.onBytes(n, 'verify'));
+        const sink = nullSink();
+        back.pipe(sink);
+        ctx.token.onAbort = () => back.destroy(Object.assign(new Error('Stopped.'), { aborted: true }));
+        await remote.downloadRange(seg.writePath, back, c.s, c.e);
+        await finished(sink);
+        ctx.token.onAbort = null;
+        held = back.digest();
+      }
+      const want = got || !sent ? await hashFile(item.local, 'xxh64', null, ctx.token, c.s, c.e) : sent;
+      if (held !== want) throw new MismatchError(`Segment ${idx + 1}: what the server holds differs from what was sent.`, { mismatch: true, network: true, segment: true });
+    }
+    if (seg.relay) {
+      // This segment is on the server in full: a receiving filo may take it.
+      try {
+        const h = !got ? sent : await hashFile(item.local, 'xxh64', null, ctx.token, c.s, c.e);
+        await writeSmall(remote, posix.join(seg.relay.dir, `${idx}.done`), h);
+      } catch (e) { if (ctx.token.cancelled) throw e; ctx.log("warn", `Segment ${idx + 1}: the relay could not announce it (${e.message})`); }
+    }
+  }
 }
 
 async function finalizeSegments(item, ctx) {
   const { remote, settings } = ctx;
   const seg = item.seg;
   const up = item.dir === 'up';
-  // The source must still be the file the segments came from.
+  // The source must still be the file the segments came from. A relayed file
+  // is checked by size: its date on the server may be the sender's, or not.
   const src = up ? await local.stat(item.local) : await remote.stat(item.remote);
-  if (!src || src.size !== seg.size || !sameSource(item, src)) {
+  if (!src || src.size !== seg.size || (!item.relay && !sameSource(item, src))) {
     throw new RemoteError('The source changed during the transfer: it is sent again from the start.', { network: true, mismatch: true, resumed: true });
   }
   const landed = up ? await remote.stat(seg.writePath) : await local.stat(seg.writePath);
@@ -616,7 +819,8 @@ async function finalizeSegments(item, ctx) {
     throw new RemoteError(`The assembled file holds ${landed ? landed.size : 0} bytes of ${seg.size}.`, { network: true, mismatch: true, resumed: true });
   }
   let verify = { level: 'size' };
-  if (seg.verify === 'server') {
+  if (item.relay && seg.chunks.every(c => c.hash)) verify = { level: 'relay', algo: 'xxh64' };
+  else if (seg.verify === 'server') {
     ctx.onBytes(0, 'verify-start');
     const remotePath = up ? seg.writePath : item.remote;
     const localPath = up ? item.local : seg.writePath;
@@ -638,6 +842,7 @@ async function finalizeSegments(item, ctx) {
   if (up) {
     if (seg.useTemp) await promote(remote, seg.writePath, seg.finalPath, seg.replacing);
     noteWritten(remote, seg.finalPath);
+    if (seg.relay) await dropRelayDir(remote, seg.relay.dir);
     if (settings.keepDates !== false && remote.canSetMTime && src.mtime) { try { await remote.setMTime(seg.finalPath, src.mtime); } catch (_) {} }
   } else {
     if (seg.useTemp) await local.replace(seg.writePath, seg.finalPath);
@@ -655,4 +860,4 @@ async function dropPart(item, remote) {
   } catch (_) {}
 }
 
-module.exports = { ensureLocalDirForTest: ensureLocalDir, runFile, runFolder, runSegment, finalizeSegments, ensureRemoteDir, promote, dropPart, PART, OLD, MismatchError, SEGMENT_SIZE, SEGMENT_MIN_FILE, segmentable, segmentSizeFor };
+module.exports = { relayDirFor, readSmall, writeSmall, RELAY_SUFFIX, ensureLocalDirForTest: ensureLocalDir, runFile, runFolder, runSegment, finalizeSegments, ensureRemoteDir, promote, dropPart, PART, OLD, MismatchError, SEGMENT_SIZE, SEGMENT_MIN_FILE, segmentable, segmentSizeFor };

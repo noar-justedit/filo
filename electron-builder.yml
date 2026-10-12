@@ -37,6 +37,13 @@ electronFuses:
   # An unsigned Mac test build must still start once the binary is changed.
   resetAdHocDarwinSignature: true
 
+# The Rust transfer engine (engine/, "filo-engine"): built before each
+# platform is packed (scripts/engine-build.js) into engine/dist/<platform>/,
+# then put next to the app (extraResources, per platform below), where
+# main.js finds it. When it could not be built, that folder is empty and the
+# app is built anyway: filo then uses its built-in engine.
+beforePack: scripts/engine-build.js
+
 directories:
   buildResources: build-resources
 files:
@@ -53,6 +60,18 @@ files:
 
 mac:
   category: public.app-category.utilities
+  # Signed with the app (hardened runtime, same entitlements).
+  extraResources:
+    - from: engine/dist/mac
+      to: .
+      filter: ["filo-engine"]
+    # Licences of the components in the build (scripts/third-party-notices.js).
+    - from: THIRD_PARTY_NOTICES.md
+      to: THIRD_PARTY_NOTICES.md
+    # DIRECT: Syncthing, a separate program, with its licence and source link
+    # (scripts/syncthing-fetch.js). Empty when it could not be fetched.
+    - from: vendor/syncthing/dist/mac
+      to: syncthing
   icon: build-resources/icon.icns
   darkModeSupport: true
   minimumSystemVersion: "11.0"
@@ -98,6 +117,17 @@ dmg:
 
 win:
   icon: build-resources/icon.ico
+  extraResources:
+    - from: engine/dist/win
+      to: .
+      filter: ["filo-engine.exe"]
+    # Licences of the components in the build (scripts/third-party-notices.js).
+    - from: THIRD_PARTY_NOTICES.md
+      to: THIRD_PARTY_NOTICES.md
+    # DIRECT: Syncthing, a separate program, with its licence and source link
+    # (scripts/syncthing-fetch.js). Empty when it could not be fetched.
+    - from: vendor/syncthing/dist/win
+      to: syncthing
   requestedExecutionLevel: asInvoker
   artifactName: "filo-${version}-win-${arch}.${ext}"
   target:
@@ -122,6 +152,17 @@ nsis:
 # Mac is not valid (ingesto learnt it), so Linux has its own script and machine.
 linux:
   icon: build-resources/icons
+  extraResources:
+    - from: engine/dist/linux
+      to: .
+      filter: ["filo-engine"]
+    # Licences of the components in the build (scripts/third-party-notices.js).
+    - from: THIRD_PARTY_NOTICES.md
+      to: THIRD_PARTY_NOTICES.md
+    # DIRECT: Syncthing, a separate program, with its licence and source link
+    # (scripts/syncthing-fetch.js). Empty when it could not be fetched.
+    - from: vendor/syncthing/dist/linux
+      to: syncthing
   # Main category, then the more precise one (the menu spec allows both).
   category: "Network;FileTransfer"
   maintainer: "Just Edit <contact@just-edit.fr>"
