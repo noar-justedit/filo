@@ -26,6 +26,7 @@ const { Prefs } = require('./config');
 const secrets = require('./secrets');
 const power   = require('./power');
 const notify  = require('./notify');
+const hook    = require('./core/hook');
 const local   = require('./proto/local');
 const { createRemote, parseUrl, describe, DEFAULT_PORT, LABEL } = require('./proto');
 const { setHostKeyPolicy } = require('./proto/sftp');
@@ -442,7 +443,7 @@ app.whenReady().then(() => {
   queue.on('ask', a => send('queue-ask', a));
   queue.on('ask-closed', id => send('queue-ask-closed', id));
   queue.on('blocked', b => { if (b && b.trust) offerTrust(b.trust); send('queue-blocked', b); });
-  queue.on('finished', s => onQueueFinished(s));
+  queue.on('finished', s => onQueueFinished(s).catch(e => log('error', 'After the queue: ' + e.message)));
 
   syncer = new Syncer({
     prefs, queue, log,
@@ -526,16 +527,60 @@ function holdSleep(on) {
 // The queue is empty: phone notification, then — only if nothing failed —
 // the action chosen in the title bar (the window runs the 30 s countdown).
 let lastFinished = null;   // what the end action is allowed to rely on
-function onQueueFinished(summary) {
+async function onQueueFinished(summary) {
   if (summary.syncOnly) { send('queue-finished', Object.assign({ afterAction: 'none' }, summary)); return; }
-  lastFinished = { at: Date.now(), clean: !summary.failed && !summary.stopped && !summary.paused };
   const cfg = prefs.ntfy();
   if (cfg.enabled && cfg.topic) {
     notify.sendWithRetry(Object.assign({ server: cfg.server, topic: cfg.topic }, notify.forQueue(summary)))
       .then(r => { if (!r.ok) log('warn', `Phone notification not sent: ${r.error}`); else log('info', 'Phone notification sent'); });
   }
-  send('queue-finished', Object.assign({ afterAction: prefs.data.afterAction }, summary));
+  // The command after the queue (Settings), before the end action: a script
+  // that copies or encodes must finish before the machine sleeps.
+  const st = prefs.data.settings;
+  let hookRes = null;
+  if (st.hookEnabled && st.hookCommand.trim() && (summary.done || summary.failed)) {
+    const since = Date.now() - (summary.durationMs || 0) - 1000;
+    const items = queue.page('done', 0, 1e6).items.filter(i => (i.finishedAt || 0) >= since);
+    const argv = hook.argvFor(st.hookCommand, hook.varsFor(summary, items));
+    log('info', `Command after the queue: ${argv[0]}`);
+    send('hook-start', { program: path.basename(argv[0] || '') });
+    hookRes = await hook.run(argv);
+    log(hookRes.ok ? 'info' : 'warn', hookRes.ok ? 'Command after the queue: done' : `Command after the queue: ${hookRes.error}`);
+  }
+  lastFinished = { at: Date.now(), clean: !summary.failed && !summary.stopped && !summary.paused };
+  send('queue-finished', Object.assign({ afterAction: prefs.data.afterAction, hook: hookRes }, summary));
 }
+ipcMain.handle('hook-test', async (_, cmd) => {
+  const vars = { result: 'ok', done: 3, failed: 0, bytes: 3145728, server: 'sftp://editor@nas.studio.lan:22', local: app.getPath('desktop'), remote: '/homes/editor/TEST', direction: 'up' };
+  const argv = hook.argvFor(String(cmd || ''), vars);
+  if (!argv.length) return { ok: false, error: 'no command' };
+  const r = await hook.run(argv, { timeoutMs: 60000 });
+  log(r.ok ? 'info' : 'warn', `Command after the queue (TEST): ${r.ok ? 'done' : r.error}`);
+  return Object.assign(r, { argv });
+});
+
+// ── LIVE SYNC down: a phone alert (Noar, 12/10/2026) ──────────────────────
+// A connected session that cannot work for N minutes (the other computer
+// away, the server in error) sends one ntfy alert; once it works again, one
+// more saying so. Off unless ticked in Settings › ntfy.
+const { SyncAlert } = require('./core/syncalert');
+const syncAlert = new SyncAlert();
+function checkSyncDown() {
+  if (!prefs || !D) return;
+  const cfg = prefs.ntfy();
+  const on = !!(cfg.enabled && cfg.topic && cfg.syncAlert);
+  const list = prefs.listSyncPairs().map(p => ({ pair: p, status: statusFor(p.id) }));
+  for (const a of syncAlert.step(list, Date.now(), (cfg.syncAlertMin || 10) * 60000, on)) {
+    const down = a.kind === 'down';
+    notify.sendWithRetry({
+      server: cfg.server, topic: cfg.topic,
+      title: `filo LIVE SYNC: ${a.pair.name} ${down ? 'is down' : 'works again'}`,
+      message: down ? `${a.reason}, for ${a.minutes} min.` : `Back after ${a.minutes} min (${a.reason}).`,
+      tags: down ? 'warning' : 'white_check_mark', priority: down ? 4 : 3,
+    }).then(r => log(r.ok ? 'info' : 'warn', r.ok ? `LIVE SYNC “${a.pair.name}”: phone alert sent (${down ? a.reason : 'works again'})` : `Phone alert not sent: ${r.error}`));
+  }
+}
+setInterval(() => { try { checkSyncDown(); } catch (e) { log('warn', 'LIVE SYNC alert: ' + e.message); } }, 30000).unref();
 
 // ── IPC: LIVE SYNC ─────────────────────────────────────────────────────────
 // A pair's status for the window. Hybrid (SYNCTHING FAILSAFE): the
@@ -681,6 +726,7 @@ ipcMain.handle('direct-join', guard(async (_, text) => {
 }));
 ipcMain.handle('direct-offer-dismiss', guard((_, req) => D.offerDismiss(req || {})));
 ipcMain.handle('direct-fast', (_, on) => { D.setFast(!!on); return true; });
+ipcMain.handle('direct-hold', guard((_, id, on) => D.hold(String(id || ''), !!on)));
 // A SYNCTHING ID (this computer's, or a remote one), by mail or in a text file.
 ipcMain.handle('direct-id-share', async (_, req) => {
   try {
@@ -1168,6 +1214,21 @@ ipcMain.handle('local-list', async (_, dir) => {
   } catch (e) { return { ok: false, error: e.code === 'ENOENT' ? 'This folder does not exist.' : e.code === 'EACCES' || e.code === 'EPERM' ? 'filo is not allowed to read this folder.' : e.message }; }
 });
 ipcMain.handle('local-roots', () => local.roots());
+// The shortcuts of the local panel (Noar, 13/10/2026): Desktop and Downloads
+// as the system names them (a Windows folder moved elsewhere, a Linux one in
+// another language: XDG), and the disks mounted now.
+ipcMain.handle('local-places', async () => {
+  const home = require('os').homedir();
+  // A Linux without its XDG file answers the home folder: then the usual
+  // English name, if that folder exists.
+  const at = n => {
+    let p = ''; try { p = app.getPath(n); } catch (_) {}
+    if (!p || p === home) { const f = path.join(home, n === 'desktop' ? 'Desktop' : 'Downloads'); p = fs.existsSync(f) ? f : ''; }
+    return p;
+  };
+  const drives = (await local.roots()).filter(r => r.label !== 'Home');
+  return { home, desktop: at('desktop'), downloads: at('downloads'), drives };
+});
 ipcMain.handle('local-mkdir', async (_, dir, name) => {
   try {
     const bad = badLocalName(name);
@@ -1518,7 +1579,7 @@ ipcMain.handle('queue-add', async (_, req) => {
     // Paused while the folders were being listed: what was found stays queued.
     // Nothing new to do (everything was already queued, or waits for the
     // "resume or start again?" answer): no empty run, no "finished" notice.
-    if (req.start !== false && !token.noStart && queued) queue.start();
+    if (req.start !== false && !token.noStart && queued && !scheduled) queue.start();
     return { ok: true, count: found, revived: revived.slice(0, 5000), already, conflict };
   } catch (e) {
     flush();
@@ -1527,7 +1588,36 @@ ipcMain.handle('queue-add', async (_, req) => {
   } finally { scanTokens.delete(token); }
 });
 ipcMain.handle('scan-cancel', () => { for (const t of scanTokens) t.cancelled = true; return true; });
-ipcMain.handle('queue-start', () => { queue.start(); return queue.state; });
+ipcMain.handle('queue-start', () => { unschedule(); queue.start(); return queue.state; });
+// ── Start the queue later (Noar, 12/10/2026): at a time of the day, while
+// filo is open. Adding files meanwhile does not start it; START does.
+let scheduled = null;   // { at, timer }
+function unschedule() { if (scheduled) { clearTimeout(scheduled.timer); scheduled = null; send('queue-scheduled', { at: 0 }); } }
+ipcMain.handle('queue-schedule', (_, at) => {
+  if (scheduled) clearTimeout(scheduled.timer);
+  scheduled = null;
+  const t = Number(at) || 0;
+  if (t > Date.now()) {
+    const fire = () => {
+      if (!scheduled) return;
+      // setTimeout cannot wait more than ~24 days, and a machine asleep
+      // delays it: check the clock again rather than trust the timer.
+      if (Date.now() < scheduled.at - 500) { scheduled.timer = setTimeout(fire, Math.min(scheduled.at - Date.now(), 60000)); return; }
+      scheduled = null;
+      send('queue-scheduled', { at: 0, fired: true });
+      log('info', 'Scheduled start: the queue starts');
+      if (queue.state !== 'running') {
+        const paused = queue.page('queue', 0, 1e6).items.filter(i => i.status === 'paused').map(i => i.id);
+        if (paused.length) queue.resumeItems(paused);
+        queue.start();
+      }
+    };
+    scheduled = { at: t, timer: setTimeout(fire, Math.min(t - Date.now(), 60000)) };
+    log('info', `Scheduled start: ${new Date(t).toLocaleString()}`);
+  }
+  return { at: scheduled ? scheduled.at : 0 };
+});
+ipcMain.handle('queue-scheduled', () => ({ at: scheduled ? scheduled.at : 0 }));
 ipcMain.handle('queue-pause', () => { for (const t of scanTokens) t.noStart = true; queue.pause(); return queue.state; });
 // Stop everything also stops a folder listing still adding files.
 ipcMain.handle('queue-stop-all', () => { for (const t of scanTokens) t.cancelled = true; queue.stopAll(); return queue.state; });
@@ -1642,6 +1732,36 @@ ipcMain.handle('sites-export', async (_, format, ids) => {
     return { ok: true, count: list.length, path: res.filePath };
   } catch (e) { return { ok: false, error: e.message }; }
 });
+
+// ── IPC: check a delivery against the other side (Noar, 12/10/2026) ───────
+let compareToken = null;
+ipcMain.handle('compare', async (_, req) => {
+  const compare = require('./core/compare');
+  const r = req || {};
+  const names = (Array.isArray(r.names) ? r.names : []).map(String).filter(n => n && !/[\/\\]/.test(n) && n !== '..' && n !== '.');
+  if (!names.length) return { ok: false, error: 'Nothing selected.' };
+  const opts = { localRoot: absLocal(r.localRoot), remoteRoot: remotePath(r.remoteRoot), names, serverHash: prefs.data.settings.serverHash !== false };
+  const sess = browserSession();
+  if (compareToken) compareToken.cancelled = true;
+  const token = compareToken = { cancelled: false };
+  try {
+    const p = await withBrowser(rem => compare.plan(rem, opts, token), sess);
+    if (!p.algo && !r.readBack && p.both.length) return { ok: true, needsReadBack: true, files: p.both.length, bytes: p.bytes };
+    const res = await withBrowser(rem => compare.run(rem, p, Object.assign({}, opts, {
+      readBack: !!r.readBack, token, onFile: (i, n, rel) => send('compare-progress', { i, n, rel }),
+    })), sess);
+    log(res.different.length || res.onlyLocal.length || res.onlyRemote.length ? 'warn' : 'info',
+      `Checked against the server: ${res.same.length} identical, ${res.different.length} different, ${res.onlyLocal.length} only here, ${res.onlyRemote.length} only on the server${res.unchecked.length ? `, ${res.unchecked.length} not checked` : ''}`);
+    return Object.assign({ ok: true, cancelled: token.cancelled }, res);
+  } catch (e) { return { ok: false, error: RemoteError.from(e).message }; }
+  finally { if (compareToken === token) compareToken = null; }
+});
+// Quick Look (Mac only: Electron's previewFile).
+ipcMain.handle('local-preview', (_, p) => {
+  if (process.platform !== 'darwin' || !win) return false;
+  try { const f = absLocal(p); if (!fs.statSync(f).isFile()) return false; win.previewFile(f); return true; } catch (_) { return false; }
+});
+ipcMain.handle('compare-cancel', () => { if (compareToken) compareToken.cancelled = true; return true; });
 
 // ── IPC: window chrome ─────────────────────────────────────────────────────
 ipcMain.on('win-minimize', () => win && win.minimize());

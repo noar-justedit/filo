@@ -37,6 +37,7 @@ const api = {
 
   localList   : (dir)         => inv('local-list', dir),
   localRoots  : ()            => inv('local-roots'),
+  localPlaces : ()            => inv('local-places'),
   localMkdir  : (dir, name)   => inv('local-mkdir', dir, name),
   localRename : (from, name)  => inv('local-rename', from, name),
   localMove   : (paths, target) => inv('local-move', paths, target),
@@ -74,6 +75,12 @@ const api = {
   directOfferDismiss: (req)   => inv('direct-offer-dismiss', req),
   directJoin  : (text)        => inv('direct-join', text),
   directFast  : (on)          => inv('direct-fast', !!on),
+  directHold  : (id, on)      => inv('direct-hold', id, !!on),
+  hookTest    : (cmd)         => inv('hook-test', cmd),
+  queueSchedule: (at)         => inv('queue-schedule', at || 0),
+  compare     : (req)         => inv('compare', req),
+  compareCancel: ()           => inv('compare-cancel'),
+  localPreview: (p)           => inv('local-preview', p),
   syncConnect : (id, on, which) => inv('sync-connect', id, !!on, which),
   trashInfo   : (id)          => inv('trash-info', id),
   trashOpen   : (id)          => inv('trash-open', id),
@@ -113,7 +120,7 @@ const api = {
 
   on: (channel, cb) => {
     const allowed = ['queue-progress', 'queue-changed', 'queue-state', 'queue-ask', 'queue-ask-closed', 'queue-blocked',
-      'queue-finished', 'log', 'scan-progress', 'delete-progress', 'menu', 'update-available', 'sync-status', 'sync-pairs', 'direct-pending', 'live-queue'];
+      'queue-finished', 'log', 'scan-progress', 'delete-progress', 'menu', 'update-available', 'sync-status', 'sync-pairs', 'direct-pending', 'live-queue', 'hook-start', 'queue-scheduled', 'compare-progress'];
     if (!allowed.includes(channel)) throw new Error('Unknown channel ' + channel);
     const h = (_, payload) => cb(payload);
     ipcRenderer.on(channel, h);

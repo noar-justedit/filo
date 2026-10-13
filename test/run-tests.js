@@ -1487,6 +1487,20 @@ SEC('direct: two filo, peer to peer', async () => {
     ok(!fs.existsSync(path.join(fb, 'later.txt')), 'paused: nothing is sent');
     pairA.auto = true; await A.reconcile([pairA], [{ id: idb }]); await A.rescan(pairA);
     ok(await until(() => fs.existsSync(path.join(fb, 'later.txt')), 30000), 'ON again: it goes');
+    // Files in name order: the LIVE SYNC queue moves from the top.
+    const fcfg = await B.req('GET', `/rest/config/folders/${fid}`);
+    eq(fcfg.order, 'alphabetic', 'files go in name order');
+    // PAUSE from the queue: the session stays connected, nothing moves, a
+    // reconcile keeps it paused; RESUME: it goes.
+    await B.hold(pairB, true);
+    await B.reconcile([pairB, pD], [{ id: ida, name: 'MAC' }]);
+    ok((await B.req('GET', `/rest/config/folders/${fid}`)).paused === true, 'PAUSE: the folder is paused, a reconcile keeps it so');
+    ok(await until(() => stB.b && stB.b.state === 'held', 10000), `PAUSE: the session says paused (${stB.b && stB.b.state})`);
+    fs.writeFileSync(path.join(fa, 'held.txt'), 'held'); await A.rescan(pairA);
+    await sleep(3000);
+    ok(!fs.existsSync(path.join(fb, 'held.txt')), 'PAUSE: nothing arrives');
+    await B.hold(pairB, false);
+    ok(await until(() => fs.existsSync(path.join(fb, 'held.txt')), 30000), 'RESUME: it goes');
     // Restart keeps the same identity; a Syncthing left running is stopped.
     const home = A.home;
     await A.stop();
@@ -1501,6 +1515,79 @@ SEC('direct: two filo, peer to peer', async () => {
   } finally {
     await A.stop().catch(() => {}); await B.stop().catch(() => {});
   }
+});
+
+SEC('check against the other side', async () => {
+  const compare = require('../src/main/core/compare');
+  const { hashFile } = require('../src/main/core/hash');
+  const { srv, ep, root } = await server();
+  const L = scratch();
+  const put = (base, rel, data) => { const f = path.join(base, ...rel.split('/')); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, data); };
+  const same = crypto.randomBytes(200000), a = crypto.randomBytes(5000), b = Buffer.from(a); b[100] ^= 1;
+  for (const [base, extra] of [[L, 'only-here.mov'], [path.join(root, 'deliv'), 'only-there.mov']]) {
+    put(base, 'DAY1/same.mov', same); put(base, 'DAY1/sub/same2.mov', same); put(base, extra, 'x'); put(base, 'DAY1/.DS_Store', 'junk');
+  }
+  put(L, 'DAY1/flip.mov', a); put(path.join(root, 'deliv'), 'DAY1/flip.mov', b);
+  put(L, 'DAY1/size.mov', 'abc'); put(path.join(root, 'deliv'), 'DAY1/size.mov', 'abcd');
+  const r = await connectTrusting(ep);
+  try {
+    const names = ['DAY1', 'only-here.mov', 'only-there.mov'];
+    const p = await compare.plan(r, { localRoot: L, remoteRoot: '/deliv', names });
+    eq(p.algo, null, 'this test server computes no checksum');
+    eq(p.both.sort(), ['DAY1/flip.mov', 'DAY1/same.mov', 'DAY1/sub/same2.mov'], 'same size on both sides: to check; .DS_Store left out');
+    const res = await compare.run(r, p, { localRoot: L, remoteRoot: '/deliv', readBack: true });
+    eq(res.same, ['DAY1/same.mov', 'DAY1/sub/same2.mov'], 'identical files, read back');
+    eq(res.different.map(d => d.rel), ['DAY1/flip.mov', 'DAY1/size.mov'], 'one byte changed, and a size that differs');
+    eq([res.onlyLocal, res.onlyRemote], [['only-here.mov'], ['only-there.mov']], 'what is on one side only');
+    const no = await compare.run(r, p, { localRoot: L, remoteRoot: '/deliv', readBack: false });
+    eq(no.unchecked.length, 3, 'no checksum and no read back: not checked, never called identical');
+    // A server that computes a checksum: asked, never read back.
+    const h = await hashFile(path.join(L, 'DAY1/same.mov'), 'sha256');
+    let reads = 0;
+    const fake = { hashAlgos: async () => ['sha256'], serverHash: async () => h, download: async () => { reads++; } };
+    const res2 = await compare.run(fake, Object.assign({}, p, { algo: 'sha256', both: ['DAY1/same.mov'] }), { localRoot: L, remoteRoot: '/deliv', readBack: true });
+    ok(res2.same.length === 1 && reads === 0, 'the server\'s checksum, nothing downloaded');
+  } finally { await r.close(); }
+});
+
+SEC('command after the queue', async () => {
+  const hook = require('../src/main/core/hook');
+  eq(hook.tokenize(`/bin/x "a b" 'c d' e`), ['/bin/x', 'a b', 'c d', 'e'], 'quotes keep spaces together');
+  eq(hook.argvFor('{local}/run.sh "{local}" {result}', { local: '/tmp/My Folder; rm -rf ~', result: 'ok' }), ['{local}/run.sh', '/tmp/My Folder; rm -rf ~', 'ok'], 'a variable is one argument, never the program, never a command');
+  const v = hook.varsFor({ done: 2, failed: 1, bytes: 10, endpointLabel: 'NAS' }, [
+    { type: 'file', dir: 'up', local: '/U/a/x/1.mov', remote: '/r/d/x/1.mov' }, { type: 'file', dir: 'up', local: '/U/a/y/2.mov', remote: '/r/d/y/2.mov' }]);
+  eq([v.result, v.done, v.failed, v.local, v.remote, v.direction, v.server], ['errors', 2, 1, '/U/a', '/r/d', 'up', 'NAS'], 'what the command is told');
+  const d = scratch(), out = path.join(d, 'out.txt');
+  const r = await hook.run([process.execPath, '-e', 'require("fs").writeFileSync(process.argv[1], process.argv.slice(2).join("|"))', out, 'a b', 'ok']);
+  ok(r.ok && fs.readFileSync(out, 'utf8') === 'a b|ok', 'it runs, its arguments as given, and filo waits for it');
+  const bad = await hook.run([process.execPath, '-e', 'process.exit(3)']);
+  eq([bad.ok, bad.code], [false, 3], 'an exit code is a failure, said so');
+  const none = await hook.run(['/no/such/program-filo']);
+  ok(!none.ok && /not found/.test(none.error), 'a program that does not exist: said so');
+  const slow = await hook.run([process.execPath, '-e', 'setTimeout(()=>{}, 5000)'], { timeoutMs: 300 });
+  ok(!slow.ok && /still running/.test(slow.error), 'too long: filo goes on');
+});
+
+SEC('LIVE SYNC down: phone alert', () => {
+  const { reason, SyncAlert } = require('../src/main/core/syncalert');
+  const P = { id: 'p', name: 'Rushes', via: 'direct', auto: true, peer: { id: 'X', name: 'PC-MONTAGE · Windows 11' } };
+  eq(reason(P, { state: 'insync', peer: { connected: true } }), '', 'working: nothing');
+  eq(reason(P, { state: 'offline', peer: { connected: false } }), 'PC-MONTAGE not reachable', 'the other computer away');
+  eq(reason(P, { state: 'waiting', peer: { connected: false } }), '', 'never linked yet: not an alert');
+  eq(reason(Object.assign({}, P, { auto: false }), { state: 'paused', peer: { connected: false } }), '', 'disconnected by hand: nothing');
+  eq(reason({ id: 's', via: 'server', auto: true }, { state: 'error', error: 'auth failed' }), 'server: auth failed', 'S-FTP in error');
+  eq(reason({ id: 'h', via: 'hybrid', auto: false, fsAuto: true }, { server: { state: 'error', error: 'NAS off' } }), 'S-FTP BACKUP: NAS off', 'DUAL SYNC: its backup in error');
+  const A = new SyncAlert(), M = 60000, down = { state: 'offline', peer: { connected: false } }, up = { state: 'insync', peer: { connected: true } };
+  eq(A.step([{ pair: P, status: down }], 0, 10 * M, true), [], 'just down: wait');
+  eq(A.step([{ pair: P, status: down }], 9 * M, 10 * M, true), [], 'not yet the limit');
+  const a1 = A.step([{ pair: P, status: down }], 10 * M, 10 * M, true);
+  eq(a1.map(x => [x.kind, x.minutes]), [['down', 10]], 'down for the limit: one alert');
+  eq(A.step([{ pair: P, status: down }], 20 * M, 10 * M, true), [], 'only once');
+  eq(A.step([{ pair: P, status: up }], 25 * M, 10 * M, true).map(x => [x.kind, x.minutes]), [['up', 25]], 'works again: one more');
+  A.step([{ pair: P, status: down }], 30 * M, 10 * M, true);
+  eq(A.step([{ pair: P, status: up }], 32 * M, 10 * M, true), [], 'a short drop never announced: nothing');
+  A.step([{ pair: P, status: down }], 40 * M, 10 * M, false);
+  eq(A.step([{ pair: P, status: down }], 60 * M, 10 * M, false), [], 'alerts off: nothing sent');
 });
 
 SEC('ftp (real servers, optional)', async () => {

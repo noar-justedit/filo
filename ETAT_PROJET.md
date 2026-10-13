@@ -6,6 +6,16 @@
 
 ## 1. État actuel
 
+- **0.7.1 (13/10/2026)** : raccourcis du panneau local (Bureau,
+  Téléchargements, menu des disques ; voir « Prochaines étapes », point 000).
+  Tests : **652 (+18 FTP réels)** verts.
+- **0.7.0 (13/10/2026)** : rail latéral (TRANSFER / LIVE SYNC / SITES /
+  SETTINGS), départ programmé de la queue, commande après la queue,
+  vérification contre l'autre côté, dossiers favoris, Quick Look, et pour
+  LIVE SYNC : fichier en cours dans l'anneau, PAUSE de la queue SYNCTHING,
+  ordre alphabétique, alerte ntfy. Détail : CHANGELOG et la section
+  « Prochaines étapes » (point 00). Tests : **650 (+18 FTP réels)** verts ;
+  chaque ajout manipulé dans l'app (Playwright, vrai serveur SFTP).
 - **0.6.4 (12/10/2026)** : gestionnaire de sites revu (section suivante).
   Tests : **608 (+18 FTP réels)** verts ; le gestionnaire a été manipulé dans l'app
   (menus, nouveau dossier, renommage, duplication et suppression d'un
@@ -136,6 +146,11 @@
   refait (section suivante). Tests : **586 (+18 FTP réels)** verts.
 
 ### Barre de connexion et en-tête de file (12/10/2026, demandes de Noar)
+- **0.7.0 : MODE n'existe plus**, remplacé par le rail latéral (`#rail` :
+  `#mode-client` TRANSFER, `#btn-sync` LIVE SYNC, `#q-sites` SITES,
+  `#btn-settings` SETTINGS ; `placeMode()` ne fait plus que colorer la vue
+  affichée). Le menu LIVE SYNC : clic sur LIVE SYNC quand sa vue est
+  affichée, ou clic droit. Le paragraphe suivant décrit l'état 0.6.x.
 - **MODE** (`#mode-f`, à gauche de la barre de connexion) : CLIENT / LIVE
   SYNC bascule entre le client FTP et la vue LIVE SYNC ; ▾ ouvre le menu
   LIVE SYNC (New session, Import, Connect / Disconnect, Sessions…). Le
@@ -974,7 +989,7 @@ Machine de test : 2 cœurs cloud, serveur sur la même machine.
   `https://raw.githubusercontent.com/noar-justedit/filo/main/version.json`.
   Un dépôt privé la rend muette (sans erreur visible).
 - Texte de la Release en cours et liste de contrôle :
-  `docs/RELEASE-0.6.4.md` (0.1.0 à 0.6.1 n'ont jamais été publiées ; la
+  `docs/RELEASE-0.7.1.md` (0.1.0 à 0.6.1 n'ont jamais été publiées ; la
   0.3.5 était la première prévue sur GitHub). Tag `vX.Y.Z` sur `main` (c'est ce que
   `push_github.command` attend pour envoyer `version.json`).
 - Fichiers de la Release : `filo-X.Y.Z-mac-arm64.dmg`, `filo-Setup-X.Y.Z.exe`,
@@ -1218,6 +1233,52 @@ SmartScreen, débits réels.
 
 ## 11. Prochaines étapes
 
+000. **Livré en 0.7.1** : raccourcis du panneau
+   local (Noar, 13/10) : Bureau, Téléchargements et menu des disques à côté
+   du bouton de choix de dossier (`.p-places`, IPC `local-places` :
+   `app.getPath('desktop' | 'downloads')`, donc le dossier du système quelle
+   que soit la langue ; disques par `local.roots()` : `/Volumes` sur Mac,
+   lettres de lecteur et « This PC » sur Windows, `/`, `/media/<user>`,
+   `/run/media/<user>` et `/mnt` sur Linux).
+
+00. **Livré en 0.7.0** (au départ prévu en 0.6.5) : FINISHED 5 s puis IDLE ; captures du README refaites en 0.7.0 ; dossiers Syncthing en ordre
+   alphabétique (`order: 'alphabetic'`, la queue du SLAVE avançait dans le
+   désordre et restait figée en haut) ; fichier en cours dans le ring
+   (`ringFile`) ; PAUSE / RESUME de la queue SYNCTHING (`Direct.hold`, état
+   `held`, non gardé au redémarrage) ; boutons MODE colorés, texte seul ;
+   notification de mise à jour sur le modèle de syncto / ingesto / archivo
+   (fenêtre NEW VERSION AVAILABLE, LATER / GET IT, version refusée retenue
+   dans `ui.updateDismissedVersion` ; le lien du pied de page est retiré).
+   **Rail latéral (piste C, choisie par Noar)** : TRANSFER / LIVE SYNC /
+   SITES / SETTINGS à gauche (`#rail`, ids d'avant gardés) ; barre de
+   connexion sans étiquettes au-dessus (nom du champ en gris dedans) ;
+   navigation synchronisée sur le séparateur des panneaux ; « fin de queue »
+   à côté de START / STOP / CLEAR ; menu LIVE SYNC : clic sur LIVE SYNC
+   quand sa vue est ouverte, ou clic droit.
+   **Ajouts validés par Noar** (le rapport de livraison a été refusé : « pas
+   besoin ») : dossiers favoris par serveur (étoile de la barre du serveur,
+   `ui.favFolders` par adresse) ; alerte ntfy quand une session LIVE SYNC
+   est en panne depuis N minutes puis quand elle repart
+   (`src/main/core/syncalert.js`, réglage ntfy `syncAlert` /
+   `syncAlertMin`, coupé par défaut).
+   **Lot suivant (validé par Noar, 12/10)** : démarrer la queue à une heure
+   (clic droit sur START, `queue-schedule` dans main.js, tant que filo est
+   ouvert ; ajouter des fichiers ne lance pas la queue) ; vérifier contre
+   l'autre côté (clic droit dans un panneau, `src/main/core/compare.js` :
+   checksum calculé par le serveur, sinon relecture après accord ; rien
+   n'est transféré) ; Quick Look sur la barre espace (Mac, fichier local) ;
+   commande après la queue (Réglages › After the queue,
+   `src/main/core/hook.js`, modèle ingesto : sans shell, variables
+   remplacées argument par argument, jamais dans le programme ; filo attend
+   sa fin, 30 min au plus, avant l'action de fin). Piste 7 (ignorePerms
+   exFAT) : Noar n'a pas encore testé.
+   **Proposé, pas validé** : activer `ignorePerms` tout seul quand le dossier
+   local est sur exFAT / FAT / NTFS / SMB. Piste de la lenteur de Noar
+   (Pop!_OS, build .deb, disque exFAT, MASTER Mac Studio) : le chmod refusé
+   par l'exFAT fait échouer puis réessayer chaque fichier. À confirmer par
+   des lignes « operation not permitted » dans le journal. Mesure en labo
+   (Linux, SSD) : Syncthing fait 120 à 200 petits fichiers par seconde.
+
 0a. **DUAL SYNC, essai par Noar avec la 0.6.2** : une session DUAL SYNC
    Mac (MASTER) ↔ PC avec le NAS ; vérifier qu'après « IDLE » l'anneau passe
    à « S-FTP BACKUP » et que le dossier du NAS devient identique (fichier
@@ -1292,7 +1353,7 @@ SmartScreen, débits réels.
    manager », corbeille, extinction en fin de file.
 6. Vérifier sur le Mac et le PC que les builds avec fuses démarrent.
 7. Créer le dépôt GitHub `noar-justedit/filo` **public** et vide, puis suivre
-   `docs/RELEASE-0.6.4.md` (push, Release v0.6.4 avec les cinq fichiers, push
+   `docs/RELEASE-0.7.1.md` (push, Release v0.7.1 avec les cinq fichiers, push
    de `version.json`).
 8. Noar doit tester la réception depuis son NAS sur le port 1 Gb d'origine
    (sans l'adaptateur USB 2,5G).
@@ -1304,6 +1365,8 @@ SmartScreen, débits réels.
 
 | Version | Date | Tests | Contenu principal |
 |---|---|---|---|
+| 0.7.1 | 13/10 | 652 (+18 FTP réels) | Panneau local : Bureau, Téléchargements et menu des disques montés (chemins donnés par le système, toutes langues) |
+| 0.7.0 | 13/10 | 650 (+18 FTP réels) | Rail latéral TRANSFER / LIVE SYNC / SITES / SETTINGS ; barre de connexion allégée ; départ de la queue à une heure ; commande après la queue (sans shell, modèle ingesto) ; vérification contre l'autre côté par checksum ; dossiers favoris par serveur ; Quick Look ; LIVE SYNC : fichier en cours dans l'anneau, PAUSE SYNCTHING, ordre alphabétique, alerte ntfy ; FINISHED puis IDLE ; notification de mise à jour comme les autres apps ; « Command line » |
 | 0.6.4 | 12/10 | 608 (+18 FTP réels) | Gestionnaire de sites : vue retrouvée, clic droit (nouveau, renommer, dupliquer, supprimer), bouton NEW FOLDER, dossiers vides, ligne de dépôt droite, zone vide = racine ; dossier « LIVE SYNC » |
 | 0.6.3 | 12/10 | 602 (+18 FTP réels) | Navigation synchronisée : différences surlignées (jaune : seulement ici, vert : plus récent ici), compte sous chaque panneau, filtre DIFFERENCES ONLY |
 | 0.6.2 | 12/10 | 602 (+18 FTP réels) | DUAL SYNC à trois (ce qui est posé sur le NAS arrive sur les deux ordinateurs) ; couleurs des modes sur l'anneau et la file ; logo turquoise ; revue globale : le S-FTP BACKUP n'efface que ce que la session connaît, racine refusée, lecture locale stricte ; noms de serveur sans sortie du dossier ; `.filo-session` du serveur sans autorité sur sens et filtre ; bascule vers le serveur sur dossier calme ; copies retenues fiables ; noms, couleurs et détails d'interface |

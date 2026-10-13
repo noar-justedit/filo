@@ -4,6 +4,69 @@ All notable changes to filo are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/lang/fr/).
 
+## [0.7.1] — 2026-10-13
+
+### Added
+
+- **Local panel shortcuts** (Noar): Desktop, Downloads and a menu of the
+  disks mounted now, beside the folder button. The folders are the ones the
+  system names (`app.getPath`): the same on a Mac in French, a Windows folder
+  moved to another disk, a Linux desktop in another language (XDG). The
+  disks: `/Volumes` on a Mac (the start-up disk included), the drive letters
+  and This PC on Windows, `/`, `/media/<user>`, `/run/media/<user>` and
+  `/mnt` on Linux; read again at each click.
+
+## [0.7.0] — 2026-10-13
+
+### Added
+
+- **Side bar** (Noar): TRANSFER, LIVE SYNC, SITES and SETTINGS on the left,
+  each an icon and its name; the view shown takes its colour (TRANSFER
+  green, LIVE SYNC the colour of the session shown). A blue dot on LIVE SYNC
+  while a session runs, orange on a problem. The LIVE SYNC menu: click LIVE
+  SYNC once its view is shown, or right-click it.
+- **Start the queue at a time**: right-click START → At a time…; a STARTS
+  badge shows it, right-click again to cancel; files added until then wait.
+  filo must stay open.
+- **Command after the queue** (Settings › After the queue, the model of
+  ingesto's post-ingest command): run without a shell, the line cut into
+  arguments, `{result} {done} {failed} {bytes} {local} {remote} {server}
+  {direction}` replaced inside the arguments, never in the program. filo
+  waits for it (30 min at most) before quit / sleep / shut down. A TEST
+  button; the end-of-queue menu turns it on or off.
+- **Check against the other side**: right-click in a panel; the selected
+  files and folders, here and in the folder open on the other side, compared
+  by a checksum the server computes (read back, after asking, when it
+  cannot). Identical, different, only on one side; nothing transferred.
+- **Favorite folders** for each server (the star beside the server path),
+  shared by a site and a quick connection to the same address.
+- **Quick Look** with the Space bar on a local file (Mac).
+- **LIVE SYNC**:
+  - the file moving now under the percentage of the ring; bytes and speed
+    on one line;
+  - PAUSE / RESUME on the SYNCTHING queue (the session stays connected;
+    filo restarted resumes it);
+  - a phone alert (ntfy) when a session cannot sync for N minutes, then when
+    it works again (Settings › Notifications, off by default).
+
+### Changed
+
+- The connection bar: no label above the fields, each field's name inside it.
+  Synchronized browsing sits between the two panels; the end action (quit,
+  sleep, shut down) beside START / STOP / CLEAR; Settings in the side bar.
+- Syncthing folders pull files in name order: the SYNCTHING queue moves from
+  the top on both computers (the receiving one listed the first names as
+  waiting while others arrived).
+- The queue says FINISHED for 5 s, then IDLE with an empty bar
+  (FINISHED · WITH ERRORS stays).
+- The update notice: a small window (New version available, LATER / GET IT),
+  as in syncto, ingesto and archivo; the version declined is not asked again.
+- Settings: "Post command" is now "Command line" (it shows the commands that
+  drive filo from a script).
+- The texts that pointed to MODE ▾ now point to the side bar (right-click
+  LIVE SYNC).
+- README: new screenshots, LIVE SYNC ones added.
+
 ## [0.6.4] — 2026-10-12
 
 ### Changed

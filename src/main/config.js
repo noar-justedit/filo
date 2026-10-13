@@ -32,6 +32,8 @@ const DEFAULT_SETTINGS = {
   keepDates: true,
   showHidden: false,
   confirmDelete: true,
+  hookEnabled: false,       // the command after the queue (Settings)
+  hookCommand: '',
 };
 
 // LIVE SYNC pairs. Excluded by default: system clutter and the temporary
@@ -80,7 +82,7 @@ function normalizeDevice(d) {
   return d && DEVICE_ID.test(d.id) ? { id: d.id, name: String(d.name || '').slice(0, 120) } : null;
 }
 
-const DEFAULT_NTFY = { enabled: false, server: 'https://ntfy.sh', topic: '' };
+const DEFAULT_NTFY = { enabled: false, server: 'https://ntfy.sh', topic: '', syncAlert: false, syncAlertMin: 10 };
 
 function writeAtomic(file, text) {
   const tmp = file + '.tmp-' + process.pid;
@@ -109,6 +111,8 @@ function normalizeSettings(s) {
   // file back): a server that cannot compute a checksum is always read back.
   // An older "never read back" choice is no longer visible, so it goes.
   o.readBack = true;
+  o.hookEnabled = !!o.hookEnabled;
+  o.hookCommand = String(o.hookCommand || '').slice(0, 2000);
   return o;
 }
 
@@ -283,6 +287,8 @@ class Prefs {
     if (p.enabled !== undefined) n.enabled = !!p.enabled;
     if (p.server !== undefined) n.server = String(p.server || '').trim() || DEFAULT_NTFY.server;
     if (p.topic !== undefined) n.topic = String(p.topic || '').trim();
+    if (p.syncAlert !== undefined) n.syncAlert = !!p.syncAlert;
+    if (p.syncAlertMin !== undefined) n.syncAlertMin = Math.max(1, Math.min(240, parseInt(p.syncAlertMin, 10) || DEFAULT_NTFY.syncAlertMin));
     this.save();
     return this.ntfy();
   }

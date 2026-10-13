@@ -188,6 +188,7 @@ class Direct extends EventEmitter {
     this.quit = false;             // stop() was called: never starts again
     this.evChild = null;
     this.act = new Map();          // folderId → what moves now: { dl, rdl, done, upPrev } (the LIVE SYNC queue)
+    this.held = new Set();         // folderIds paused from the LIVE SYNC queue (PAUSE button), until resumed or filo quits
     this.myId = null;
   }
 
@@ -450,7 +451,13 @@ class Direct extends EventEmitter {
       const want = {
         label: p.name, path: p.local, type: TYPE[p.direction] || 'sendreceive',
         devices: p.peer ? [{ deviceID: p.peer.id }] : [],
-        paused: !p.auto,
+        paused: !p.auto || this.held.has(p.folderId),
+        // Files go in name order (Noar, 12/10/2026): the LIVE SYNC queue
+        // then moves from the top on both computers (random, Syncthing's
+        // default, left the first names waiting while others arrived), and a
+        // folder of clips arrives in its order. Syncthing's random order only
+        // helps when many computers share one folder: filo pairs two.
+        order: 'alphabetic',
         fsWatcherEnabled: true, fsWatcherDelayS: 10,
         rescanIntervalS: 3600,
         // A file deleted on one computer is deleted on the other too, but
@@ -474,7 +481,7 @@ class Direct extends EventEmitter {
       } else {
         const devs = (have.devices || []).map(d => d.deviceID).filter(id => id !== this.myId).sort().join(',');
         const differs = have.label !== want.label || have.path !== want.path || have.type !== want.type || have.paused !== want.paused
-          || have.ignoreDelete !== false || have.maxConflicts !== -1 || have.fsWatcherEnabled !== true
+          || have.ignoreDelete !== false || have.maxConflicts !== -1 || have.order !== 'alphabetic' || have.fsWatcherEnabled !== true
           || !have.versioning || have.versioning.type !== 'trashcan' || have.versioning.fsPath !== want.versioning.fsPath
           || devs !== want.devices.map(d => d.deviceID).sort().join(',');
         if (differs) await this.req('PATCH', `/rest/config/folders/${p.folderId}`, want);
@@ -587,6 +594,19 @@ class Direct extends EventEmitter {
     await this.req('DELETE', `/rest/cluster/pending/folders?folder=${encodeURIComponent(folderId)}&device=${encodeURIComponent(deviceId)}`).catch(() => {});
     this._poll().catch(() => {});
   }
+
+  // PAUSE / RESUME from the LIVE SYNC queue (Noar, 12/10/2026): the session
+  // stays connected, Syncthing stops moving its files (the folder paused on
+  // this computer) until RESUME. Not kept: filo restarted resumes it, a
+  // forgotten pause never stops a session for good.
+  async hold(p, on) {
+    if (!p || !p.folderId) return;
+    if (on) this.held.add(p.folderId); else this.held.delete(p.folderId);
+    await this.req('PATCH', `/rest/config/folders/${p.folderId}`, { paused: !p.auto || !!on });
+    this.log('info', `SYNCTHING · ${p.name}: ${on ? 'paused' : 'resumed'}`);
+    this._poll().catch(() => {});
+  }
+  isHeld(p) { return !!(p && this.held.has(p.folderId)); }
 
   // ── Watching ───────────────────────────────────────────────────────────
   setFast(on) { this.fast = !!on; if (this.running) this._schedule(); }
@@ -750,6 +770,7 @@ class Direct extends EventEmitter {
     }
     if (!s.state) {
       s.state = !p.auto ? 'paused'
+        : this.held.has(p.folderId) ? 'held'
         : !l.connected ? 'offline'
         : /scan/.test(db.state) ? 'scanning'
         : (db.state === 'syncing' || db.state === 'sync-preparing' || s.needBytes > 0 || (s.peerNeedBytes || 0) > 0) ? 'syncing'

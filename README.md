@@ -13,11 +13,19 @@ Licensed under the **GNU General Public License v3.0** (see [`LICENSE`](./LICENS
 
 ## Screenshots
 
-![filo 0.6.4 — connected to a site, three downloads, the first ones in segments](docs/screenshots/screenshot.png)
+![filo 0.7.1 — connected to a site, three downloads, the first ones in segments](docs/screenshots/screenshot.png)
 
 | Site manager | Settings |
 |---|---|
 | ![Site manager: sites in folders, SFTP, FTPS and plain FTP](docs/screenshots/sites.png) | ![Settings: transfers, file management, verification, notifications](docs/screenshots/settings.png) |
+
+### LIVE SYNC
+
+![LIVE SYNC: a DUAL SYNC session synchronizing, this computer on the left, the remote computer and the S-FTP BACKUP on the right, the SYNCTHING queue below](docs/screenshots/livesync.png)
+
+| A LIVE SYNC session |
+|---|
+| ![Session settings: mode, MASTER / SLAVE, direction, local folder, S-FTP BACKUP, remote computer, file filter](docs/screenshots/livesync-session.png) |
 
 ---
 
@@ -26,22 +34,22 @@ Licensed under the **GNU General Public License v3.0** (see [`LICENSE`](./LICENS
 | | |
 |---|---|
 | **Protocols** | SFTP, FTPS (explicit and implicit), plain FTP (flagged as not encrypted). FTP passive or active |
-| **Two panels** | local and server side by side; drag and drop between them, or from the Finder / Explorer; synchronized browsing |
-| **Queue** | parallel transfers, saved continuously: a crash or a power cut loses nothing. Pause, resume, stop or retry one file or the whole queue |
+| **Two panels** | local and server side by side; drag and drop between them, or from the Finder / Explorer; synchronized browsing; favorite folders per server (the star); Desktop, Downloads and the mounted disks one click away on the local side; Space shows a local file in Quick Look (Mac) |
+| **Queue** | parallel transfers, saved continuously: a crash or a power cut loses nothing. Pause, resume, stop or retry one file or the whole queue; start it at a time of the day (right-click START) |
 | **Auto** | measures how many simultaneous transfers are fastest for each server (MB/s and files/s), and stays under a limit the server enforces |
 | **Segments** | a large file goes over several SFTP connections at once — the way past the per-connection limit on long-distance links |
 | **Rust engine** | over SFTP, the bytes go straight between the disk and the network through a small program written in Rust (`engine/`), outside Node: in a speed test with a Synology DS920+, a 20 GB file came in in 1'41" on 4 connections (FileZilla: 2'40"). filo falls back to its built-in engine when that program is missing or refused |
 | **Resume** | a cut transfer starts again where it stopped; a segmented file keeps its finished segments |
-| **Checksums** | every file verified after its transfer — by the server (SHA-256, MD5…) when it can compute one, otherwise by reading the file back (xxHash64). On or off from the main window |
+| **Checksums** | every file verified after its transfer — by the server (SHA-256, MD5…) when it can compute one, otherwise by reading the file back (xxHash64). On or off from the main window. A delivery already on both sides can be checked again without transferring anything (right-click → Check against the other side) |
 | **Safe names** | written as `name.filopart`, renamed only once complete and verified |
 | **File already there** | ask, overwrite, overwrite if newer, if the size differs, resume, keep both, skip |
 | **Site manager** | folders (a tree that folds), notes, per-site connection limit; import and export, including FileZilla's `sitemanager.xml` |
 | **Passwords** | in the system keychain (Keychain, Windows Credential Manager, libsecret) — never in clear |
 | **Server identity** | SSH host keys and FTPS certificates are shown on first contact and pinned; a change is refused |
-| **When it finishes** | phone notification (ntfy), then quit, sleep or shut down — only if nothing failed |
+| **When it finishes** | phone notification (ntfy), your own command or script (with the folders, the result, the counts as arguments; no shell), then quit, sleep or shut down — only if nothing failed |
 | **Speed limits** | per direction, for all transfers together |
-| **LIVE SYNC** | a local folder kept in step with another place, one way or both ways, in three kinds of session: **SYNCTHING** (another computer running filo, peer to peer, no server), **DUAL SYNC** (SYNCTHING first; once both computers are up to date, the MASTER keeps an exact copy of its folder on a server, S-FTP BACKUP, which also carries the files while the other computer is away), **S-FTP** (a folder on an FTP, FTPS or SFTP server). While a session is connected, the main window shows both machines side by side and the session's mode (SYNCTHING blue, DUAL SYNC, S-FTP violet) with its connected state, and a ring with the progress, the speed and arrows showing which way files move. |
-| **SYNCTHING** | peer to peer through the internet boxes (or a relay when no direct path exists), encrypted end to end. The computer that creates a session is its MASTER: its version wins a conflict (the other one is kept beside it), its direction and settings are the session's. It sends the other computer a config file, or its SYNCTHING ID; the other computer imports it (MODE ▾ → Import session as SLAVE) and becomes the SLAVE. A deleted file goes to the other computer's trash (`.filo-trash`), never lost. Uses [Syncthing](https://syncthing.net), shipped with filo |
+| **LIVE SYNC** | a local folder kept in step with another place, one way or both ways, in three kinds of session: **SYNCTHING** (another computer running filo, peer to peer, no server), **DUAL SYNC** (SYNCTHING first; once both computers are up to date, the MASTER keeps a folder on a server, S-FTP BACKUP, in step with both of them: what is put there by hand reaches both computers, and it carries the files while the other computer is away), **S-FTP** (a folder on an FTP, FTPS or SFTP server). While a session is connected, the main window shows both machines side by side and the session's mode (SYNCTHING blue, DUAL SYNC, S-FTP violet) with its connected state, and a ring with the progress, the file moving now, the speed and arrows showing which way files move. The SYNCTHING queue can be paused. A phone alert (ntfy) can say when a session has been down for a while. |
+| **SYNCTHING** | peer to peer through the internet boxes (or a relay when no direct path exists), encrypted end to end. The computer that creates a session is its MASTER: its version wins a conflict (the other one is kept beside it), its direction and settings are the session's. It sends the other computer a config file, or its SYNCTHING ID; the other computer imports it (right-click LIVE SYNC in the side bar → Import session as SLAVE) and becomes the SLAVE. A deleted file goes to the other computer's trash (`.filo-trash`), never lost. Uses [Syncthing](https://syncthing.net), shipped with filo |
 | **S-FTP sessions** | watch the folder, wait until a file is complete, report conflicts; a session can be shared with another team as a small file (no password inside) |
 | **Segment relay** | between two filo on one SFTP server: the other team starts downloading a large file while it is still being sent, segment by segment |
 | **Command line** | `filo upload / download / livesync / queue / status`, for scripts and other programs — see [`docs/CLI.md`](docs/CLI.md) |

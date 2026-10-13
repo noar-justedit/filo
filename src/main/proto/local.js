@@ -78,10 +78,22 @@ async function roots() {
   if (process.platform === 'win32') {
     for (const d of await windowsDrives()) out.push({ label: d.path.slice(0, 2) + (d.slow ? ' (not answering)' : ''), path: d.path });
   } else if (process.platform === 'darwin') {
-    try { for (const v of fs.readdirSync('/Volumes')) out.push({ label: v, path: path.join('/Volumes', v) }); } catch (_) {}
+    // /Volumes: every mounted disk; the start-up disk is a link to "/".
+    try {
+      for (const v of fs.readdirSync('/Volumes')) {
+        if (v.startsWith('.')) continue;
+        const p = path.join('/Volumes', v);
+        let real = p; try { real = fs.realpathSync(p); } catch (_) {}
+        out.push({ label: v, path: real === '/' ? '/' : p, system: real === '/' });
+      }
+    } catch (_) {}
   } else {
-    for (const base of ['/media/' + os.userInfo().username, '/mnt']) {
-      try { for (const v of fs.readdirSync(base)) out.push({ label: v, path: path.join(base, v) }); } catch (_) {}
+    // Linux: what the desktop mounts (udisks: /media/<user> or
+    // /run/media/<user>), and /mnt.
+    const user = (() => { try { return os.userInfo().username; } catch (_) { return ''; } })();
+    out.push({ label: 'Computer', path: '/', system: true });
+    for (const base of ['/media/' + user, '/run/media/' + user, '/mnt']) {
+      try { for (const v of fs.readdirSync(base)) if (!v.startsWith('.')) out.push({ label: v, path: path.join(base, v) }); } catch (_) {}
     }
   }
   return out;

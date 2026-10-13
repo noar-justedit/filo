@@ -391,6 +391,7 @@ function createDirect({ prefs, log, send, home, bin, onStatus, onFailover, onMir
     allStatus() { const o = {}; for (const p of pairs()) o[p.id] = statusOf(p.id); return o; },
     pending: () => pending,
     setFast: on => direct.setFast(on),
+    hold: async (id, on) => { const p = prefs.getSyncPair(id); if (!p || !p.folderId) return { ok: false, error: 'No SYNCTHING session.' }; await direct.hold(p, on); return { ok: true }; },
     running: () => !!direct.child,
     stop: () => direct.stop(),
   };

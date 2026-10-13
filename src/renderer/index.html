@@ -120,7 +120,7 @@ body.win #wincontrols,body.linux #wincontrols{display:flex;}
 .card{background:var(--card);border-radius:var(--r-card);}
 
 /* ── Quick connect ──────────────────────────────────────────────────────── */
-#quick{display:flex;align-items:flex-end;gap:10px;padding:12px 14px;flex-shrink:0;}
+#quick{display:flex;align-items:center;gap:10px;padding:12px 14px;flex-shrink:0;}
 .qf{display:flex;flex-direction:column;gap:6px;min-width:0;}
 .qf.fixed{flex-shrink:0;}
 .seg button{flex-shrink:0;}
@@ -128,7 +128,12 @@ body.win #wincontrols,body.linux #wincontrols{display:flex;}
   font-size:13px;outline:none;}
 .qf input:focus,.qf select:focus{box-shadow:var(--focus);}
 .qf input::placeholder{color:var(--text4);}
-#q-host-f{flex:1.6;} #q-user-f{flex:1;} #q-pass-f{flex:1;} #q-port-f{width:76px;flex:none;}
+#q-host-f{flex:1.6;} #q-user-f{flex:1;} #q-pass-f{flex:1;} #q-port-f{width:104px;flex:none;}
+/* The field's name inside it, in grey, before what is typed (option C). */
+#quick .qf:not(.fixed){flex-direction:row;align-items:center;gap:0;height:34px;background:var(--ins);border-radius:var(--r-field);}
+#quick .qf:not(.fixed):focus-within{box-shadow:var(--focus);}
+#quick .qf:not(.fixed) .lbl{padding:0 0 0 12px;font-size:12px;font-weight:500;letter-spacing:0;text-transform:none;color:var(--text4);line-height:34px;white-space:nowrap;}
+#quick .qf:not(.fixed) input{flex:1;min-width:0;background:transparent;box-shadow:none;}
 .seg{display:flex;gap:2px;background:var(--ins);border-radius:var(--r-field);padding:3px;height:34px;}
 .seg button{border:none;background:transparent;color:var(--text3);border-radius:6px;padding:0 10px;
   font-size:11.5px;font-weight:700;letter-spacing:.04em;white-space:nowrap;}
@@ -138,7 +143,8 @@ body.win #wincontrols,body.linux #wincontrols{display:flex;}
 .btn{height:34px;display:inline-flex;align-items:center;justify-content:center;gap:7px;border:none;border-radius:var(--r-field);
   padding:0 14px;font-size:12px;font-weight:700;letter-spacing:.06em;background:var(--ins);color:var(--text2);white-space:nowrap;}
 .btn:hover:not(:disabled){color:var(--text);}
-.btn:disabled{opacity:.4;cursor:default;}
+.btn:disabled,.btn.dis{opacity:.4;cursor:default;}
+.btn.dis:hover{filter:none !important;}
 .btn svg{width:15px;height:15px;}
 .btn.go{background:var(--green-d);color:var(--green);}
 .btn.go:hover:not(:disabled),.btn.blue:hover:not(:disabled),.btn.stop:hover:not(:disabled){filter:brightness(1.15);}
@@ -146,16 +152,22 @@ body.win #wincontrols,body.linux #wincontrols{display:flex;}
 .btn.stop{background:var(--red-d);color:var(--red);}
 .btn.sm{height:28px;padding:0 11px;font-size:11px;}
 #q-sites{padding:0 13px;}
-#q-hist,#q-sync,#btn-after{width:34px;padding:0;flex-shrink:0;}
-#q-connect{width:100%;min-width:44px;padding:0;justify-content:center;}
+#q-hist{width:34px;padding:0;flex-shrink:0;}
+/* Synchronized browsing joins the two panels: on the splitter, at the height of their heads. */
+#split-panels{position:relative;}
+#q-sync{position:absolute;top:8px;left:50%;transform:translateX(-50%);width:30px;height:30px;padding:0;z-index:2;background:var(--raise);}
+#q-sync svg{width:14px;height:14px;}
+#q-connect{width:100%;min-width:52px;padding:0;justify-content:center;}
 #q-connect svg{width:18px;height:18px;}
 #q-connect.busy svg{animation:qc-pulse 1s ease-in-out infinite;}
 @keyframes qc-pulse{50%{opacity:.35;}}
 #q-proto{min-width:112px;justify-content:space-between;gap:8px;}
 #q-proto .chev{width:12px;height:12px;color:var(--text3);transform:rotate(90deg);}
 #q-proto.warn{color:var(--orange);}
-.q-sep{width:1px;align-self:stretch;margin:4px 2px 0;background:rgba(255,255,255,.07);}
 #q-sync.on{background:var(--blue-d);color:var(--blue);}
+/* A favorite folder of this server (Noar, 12/10/2026): the star filled, yellow. */
+.p-fav.on{color:var(--yellow);}
+.p-fav.on svg{fill:currentColor;}
 
 /* ── Panels ─────────────────────────────────────────────────────────────── */
 #panels{flex:1;min-height:160px;display:flex;gap:0;}
@@ -165,6 +177,11 @@ body.win #wincontrols,body.linux #wincontrols{display:flex;}
 .split-v:hover,.split-v.drag,.split-h:hover,.split-h.drag{background:rgba(255,255,255,.1);}
 .p-head{display:flex;align-items:center;gap:8px;padding:12px 12px 8px 14px;}
 .p-head .lbl{flex-shrink:0;min-width:52px;}
+/* The places of the local panel: three small buttons in one block. */
+.p-places{display:flex;gap:2px;flex-shrink:0;}
+.p-places .ibtn.cur{color:var(--green);}
+.p-drv{width:auto !important;padding:0 6px !important;gap:1px;display:inline-flex;align-items:center;}
+.p-drv .car{width:10px !important;height:10px !important;opacity:.7;}
 .p-path{flex:1;min-width:0;height:30px;background:var(--ins);border:none;border-radius:var(--r-field);padding:0 10px;
   font-family:var(--mono);font-size:12px;color:var(--text);outline:none;}
 .p-path:focus{box-shadow:var(--focus);}
@@ -263,7 +280,7 @@ body.syncb .p-dif{display:inline-flex !important;}
   letter-spacing:.08em;text-transform:uppercase;color:var(--text3);white-space:nowrap;}
 .q-stat .n{font-family:var(--mono);font-size:10px;font-weight:700;padding:1px 6px;border-radius:var(--r-badge);
   background:rgba(255,255,255,.06);color:var(--text);letter-spacing:0;text-transform:none;}
-.q-stat.g .n{background:color-mix(in srgb,var(--q-color,var(--green)) 15%,transparent);color:var(--q-color,var(--green));} .q-stat.b .n{background:var(--blue-d);color:var(--blue);}
+.q-stat.g .n{background:color-mix(in srgb,var(--q-color,var(--green)) 15%,transparent);color:var(--q-color,var(--green));} .q-stat.b .n{background:var(--blue-d);color:var(--blue);} .q-stat.o .n{background:var(--orange-d);color:var(--orange);}
 .q-conn{display:flex;align-items:center;gap:8px;height:34px;padding:0 6px;border:none;border-radius:var(--r-field);background:transparent;color:var(--text2);}
 .q-conn:hover{color:var(--text);}
 .q-conn .v{font-family:var(--mono);font-size:11.5px;font-weight:700;color:var(--blue);}
@@ -329,7 +346,6 @@ body.syncb .p-dif{display:inline-flex !important;}
 #footer{display:flex;align-items:center;gap:10px;padding:6px 16px 8px;font-size:11px;color:var(--text4);flex-shrink:0;}
 #footer a{color:var(--text3);cursor:pointer;text-decoration:none;}
 #footer a:hover{color:var(--text);}
-#footer .upd{color:var(--green);font-weight:600;}
 
 /* ── Windows (modals) ─────────────────────────────────────────────────── */
 .ov{position:fixed;inset:0;background:rgba(0,0,0,.7);display:none;align-items:center;justify-content:center;z-index:1000;}
@@ -359,21 +375,32 @@ body.syncb .p-dif{display:inline-flex !important;}
 /* Site manager */
 #ov-sites .mcard{width:920px;height:640px;padding:0;flex-direction:row;overflow:hidden;}
 #ov-sync .mcard{width:960px;height:680px;padding:0;flex-direction:row;overflow:hidden;}
-/* Off: red; on: green, breathing; a problem: orange (Noar, 11/10/2026). */
-#mode-seg button{display:inline-flex;align-items:center;gap:7px;}
-#mode-seg button svg{width:14px;height:14px;}
-#mode-seg button.cur{background:var(--raise);color:var(--text);}
-#mode-menu{padding:0 7px !important;}
-#btn-sync.on{color:var(--blue);}
-#btn-sync.on.cur{background:var(--blue-d);}
-/* A live sync is on: the LIVE SYNC segment breathes, blue (Noar, 11/10/2026). */
-#btn-sync.on{animation:sy-breathe 2.4s ease-in-out infinite;}
-@keyframes sy-breathe{0%,100%{box-shadow:0 0 0 0 rgba(77,144,240,0),0 0 6px rgba(77,144,240,.18);}50%{box-shadow:0 0 0 2px rgba(77,144,240,.24),0 0 12px rgba(77,144,240,.45);}}
-@media (prefers-reduced-motion:reduce){#btn-sync.on{animation:none;box-shadow:0 0 0 2px rgba(77,144,240,.3);}}
+/* ── The rail (Noar, 12/10/2026, option C) ─────────────────────────────── */
+#shell{flex:1;display:flex;min-height:0;}
+#shell #main{min-width:0;padding-left:0;}
+#rail{width:88px;flex-shrink:0;display:flex;flex-direction:column;align-items:center;gap:6px;padding:0 0 12px;}
+.rail-sp{flex:1;}
+.rail-b{position:relative;width:68px;display:flex;flex-direction:column;align-items:center;gap:6px;padding:11px 0 9px;border:none;border-radius:12px;
+  background:transparent;color:var(--text3);font-size:9px;font-weight:800;letter-spacing:.08em;white-space:nowrap;}
+.rail-b svg{width:21px;height:21px;}
+.rail-b:hover{color:var(--text);background:rgba(255,255,255,.04);}
+/* The view shown, in its colour: TRANSFER green (the FTP queue's), LIVE
+   SYNC the colour of the session shown (SYNCTHING blue, DUAL SYNC blue to
+   violet, S-FTP violet). */
+#mode-client.cur{color:var(--green);background:var(--green-d);}
+#btn-sync.cur{color:var(--m-c,var(--blue));background:var(--m-d,var(--blue-d));}
+#btn-sync.cur.hy:not(.err) span:first-of-type{background:linear-gradient(90deg,var(--blue),var(--violet));-webkit-background-clip:text;background-clip:text;color:transparent;}
+/* A live sync is on: a blue dot that breathes; a problem: orange. */
+.rail-dot{display:none;position:absolute;top:9px;right:15px;width:7px;height:7px;border-radius:50%;background:var(--blue);box-shadow:0 0 8px var(--blue);}
+#btn-sync.on .rail-dot{display:block;animation:sy-dot 2.4s ease-in-out infinite;}
+#btn-sync.err .rail-dot{display:block;background:var(--orange);box-shadow:0 0 8px var(--orange);}
+@keyframes sy-dot{50%{opacity:.45;}}
+@media (prefers-reduced-motion:reduce){#btn-sync.on .rail-dot{animation:none;}}
 #btn-sync.err{color:var(--orange);}
 #btn-sync.err.cur{background:var(--orange-d);}
 #btn-sync .sy-n:empty{display:none;}
-#btn-sync .sy-n{font-family:var(--mono);font-size:10px;padding:1px 5px;border-radius:var(--r-badge);background:rgba(255,255,255,.08);}
+#btn-sync .sy-n{position:absolute;top:5px;right:9px;font-family:var(--mono);font-size:10px;font-weight:700;letter-spacing:0;padding:1px 5px;border-radius:var(--r-badge);background:var(--raise);color:var(--text);}
+#btn-sync .rail-dot:has(+ .sy-n:not(:empty)){display:none !important;}
 
 /* ── LIVE SYNC: new session (three kinds), the forms, the folder picker ── */
 /* Mode buttons, syncto's design (.mbtn): an icon on a hollow tinted with
@@ -501,6 +528,7 @@ body.live-on #conn-pill{display:none;}
 body.live-st #st-panel{display:flex;}
 body.live-st #queue .q-head,body.live-st #q-blocked,body.live-st #q-tabs,body.live-st #q-list{display:none;}
 .st-head{display:flex;align-items:center;gap:14px;padding:4px 4px 10px;}
+#st-hold.held{color:var(--q-color,var(--blue));}
 .st-stats{font-family:var(--mono);font-size:11px;color:var(--text3);}
 .st-list .qrow{position:relative;left:auto;right:auto;}
 .st-list .qrow .dirc{display:inline-flex;color:var(--text3);flex:none;}
@@ -562,11 +590,17 @@ body.live-st #queue .q-head,body.live-st #q-blocked,body.live-st #q-tabs,body.li
 .lv-ring.off .r-mode{color:var(--text3);background:rgba(255,255,255,.06);}
 .lv-ring .r-pct{font-size:19cqw;font-weight:700;line-height:1;margin-top:2cqw;color:var(--text);font-variant-numeric:tabular-nums;}
 .lv-ring .r-pct span{font-size:6.5cqw;color:var(--text3);font-weight:600;margin-left:.4cqw;}
-.lv-ring .r-bytes{font-size:3.6cqw;color:var(--text2);margin-top:1.2cqw;}
-.lv-ring .r-speed{font-size:5.2cqw;font-weight:700;color:var(--text);margin-top:1.4cqw;}
-.lv-ring .r-row{display:flex;justify-content:center;gap:7cqw;margin-top:3cqw;}
+/* The file moving now (Noar, 12/10/2026), then bytes and speed on one line. */
+.lv-ring .r-file{display:flex;align-items:center;justify-content:center;gap:1.2cqw;max-width:60cqw;margin-top:2cqw;font-size:3.6cqw;font-weight:600;color:var(--text);}
+.lv-ring .r-file .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;}
+.lv-ring .r-file .dirc{display:inline-flex;flex:none;color:var(--text3);}
+.lv-ring .r-file .dirc svg{width:3.4cqw;height:3.4cqw;}
+.lv-ring .r-line{font-size:3.2cqw;color:var(--text2);margin-top:1.2cqw;white-space:nowrap;}
+.lv-ring .r-line b{color:var(--text);font-weight:700;}
+.lv-ring .r-line i{font-style:normal;color:var(--text4);margin:0 1.4cqw;}
+.lv-ring .r-row{display:flex;justify-content:center;gap:7cqw;margin-top:2.6cqw;}
 .lv-ring .r-fig{display:flex;flex-direction:column;align-items:center;}
-.lv-ring .r-fig .n{font-size:5.6cqw;font-weight:700;color:var(--text);line-height:1.1;}
+.lv-ring .r-fig .n{font-size:4.8cqw;font-weight:700;color:var(--text);line-height:1.1;}
 .lv-ring .r-fig .l{font-size:2.4cqw;font-weight:800;letter-spacing:.14em;color:var(--text3);margin-top:.5cqw;}
 
 /* SYNCTHING: another computer asks to connect, or offers a session. */
@@ -662,6 +696,7 @@ body.live-st #queue .q-head,body.live-st #q-blocked,body.live-st #q-tabs,body.li
 .set-row select{flex:0 0 220px;}
 .set-row input[type=number]{width:64px;}
 .set-row input[type=text]{flex:1;min-width:0;}
+.set-row input#st-ntfy-min{flex:none;width:52px;text-align:center;}
 .set-desc{flex:1;min-width:0;font-size:11.5px;color:var(--text3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .switch{position:relative;width:34px;height:20px;flex-shrink:0;display:inline-block;}
 .switch input{opacity:0;width:0;height:0;}
@@ -697,6 +732,16 @@ body.live-st #queue .q-head,body.live-st #q-blocked,body.live-st #q-tabs,body.li
 .known .k .a div:first-child{font-size:12.5px;color:var(--text);}
 .known .k .a div:last-child{font-size:10.5px;color:var(--text3);font-family:var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .set-test-res{font-size:12px;}
+/* Check against the other side: the lists. */
+.cmp-h{font-size:10px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--text3);margin:12px 0 6px;}
+.cmp-h span{font-family:var(--mono);margin-left:6px;color:var(--text2);}
+.cmp-h.o,.cmp-h.o span{color:var(--orange);}
+.cmp-l{max-height:160px;overflow:auto;background:var(--ins);border-radius:var(--r-field);padding:6px 10px;font-family:var(--mono);font-size:11.5px;}
+.cmp-l div{padding:2px 0;word-break:break-all;}
+.cmp-l small{display:block;color:var(--text4);font-size:10.5px;}
+.set-hint{font-size:11.5px;line-height:1.55;color:var(--text3);margin:2px 0 4px;}
+.set-hint b{color:var(--text2);font-weight:600;}
+#st-hook-cmd{font-family:var(--mono);font-size:12px;}
 .set-test-res.ok{color:var(--green);} .set-test-res.err{color:var(--red);}
 
 /* "Already exists" */
@@ -769,9 +814,6 @@ body.live-st #queue .q-head,body.live-st #q-blocked,body.live-st #q-tabs,body.li
   </div>
   <div class="t-spacer"></div>
   <div class="t-actions">
-    <button class="ibtn" id="btn-settings" aria-label="Settings" data-tip="Settings">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1"/></svg>
-    </button>
     <div id="wincontrols">
       <button id="win-min" aria-label="Minimize"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M5 12h14"/></svg></button>
       <button id="win-max" aria-label="Maximize"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="4" y="4" width="16" height="16" rx="2"/></svg></button>
@@ -780,47 +822,33 @@ body.live-st #queue .q-head,body.live-st #q-blocked,body.live-st #q-tabs,body.li
   </div>
 </div>
 
+<div id="shell">
+<!-- ── The rail (Noar, 12/10/2026, option C): the two views, the sites,
+     the settings. Each one an icon and its name. ─────────────────────── -->
+<nav id="rail" aria-label="filo">
+  <button class="rail-b" id="mode-client" data-tip="TRANSFER: the two file panels and the queue"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m16 3 4 4-4 4"/><path d="M20 7H4"/><path d="m8 21-4-4 4-4"/><path d="M4 17h16"/></svg><span>TRANSFER</span></button>
+  <button class="rail-b" id="btn-sync" aria-label="LIVE SYNC" data-tip="LIVE SYNC"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg><span>LIVE SYNC</span><i class="rail-dot"></i><span class="sy-n" id="sy-n"></span></button>
+  <button class="rail-b" id="q-sites" data-tip="SITES: your saved servers (⌘S)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/></svg><span>SITES</span></button>
+  <span class="rail-sp"></span>
+  <button class="rail-b" id="btn-settings" aria-label="Settings" data-tip="Settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1"/></svg><span>SETTINGS</span></button>
+</nav>
 <div id="main">
 
 <!-- ── Quick connect ─────────────────────────────────────────────────── -->
 <div id="quick" class="card">
-  <!-- MODE (Noar, 12/10/2026): the FTP client or the LIVE SYNC view; ▾ the
-       LIVE SYNC menu. The same block moves into the LIVE SYNC view's head. -->
-  <div class="qf fixed" id="mode-f">
-    <span class="lbl">Mode</span>
-    <div class="seg" id="mode-seg">
-      <button id="mode-client" data-tip="FTP client: the two file panels">CLIENT</button>
-      <button id="btn-sync" aria-label="LIVE SYNC" data-tip="LIVE SYNC: no session connected (new, import, connect)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg><span>LIVE SYNC</span><span class="sy-n" id="sy-n"></span></button>
-      <button id="mode-menu" aria-label="LIVE SYNC menu" data-tip="LIVE SYNC: new session, import, connect, sessions"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></button>
-    </div>
-  </div>
   <div class="qf fixed">
-    <span class="lbl">Sites</span>
-    <button class="btn" id="q-sites" data-tip="Site Manager (⌘S)">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="8" x="2" y="2" rx="2"/><rect width="20" height="8" x="2" y="14" rx="2"/><path d="M6 6h.01"/><path d="M6 18h.01"/></svg>
-      SITES
-    </button>
-  </div>
-  <div class="qf fixed">
-    <span class="lbl">Protocol</span>
     <button class="btn" id="q-proto" aria-haspopup="menu"></button>
   </div>
   <div class="qf" id="q-host-f"><span class="lbl">Host</span><input id="q-host" placeholder="server.example.com  or  sftp://user@host" spellcheck="false" autocomplete="off"></div>
   <div class="qf" id="q-port-f"><span class="lbl">Port</span><input id="q-port" placeholder="22" inputmode="numeric" spellcheck="false" autocomplete="off"></div>
-  <div class="qf" id="q-user-f"><span class="lbl">User</span><input id="q-user" placeholder="user" spellcheck="false" autocomplete="off"></div>
-  <div class="qf" id="q-pass-f"><span class="lbl">Password</span><input id="q-pass" type="password" placeholder="password" autocomplete="off"></div>
+  <div class="qf" id="q-user-f"><span class="lbl">User</span><input id="q-user" spellcheck="false" autocomplete="off"></div>
+  <div class="qf" id="q-pass-f"><span class="lbl">Password</span><input id="q-pass" type="password" autocomplete="off"></div>
   <div class="qf fixed" id="q-connect-f">
-    <span class="lbl">Connect</span>
     <button class="btn go" id="q-connect"></button>
   </div>
   <button class="btn" id="q-hist" aria-label="Recent connections" data-tip="Recent connections">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg>
   </button>
-  <span class="q-sep"></span>
-  <button class="btn" id="q-sync" aria-label="Synchronized browsing" disabled>
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
-  </button>
-  <button class="btn" id="btn-after" aria-label="When the queue finishes" data-tip="When the queue finishes: do nothing"></button>
 </div>
 
 <!-- ── The two panels ───────────────────────────────────────────────── -->
@@ -829,6 +857,12 @@ body.live-st #queue .q-head,body.live-st #q-blocked,body.live-st #q-tabs,body.li
     <div class="p-head">
       <span class="lbl">Local</span>
       <button class="ibtn ins" data-act="browse" aria-label="Browse" data-tip="Choose a folder or a drive"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/></svg></button>
+      <!-- Places (Noar, 13/10/2026): Desktop, Downloads, the mounted disks. -->
+      <span class="p-places">
+        <button class="ibtn ins" data-act="desktop" aria-label="Desktop" data-tip="Desktop"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="14" x="2" y="3" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/></svg></button>
+        <button class="ibtn ins" data-act="downloads" aria-label="Downloads" data-tip="Downloads"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3"/><path d="m7 10 5 5 5-5"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/></svg></button>
+        <button class="ibtn ins p-drv" data-act="drives" aria-label="Disks" data-tip="Disks: the ones mounted now"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><path d="M6 16h.01"/><path d="M10 16h.01"/></svg><svg class="car" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></button>
+      </span>
       <input class="p-path" spellcheck="false" autocomplete="off">
       <div class="p-tools">
         <button class="ibtn ins p-dif" data-act="diff" aria-label="Differences only" data-tip="DIFFERENCES ONLY: show only what differs from the other side"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 3H2l8 9.46V19l4 2v-8.54L22 3z"/></svg></button>
@@ -851,7 +885,9 @@ body.live-st #queue .q-head,body.live-st #q-blocked,body.live-st #q-tabs,body.li
     </div>
   </div>
 
-  <div class="split-v" id="split-panels" data-tip="Drag to resize"></div>
+  <div class="split-v" id="split-panels" data-tip="Drag to resize"><button class="btn" id="q-sync" aria-label="Synchronized browsing" disabled>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+  </button></div>
 
   <div class="panel card" id="p-remote" data-side="remote">
     <div class="p-head">
@@ -863,6 +899,7 @@ body.live-st #queue .q-head,body.live-st #q-blocked,body.live-st #q-tabs,body.li
         <button class="ibtn ins" data-act="refresh" aria-label="Refresh" data-tip="Refresh (F5)" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg></button>
         <button class="ibtn ins" data-act="hidden" aria-label="Hidden files" data-tip="Show hidden files (⇧⌘.)" disabled></button>
         <button class="ibtn ins" data-act="mkdir" aria-label="New folder" data-tip="New folder" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 10v6"/><path d="M9 13h6"/><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg></button>
+        <button class="ibtn ins p-fav" data-act="fav" aria-label="Favorite folders" data-tip="FAVORITES: this server's folders you keep (add this one, or go to one)" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg></button>
         <button class="ibtn ins lab" data-act="home" aria-label="Home folder" data-tip="HOME: back to the folder this server opens on (your login folder)" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"/><path d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><span>HOME</span></button>
       </div>
       <input class="p-filter" placeholder="Filter…" spellcheck="false" disabled>
@@ -910,6 +947,7 @@ body.live-st #queue .q-head,body.live-st #q-blocked,body.live-st #q-tabs,body.li
         <svg viewBox="0 0 24 24" fill="currentColor"><rect x="5.5" y="5.5" width="13" height="13" rx="2"/></svg>
       </button>
       <button class="btn sq" id="q-clear" aria-label="Clear" data-tip="Clear this list"></button>
+      <button class="btn sq" id="btn-after" aria-label="When the queue finishes" data-tip="When the queue finishes: do nothing"></button>
     </div>
     <div class="q-titles">
       <svg class="q-spark" id="q-spark" viewBox="0 0 100 28" preserveAspectRatio="none" aria-hidden="true"><path class="spark-area" d=""></path><path class="spark-line" d=""></path></svg>
@@ -937,11 +975,12 @@ body.live-st #queue .q-head,body.live-st #q-blocked,body.live-st #q-tabs,body.li
     <button id="q-retry" style="display:none">Retry all</button>
   </div>
   <div class="q-list" id="q-list" tabindex="0"><div class="p-spacer" id="q-spacer"></div><div id="q-log" style="display:none"></div></div>
-  <div id="st-panel"><div class="st-head"><div class="q-title">SYNCTHING QUEUE</div><span class="st-stats" id="st-stats"></span></div><div class="q-list st-list" id="st-list"></div></div>
+  <div id="st-panel"><div class="st-head"><button class="btn sq" id="st-hold" aria-label="Pause"></button><div class="q-title">SYNCTHING QUEUE</div><span class="st-stats" id="st-stats"></span></div><div class="q-list st-list" id="st-list"></div></div>
 </div>
 
-<div id="footer"><span id="ver">v</span>·<a id="lnk-gh">github</a><span id="upd" class="upd"></span></div>
+<div id="footer"><span id="ver">v</span>·<a id="lnk-gh">github</a></div>
 </div><!-- /#main -->
+</div><!-- /#shell -->
 
 <!-- ══ Site manager ═════════════════════════════════════════════════════ -->
 <div class="ov" id="ov-sites">
@@ -1050,6 +1089,8 @@ body.live-st #queue .q-head,body.live-st #q-blocked,body.live-st #q-tabs,body.li
           <span class="set-desc">when the queue finishes, through the free ntfy app</span></div>
         <div class="set-row"><label>ntfy server</label><input type="text" id="st-ntfy-server" placeholder="https://ntfy.sh" spellcheck="false"></div>
         <div class="set-row"><label>ntfy topic</label><input type="text" id="st-ntfy-topic" placeholder="filo-yourname-9f3k" spellcheck="false"></div>
+        <div class="set-row"><label>LIVE SYNC</label><label class="switch"><input type="checkbox" id="st-ntfy-sync"><span class="slider"></span></label>
+          <span class="set-desc" style="flex:none" data-tip="One alert when a connected session cannot sync for that long (the other computer away, the server in error), one more when it works again">alert when a session is down for</span><input type="text" id="st-ntfy-min" inputmode="numeric" spellcheck="false"><span class="set-desc">min</span></div>
         <div class="set-row"><label>&nbsp;</label><button class="btn sm" id="st-ntfy-test">SEND A TEST</button><span class="set-test-res" id="st-ntfy-res"></span></div>
         <div class="ntfy-qrs">
           <div class="ntfy-qr-h">Get the ntfy app: scan with your phone</div>
@@ -1060,7 +1101,18 @@ body.live-st #queue .q-head,body.live-st #q-blocked,body.live-st #q-tabs,body.li
         </div>
       </div>
       <div class="set-section">
-        <div class="set-sec-title">Post command <span class="set-sec-note">(filo started by a script or another program)</span></div>
+        <!-- The command after the queue (Noar, 12/10/2026), ingesto's post-ingest command. -->
+        <div class="set-sec-title">After the queue</div>
+        <div class="set-row"><label>Run a command</label>
+          <label class="switch"><input type="checkbox" id="st-hook-en"><span class="slider"></span></label>
+          <span class="set-desc">when the queue finishes, before the end action (quit, sleep, shut down)</span></div>
+        <div class="set-row"><label>Command</label><input type="text" id="st-hook-cmd" placeholder='/Users/me/scripts/after.sh "{local}" {result}' spellcheck="false" autocomplete="off">
+          <button class="btn sm" id="st-hook-test">TEST</button></div>
+        <div class="set-row"><label>&nbsp;</label><span class="set-test-res" id="st-hook-res"></span></div>
+        <div class="set-hint">Variables, each one argument (quote them: <b>"{local}"</b>): <b>{result}</b> ok or errors · <b>{done}</b> · <b>{failed}</b> · <b>{bytes}</b> · <b>{local}</b> and <b>{remote}</b> the folders of the files · <b>{server}</b> · <b>{direction}</b> up, down or both. Run without a shell: on Windows, a .bat goes through <b>cmd /c</b>. Not after LIVE SYNC copies. ⚠ This runs exactly what you type: only commands you trust.</div>
+      </div>
+      <div class="set-section">
+        <div class="set-sec-title">Command line <span class="set-sec-note">(filo started by a script or another program)</span></div>
         <div class="set-row"><label>Command</label>
           <code class="cli-cmd" id="st-cli-cmd"></code>
           <button class="btn sm" id="st-cli-copy">COPY</button>

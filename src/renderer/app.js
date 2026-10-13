@@ -65,6 +65,7 @@ const posixDir = p => { const s = String(p).replace(/\/+$/, ''); const i = s.las
 const localBase = p => String(p).split(/[\\/]/).filter(Boolean).pop() || p;
 const localDir = p => { const s = String(p).replace(/[\\/]+$/, ''); const i = Math.max(s.lastIndexOf('/'), s.lastIndexOf('\\')); return i < 0 ? s : s.slice(0, i) || '/'; };
 const isMac = () => state.platform === 'darwin';
+const isWin = () => state.platform === 'win32';
 // The words each system uses (Linux: the Trash, and "the file manager", which
 // is Files, Dolphin, Nemo… depending on the desktop).
 const TRASH = () => (state.platform === 'win32' ? 'Recycle Bin' : 'Trash');
@@ -108,6 +109,7 @@ const I = {
   eye: SVG('<path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/>'),
   eyeOff: SVG('<path d="M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49"/><path d="M14.084 14.158a3 3 0 0 1-4.242-4.242"/><path d="M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143"/><path d="m2 2 20 20"/>'),
   plus: SVG('<path d="M5 12h14"/><path d="M12 5v14"/>'),
+  clock: SVG('<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>'),
   refresh: SVG('<path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/>'),
   list: SVG('<path d="M3 12h.01"/><path d="M3 18h.01"/><path d="M3 6h.01"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M8 6h13"/>'),
   power: SVG('<path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.77.04"/>'),
@@ -213,6 +215,22 @@ window.addEventListener('blur', closeMenu);
 // `title` and `sub` are HTML: callers escape any value that is not theirs.
 let dialogResolve = null, dialogTag = null;
 const dialogWait = [];
+// ── Update notice: the same as Noar's other apps (syncto, ingesto, archivo) ─
+// A small window: NEW VERSION AVAILABLE, LATER or GET IT (the releases page).
+// Either answer, Escape or a click outside remembers the version: the same
+// one never asks twice; the next one asks again.
+async function showUpdateNotice({ version, url }) {
+  if (!version || version === state.ui.updateDismissedVersion) return;
+  const go = await dialog({
+    title: `<span style="display:inline-flex;align-items:center;gap:9px"><span style="display:inline-flex;width:20px;height:20px;color:var(--green)">${I.download}</span>New version available</span>`,
+    sub: `filo v${esc(version)} is available. You're on v${esc($('ver').textContent.replace(/^v/, ''))}.`,
+    buttons: [{ spacer: true }, { label: 'LATER', value: false }, { label: 'GET IT', value: true, cls: 'go' }],
+    width: 420, tag: 'update',
+  });
+  state.ui.updateDismissedVersion = version;
+  API.saveUi({ updateDismissedVersion: version });
+  if (go) API.openExternal(url);
+}
 function dialog(o) {
   return new Promise(resolve => {
     if (dialogResolve) dialogWait.push({ o, resolve });
@@ -315,6 +333,8 @@ function bindSplitters() {
   const ui = state.ui || {};
   if (ui.panelRatio) local.style.flex = `0 0 ${ui.panelRatio * 100}%`;
   if (ui.queueHeight) queue.style.height = ui.queueHeight + 'px';
+  // Synchronized browsing sits on this splitter: its button is a button, not a handle.
+  for (const t of ['mousedown', 'dblclick']) $('q-sync').addEventListener(t, e => e.stopPropagation());
   sv.addEventListener('mousedown', e => {
     e.preventDefault(); sv.classList.add('drag');
     const box = $('panels').getBoundingClientRect();
@@ -468,6 +488,9 @@ class Panel {
       }
     }
     this.el.querySelectorAll('.p-tools button, .p-path, .p-filter').forEach(b => { b.disabled = !enabled; });
+    if (!this.remote) markPlaces(this);
+    const fb = this.el.querySelector('.p-fav');
+    if (fb) fb.classList.toggle('on', !!(enabled && favFolders().includes(this.dir)));
     this.el.querySelectorAll('.p-cols div').forEach(d => {
       d.classList.toggle('on', d.dataset.sort === this.sort.key);
       d.classList.toggle('asc', d.dataset.sort === this.sort.key && this.sort.asc);
@@ -833,6 +856,10 @@ class Panel {
       items.push({ label: n > 1 ? `Upload ${n} items` : 'Upload', icon: I.upload, action: () => this.transfer(), disabled: !n || !conn });
       items.push({ label: 'Add to the queue (do not start)', icon: I.list, action: () => this.transfer({ start: false }), disabled: !n || !conn });
     }
+    // Check what is already on both sides, by checksum (Noar, 12/10/2026).
+    items.push(state.comparing
+      ? { label: 'Stop the check', icon: I.stop || I.trash, danger: true, action: () => API.compareCancel() }
+      : { label: 'Check against the other side', icon: I.shield, disabled: !n || !conn || panels.local.dir === '::drives', action: () => checkAgainst(s.map(x => x.name)) });
     items.push('sep');
     if (n === 1 && isDirEntry(s[0])) items.push({ label: 'Open', icon: I.folder, action: () => this.load(this.join(s[0].name)) });
     if (!this.remote && n === 1 && !isDirEntry(s[0])) items.push({ label: 'Open with the default app', icon: I.eye, action: async () => { const r = await API.localOpen(this.join(s[0].name)); if (!r.ok) toast(r.error, true); } });
@@ -908,6 +935,18 @@ class Panel {
       if (act === 'hidden') saveSettings({ showHidden: !state.settings.showHidden });
       if (act === 'diff') { this.diffOnly = !this.diffOnly; b.classList.toggle('on', this.diffOnly); this.compute(); this.render(); }
       if (act === 'home' && state.conn && this.dir !== state.conn.home) { syncOff('you jumped to another folder'); this.load(state.conn.home); }
+      if (act === 'fav' && state.conn) favMenu(this, b);
+    });
+    // Local side: Desktop, Downloads, the disks (Noar, 13/10/2026).
+    const places = this.el.querySelector('.p-places');
+    if (places) places.addEventListener('click', async ev => {
+      const b = ev.target.closest('button[data-act]');
+      if (!b) return;
+      const act = b.dataset.act;
+      if (act === 'drives') return drivesMenu(this, b);
+      const pl = placesCache = await API.localPlaces();
+      if (!pl[act]) return toast('This folder was not found on this computer.', true);
+      if (pl[act] !== this.dir) { syncOff('you jumped to another folder'); this.load(pl[act]); }
     });
     // Local side: the system's folder picker, which also reaches every disk,
     // volume and network share.
@@ -1041,6 +1080,11 @@ class Panel {
     else if (ev.key === 'Backspace' && !mod) { ev.preventDefault(); this.goUp(); }
     else if ((ev.key === 'Delete') || (ev.key === 'Backspace' && mod)) { ev.preventDefault(); this.remove(); }
     else if (ev.key === 'F2') { ev.preventDefault(); this.rename(); }
+    // Space: Quick Look on a local file, as in the Finder (Mac; Noar, 12/10/2026).
+    else if (ev.key === ' ' && !mod && !this.remote && isMac() && this.cursor >= 0) {
+      const e = this.view[this.cursor];
+      if (e && e.type !== 'up' && !isDirEntry(e)) { ev.preventDefault(); API.localPreview(this.join(e.name)); }
+    }
     else if (mod && ev.key.toLowerCase() === 'a') { ev.preventDefault(); this.sel = new Set(this.view.filter(e => e.type !== 'up').map(e => e.name)); this.render(); }
     else if (ev.key === 'Tab') { ev.preventDefault(); (this.remote ? panels.local : panels.remote).scroll.focus(); }
     else if (ev.key.length === 1 && !mod && /\S/.test(ev.key)) {
@@ -1167,6 +1211,53 @@ async function disconnect() {
   setDisconnected();
 }
 
+// ── Favorite folders, per server (Noar, 12/10/2026) ──────────────────────
+// Kept by the server's address (sftp://user@host:port): a site and a quick
+// connection to the same server share them.
+// The disks mounted now (Mac: /Volumes; Windows: the drive letters; Linux:
+// what the desktop mounts and /mnt), asked at each click.
+async function drivesMenu(panel, btn) {
+  const pl = await API.localPlaces();
+  const r = btn.getBoundingClientRect();
+  const items = [{ head: 'Disks' }];
+  if (isWin()) items.push({ label: 'This PC', icon: I.server, action: () => panel.load('::drives') });
+  for (const d of pl.drives) items.push({ label: d.label, icon: I.drive, key: d.system ? (isMac() ? 'start-up' : '') : '', on: panel.dir === d.path, action: () => { if (d.path !== panel.dir) { syncOff('you jumped to another folder'); panel.load(d.path); } } });
+  if (pl.drives.length === 0) items.push({ label: 'No disk found', disabled: true });
+  showMenu(r.left, r.bottom + 6, items);
+}
+// The Desktop / Downloads button of the folder shown, lit.
+let placesCache = null;
+function markPlaces(panel) {
+  const NAME = { desktop: 'Desktop', downloads: 'Downloads' };
+  const set = pl => panel.el.querySelectorAll('.p-places [data-act]').forEach(b => {
+    const p = pl[b.dataset.act];
+    if (!NAME[b.dataset.act]) return;
+    b.classList.toggle('cur', !!p && p === panel.dir);
+    b.dataset.tip = p ? `${NAME[b.dataset.act]}: ${p}` : `${NAME[b.dataset.act]}: not found on this computer`;
+  });
+  if (placesCache) set(placesCache);
+  else API.localPlaces().then(pl => { placesCache = pl; set(pl); });
+}
+function favKey() { const c = state.conn; return c ? String(c.address || c.endpointId || '') : ''; }
+function favFolders() { const k = favKey(); return (k && ((state.ui.favFolders || {})[k])) || []; }
+function setFavFolders(list) {
+  const k = favKey(); if (!k) return;
+  const all = Object.assign({}, state.ui.favFolders || {});
+  if (list.length) all[k] = list.slice(0, 30); else delete all[k];
+  state.ui.favFolders = all;
+  API.saveUi({ favFolders: all });
+  panels.remote.render();
+}
+function favMenu(panel, btn) {
+  const list = favFolders(), here = panel.dir, has = list.includes(here);
+  const r = btn.getBoundingClientRect();
+  const items = [has
+    ? { label: 'Remove this folder from the favorites', icon: I.trash, action: () => setFavFolders(list.filter(x => x !== here)) }
+    : { label: 'Add this folder to the favorites', icon: I.plus, disabled: !here, action: () => setFavFolders(list.concat(here).sort((a, b) => a.localeCompare(b))) }];
+  if (list.length) items.push('sep', { head: 'Go to' });
+  for (const p of list) items.push({ label: p, icon: I.folder, on: p === here, action: () => { if (p !== panel.dir) { syncOff('you jumped to another folder'); panel.load(p); } } });
+  showMenu(Math.max(10, r.right - 320), r.bottom + 6, items);
+}
 function renderConnPill() {
   const c = state.conn;
   renderSync();
@@ -2226,6 +2317,7 @@ function queueMode(p) {
   }
   return 'client';
 }
+const FINISHED_MS = 5000;           // how long FINISHED stays before IDLE
 function renderQueueHead() {
   const p = state.progress;
   const c = state.qcounts || {};
@@ -2247,12 +2339,19 @@ function renderQueueHead() {
   if (running) title = verifying ? 'VERIFYING' : (p && p.active.some(a => a.phase === 'connect') && !p.active.some(a => a.phase === 'transfer')) ? 'CONNECTING' : 'TRANSFERRING';
   else if (pending || paused) title = state.qRan ? 'PAUSED' : 'QUEUE';   // added "do not start": never ran
   else if (c.done || c.failed || c.stopped) title = c.failed || c.stopped ? 'FINISHED · WITH ERRORS' : 'FINISHED';
+  // FINISHED for a few seconds, then IDLE with an empty bar (Noar, 0.7.0).
+  // With errors, it stays said: the FAILED tab has something to look at.
+  if (title === 'FINISHED') {
+    if (!state.qFinAt) { state.qFinAt = Date.now(); clearTimeout(state.qFinT); state.qFinT = setTimeout(renderQueueHead, FINISHED_MS + 50); }
+    if (Date.now() - state.qFinAt >= FINISHED_MS) title = 'IDLE';
+  } else state.qFinAt = 0;
+  const idle = title === 'IDLE';
   $('q-title').textContent = title;
   const runBytes = p && p.run ? p.run.bytes : 0;
   const left = c.bytesLeft || 0;
-  const pct = running || pending || paused ? (runBytes + left > 0 ? (runBytes / (runBytes + left)) * 100 : 0) : (c.done ? 100 : 0);
-  $('q-prog').style.width = (running || pending || paused || c.done ? Math.min(100, pct) : 0).toFixed(2) + '%';
-  $('q-prog-box').classList.toggle('idle', !(running || pending || paused || c.done));
+  const pct = running || pending || paused ? (runBytes + left > 0 ? (runBytes / (runBytes + left)) * 100 : 0) : (c.done && !idle ? 100 : 0);
+  $('q-prog').style.width = (running || pending || paused || (c.done && !idle) ? Math.min(100, pct) : 0).toFixed(2) + '%';
+  $('q-prog-box').classList.toggle('idle', !(running || pending || paused || (c.done && !idle)));
 
   // Time left (big: the figure that matters most) and time elapsed, under
   // the title (Noar, 11/10/2026). Left = what remains ÷ the speed of the last
@@ -2272,6 +2371,7 @@ function renderQueueHead() {
   if (running && spark.length) B('Peak', fmtSpeed(Math.max(...spark.map(x => x.v))), '', 'Fastest speed of the last minute');
   if (running && (pending || paused) && startedAt) { const sp2 = avgSpark(20) || (p ? p.speed : 0); if (sp2 > 0) B('Time left', esc(fmtDur(left / sp2)), '', 'Time left for the whole queue, at the speed of the last 10 seconds'); }
   if (pending || paused) B('Left', fmtSize(left), '', 'Data still to transfer');
+  if (state.qSched && !running) B('Starts', fmtClock(state.qSched), 'o', 'Scheduled start. Right-click START to change or cancel it; START starts now.');
   $('q-stats').innerHTML = st.join('');
 
   // Simultaneous transfers: a plain label and a plain value.
@@ -2288,11 +2388,14 @@ function renderQueueHead() {
   const canStart = !!pending || !!paused;
   b.className = 'btn sq' + (running ? '' : ' go');
   b.innerHTML = running ? I.pause : I.play;
-  b.disabled = !running && !canStart;
+  // Never truly disabled: a right-click on it schedules the start, also
+  // before any file is in the queue.
+  b.disabled = false;
+  b.classList.toggle('dis', !running && !canStart);
   b.setAttribute('aria-label', running ? 'Pause' : 'Start');
   b.dataset.tip = running ? 'Pause the whole queue: running files stop, and resume from where they were'
-    : pending ? (runBytes || c.done ? 'Resume the whole queue' : 'Start the queue')
-    : paused ? 'Resume the files you paused' : 'Nothing to transfer';
+    : pending ? (runBytes || c.done ? 'Resume the whole queue' : 'Start the queue') + ' (right-click: start at a time)'
+    : paused ? 'Resume the files you paused' : 'Nothing to transfer (right-click: start at a time)';
   $('q-stop').disabled = !running && !pending && !paused;
 
   $('n-queue').textContent = pending + paused;
@@ -2306,6 +2409,60 @@ function renderQueueHead() {
 
 // Play, from the button or the menu: start the queue; when only files paused
 // one by one are left, resume them.
+// ── Check against the other side ──────────────────────────────────────────
+// The selected names, here and in the folder open on the other side: the
+// server computes its checksum, filo the local one; nothing is transferred.
+async function checkAgainst(names) {
+  const req = { localRoot: panels.local.dir, remoteRoot: panels.remote.dir, names };
+  state.comparing = true;
+  let last = 0;
+  const off = API.on('compare-progress', p => { if (Date.now() - last > 600) { last = Date.now(); toast(`Checking ${p.i} / ${p.n}: ${p.rel.split('/').pop()}`); } });
+  try {
+    toast('Checking: listing both sides…');
+    let r = await API.compare(req);
+    if (r.ok && r.needsReadBack) {
+      const go = await confirmBox('This server cannot compute checksums',
+        `To check ${plural(r.files, 'file')} (${fmtSize(r.bytes)}), filo has to read them back from the server: a download of everything, nothing written on your disk.`, 'READ THEM BACK');
+      if (!go) return;
+      r = await API.compare(Object.assign({ readBack: true }, req));
+    }
+    if (!r.ok) return errorBox('Not checked', r.error);
+    const list = (title, arr, cls) => arr.length ? `<div class="cmp-h ${cls}">${title} <span>${arr.length}</span></div><div class="cmp-l">${arr.slice(0, 60).map(x => `<div>${esc(typeof x === 'string' ? x : x.rel)}${x.why ? `<small>${esc(x.why)}</small>` : ''}</div>`).join('')}${arr.length > 60 ? `<div>… ${arr.length - 60} more (see Log)</div>` : ''}</div>` : '';
+    const bad = r.different.length + r.onlyLocal.length + r.onlyRemote.length;
+    const how = r.readBack ? 'xxHash64, read back' : (r.algo || '').toUpperCase() + ' computed by the server';
+    await dialog({
+      title: `<span style="display:inline-flex;align-items:center;gap:9px"><span style="display:inline-flex;width:20px;height:20px;color:var(--${bad ? 'orange' : 'green'})">${I.shield}</span>${r.cancelled ? 'Check stopped' : bad ? 'Differences found' : 'Identical on both sides'}</span>`,
+      sub: `${plural(r.same.length, 'file')} identical (${esc(how)})${r.unchecked.length ? ` · ${r.unchecked.length} not checked` : ''}`,
+      html: list('Different', r.different, 'o') + list('Only here', r.onlyLocal, '') + list('Only on the server', r.onlyRemote, '') + list('Not checked (name the server cannot hash, or read error)', r.unchecked, ''),
+      buttons: [{ spacer: true }, { label: 'OK', value: true, cls: 'go' }], width: 620,
+    });
+  } finally { state.comparing = false; if (typeof off === 'function') off(); }
+}
+
+// ── Start the queue later ─────────────────────────────────────────────────
+function fmtClock(t) { const d = new Date(t); return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; }
+function scheduleMenu(x, y) {
+  const at = state.qSched || 0;
+  showMenu(x, y, [{ head: 'Start the queue' }, { label: 'At a time…', icon: I.clock, action: askSchedule },
+    at ? { label: `Cancel the start at ${fmtClock(at)}`, icon: I.trash, action: async () => { state.qSched = (await API.queueSchedule(0)).at; renderQueueHead(); toast('Scheduled start cancelled'); } } : null]);
+}
+async function askSchedule() {
+  const now = new Date(), def = state.qSched ? fmtClock(state.qSched) : '23:00';
+  const v = await dialog({
+    title: 'Start the queue at',
+    sub: 'Files added until then wait. filo must stay open, and the computer awake (Energy settings). START starts it right away.',
+    html: `<div class="field"><label>Time</label><input id="sch-t" type="time" value="${def}" style="width:140px"></div>`,
+    buttons: [{ label: 'CANCEL', value: null }, { spacer: true }, { label: 'SCHEDULE', cls: 'go', value: c => c.querySelector('#sch-t').value || undefined }],
+    width: 420, focus: '#sch-t',
+  });
+  if (!v) return;
+  const [h, m] = v.split(':').map(Number);
+  const t = new Date(now); t.setHours(h, m, 0, 0);
+  if (t <= now) t.setDate(t.getDate() + 1);           // already past today: tomorrow
+  state.qSched = (await API.queueSchedule(t.getTime())).at;
+  renderQueueHead();
+  toast(`The queue starts at ${fmtClock(t)}${t.getDate() !== now.getDate() ? ' tomorrow' : ''}`);
+}
 async function playQueue() {
   const c = state.qcounts || {};
   const pending = (c.queued || 0) + (c.waiting || 0) + (c.running || 0) + (c.asking || 0);
@@ -2460,10 +2617,13 @@ function bindQueue() {
     }
   });
   $('q-start').onclick = () => {
+    if ($('q-start').classList.contains('dis')) return;
     if (state.qstate !== 'running') return playQueue();
     API.queuePause();
     refreshAfterStop(new Set(['up', 'down']));
   };
+  // Right-click on START: start at a time (Noar, 12/10/2026).
+  $('q-start').oncontextmenu = ev => { ev.preventDefault(); scheduleMenu(ev.clientX, ev.clientY); };
   $('q-stop').onclick = () => { state.blocked = null; renderBlocked(); API.queueStopAll(); refreshAfterStop(new Set(['up', 'down'])); };
   $('q-conn').onclick = connMenu;
   $('q-sync').onclick = syncToggle;
@@ -2595,6 +2755,8 @@ async function openSettings() {
   $('st-hidden-desc').textContent = `names starting with a dot (${isMac() ? '⇧⌘.' : 'Ctrl+Shift+.'})`;
   $('st-hidden').checked = s.showHidden; $('st-confirmdel').checked = s.confirmDelete;
   $('st-ntfy-en').checked = state.ntfy.enabled; $('st-ntfy-server').value = state.ntfy.server || ''; $('st-ntfy-topic').value = state.ntfy.topic || '';
+  $('st-hook-en').checked = !!s.hookEnabled; $('st-hook-cmd').value = s.hookCommand || ''; $('st-hook-res').textContent = '';
+  $('st-ntfy-sync').checked = !!state.ntfy.syncAlert; $('st-ntfy-min').value = String(state.ntfy.syncAlertMin || 10);
   $('st-ntfy-res').textContent = '';
   renderVerifyRows();
   $('st-known-q').value = '';
@@ -2641,7 +2803,7 @@ function cliHelpBox() {
     <div class="cli-it"><div class="d">Exit codes</div><div class="cli-codes"><b>0</b>done (with --wait: every file arrived and was verified)<br><b>1</b>some files failed or were stopped<br><b>2</b>the command is not right<br><b>3</b>the site or the LIVE SYNC session does not exist, or the server refused<br><b>4</b>filo could not be started or reached</div></div>
     <div class="cli-it"><div class="d">No password on the command line: the site's saved password or key is used. The files go through the queue of the filo that is open, and show in its window.</div></div></div>`;
   return dialog({
-    title: 'Post command', sub: 'Commands to start from a script, an export preset or another program.', html, width: 640,
+    title: 'Command line', sub: 'Commands to start from a script, an export preset or another program.', html, width: 640,
     buttons: [{ label: 'CLOSE', value: true, cls: 'go' }],
     onOpen: card => card.querySelectorAll('button[data-c]').forEach(b => b.addEventListener('click', () => { API.copyText(real(items[+b.dataset.c][1])); toast('Copied'); })),
   });
@@ -2703,8 +2865,19 @@ function bindSettings() {
   const sw = (id, key) => { $(id).onchange = () => saveSettings({ [key]: $(id).checked }); };
   sw('st-dates', 'keepDates'); sw('st-temp', 'tempNames'); sw('st-segments', 'segments'); $('st-serverhash').onchange = () => { renderVerifyRows(); saveSettings({ serverHash: $('st-serverhash').checked, readBack: true }); };
   sw('st-hidden', 'showHidden'); sw('st-confirmdel', 'confirmDelete');
-  const ntfyPatch = () => ({ enabled: $('st-ntfy-en').checked, server: $('st-ntfy-server').value.trim(), topic: $('st-ntfy-topic').value.trim() });
-  for (const id of ['st-ntfy-en', 'st-ntfy-server', 'st-ntfy-topic']) $(id).addEventListener('change', async () => { state.ntfy = await API.ntfySave(ntfyPatch()); });
+  // After the queue: the command.
+  $('st-hook-en').addEventListener('change', () => saveSettings({ hookEnabled: $('st-hook-en').checked }));
+  $('st-hook-cmd').addEventListener('change', () => saveSettings({ hookCommand: $('st-hook-cmd').value.trim() }));
+  $('st-hook-test').onclick = async () => {
+    const el = $('st-hook-res'), cmd = $('st-hook-cmd').value.trim();
+    if (!cmd) { el.className = 'set-test-res err'; el.textContent = 'Type a command first.'; return; }
+    el.className = 'set-test-res'; el.textContent = 'Running (example values)…';
+    const r = await API.hookTest(cmd);
+    el.className = 'set-test-res ' + (r.ok ? 'ok' : 'err');
+    el.textContent = r.ok ? 'It ran and ended without error.' : `Did not work: ${r.error}`;
+  };
+  const ntfyPatch = () => ({ enabled: $('st-ntfy-en').checked, server: $('st-ntfy-server').value.trim(), topic: $('st-ntfy-topic').value.trim(), syncAlert: $('st-ntfy-sync').checked, syncAlertMin: $('st-ntfy-min').value });
+  for (const id of ['st-ntfy-en', 'st-ntfy-server', 'st-ntfy-topic', 'st-ntfy-sync', 'st-ntfy-min']) $(id).addEventListener('change', async () => { state.ntfy = await API.ntfySave(ntfyPatch()); $('st-ntfy-min').value = String(state.ntfy.syncAlertMin || 10); });
   $('st-ntfy-test').onclick = async () => {
     const r = await API.ntfyTest(ntfyPatch());
     const el = $('st-ntfy-res');
@@ -2730,9 +2903,10 @@ const AFTER = {
 function renderAfterBtn() {
   const v = state.afterAction;
   const b = $('btn-after');
-  b.classList.toggle('set', v !== 'none');
+  const hk = !!(state.settings.hookEnabled && (state.settings.hookCommand || '').trim());
+  b.classList.toggle('set', v !== 'none' || hk);
   b.innerHTML = AFTER[v][1];
-  b.dataset.tip = `When the queue finishes: ${AFTER[v][0].toLowerCase()}`;
+  b.dataset.tip = `When the queue finishes: ${hk ? 'run your command, then ' : ''}${AFTER[v][0].toLowerCase()}`;
 }
 const afterState = { timer: null, left: 0, action: 'none' };
 function stopCountdown() { clearInterval(afterState.timer); afterState.timer = null; $('ov-after').classList.remove('open'); }
@@ -2760,6 +2934,7 @@ function startCountdown(action) {
 
 function onFinished(s) {
   state.qRan = false;
+  if (s.hook && !s.hook.ok) toast(`The command after the queue did not work: ${s.hook.error}`, true);
   panels.local.load(panels.local.dir, { keepSel: true });
   if (state.conn) { panels.remote.cache.delete(panels.remote.dir); panels.remote.load(panels.remote.dir, { keepSel: true }); }
   const secs = Math.round(s.durationMs / 1000);
@@ -2915,6 +3090,7 @@ function directSummary(st, p) {
     case 'waiting': return 'Waiting for the remote computer';
     case 'offline': return `${splitDev(p && p.peer && p.peer.name).name || 'The remote computer'} not reachable`;
     case 'paused': return 'Disconnected';
+    case 'held': return left ? `Paused · ${fmtSize(left)} left` : 'Paused';
     case 'scanning': return 'Checking the folder…';
     case 'syncing': return left ? `Syncing · ${fmtSize(left)} left` : 'Syncing…';
     case 'insync': return 'Up to date';
@@ -2965,7 +3141,7 @@ async function loadSync() {
 // to the sessions.
 async function onSyncBtn() {
   await loadSync();
-  const b = $('mode-seg').getBoundingClientRect();
+  const b = $('btn-sync').getBoundingClientRect();
   const many = sy.pairs.length > 1;
   const ask = pendingCount();
   const items = [
@@ -2989,7 +3165,7 @@ async function onSyncBtn() {
   items.push('sep');
   // The switch between the FTP client and the LIVE SYNC view is MODE.
   items.push({ label: 'Sessions…', icon: I.list, action: () => openSync(connectedPairs().length ? sy.liveSel : null) });
-  showMenu(Math.max(10, b.left), b.bottom + 6, items);
+  showMenu(b.right + 8, b.top, items);
 }
 async function menuConnect(p, on) {
   if (!on && !(await confirmBox(`Disconnect “${p.name}”?`, 'Nothing more is synced until you connect it again. No file is touched.', 'DISCONNECT', true))) return;
@@ -3241,7 +3417,7 @@ async function showShareInfo(pair) {
   const fsv = sh.failsafe;
   const res = await dialog({
     title: 'The config for the other computer',
-    sub: `Save it, and send the file to the other computer yourself (mail, Signal, a USB key…). There, filo opens MODE ▾ → Import session as SLAVE. It becomes the SLAVE of “${esc(pair.name)}”; this computer is the MASTER. Then accept it here when filo asks.`,
+    sub: `Save it, and send the file to the other computer yourself (mail, Signal, a USB key…). There, filo opens right-click LIVE SYNC (side bar) → Import session as SLAVE. It becomes the SLAVE of “${esc(pair.name)}”; this computer is the MASTER. Then accept it here when filo asks.`,
     html: `<div class="sy-kv"><div class="k">Session</div><div class="v">${esc(pair.name)} · ${esc(SY_TYPES[pair.via][0])}</div>
         <div class="k">MASTER</div><div class="v">${esc(me.name)}${me.os ? ` · ${esc(me.os)}` : ''} <span class="mono sy-dim">${esc(shortDev(sh.device))}</span></div>
         <div class="k">For the SLAVE</div><div class="v">${esc(SY_DIR_DIRECT[sh.direction][0])}</div>
@@ -3277,7 +3453,7 @@ async function shareSync() {
   const other = SY_DIR[r.share.direction][0];
   const res = await dialog({
     title: `Share “${esc(d.name)}”`,
-    sub: `The other team imports it in filo (MODE ▾ → Import session as SLAVE), types the server password and picks its own folder. For them, this session is <b>${esc(other)}</b>.`,
+    sub: `The other team imports it in filo (right-click LIVE SYNC (side bar) → Import session as SLAVE), types the server password and picks its own folder. For them, this session is <b>${esc(other)}</b>.`,
     html: `<div class="sy-kv"><div class="k">Server</div><div class="v mono">${esc(PROTO_INFO[r.share.server.protocol][0])} · ${esc(r.share.server.user ? r.share.server.user + '@' : '')}${esc(r.share.server.host)}:${esc(r.share.server.port)}</div>
         <div class="k">S-FTP folder</div><div class="v mono">${esc(r.share.remote)}</div>
         <div class="k">Password</div><div class="v">not included: give it to them another way</div></div>
@@ -3339,7 +3515,7 @@ async function importSync() {
 async function pasteDirectId() {
   const text = await dialog({
     title: 'Paste the MASTER\'s SYNCTHING ID',
-    sub: 'The MASTER shows it in its LIVE SYNC view (REMOTE COMPUTER), or in MODE ▾ → Sessions… → THIS COMPUTER. SYNCTHING sessions only: a DUAL SYNC session goes by its config file.',
+    sub: 'The MASTER shows it in its LIVE SYNC view (REMOTE COMPUTER), or in right-click LIVE SYNC (side bar) → Sessions… → THIS COMPUTER. SYNCTHING sessions only: a DUAL SYNC session goes by its config file.',
     html: '<div class="field"><label>SYNCTHING ID of the MASTER</label><input id="pid-text" class="mono" spellcheck="false" autocomplete="off" placeholder="XXXXXXX-XXXXXXX-XXXXXXX-XXXXXXX-…"></div>',
     buttons: [{ label: 'CANCEL', value: null }, { spacer: true }, { label: 'CONNECT', cls: 'go', value: c => c.querySelector('#pid-text').value.trim() || undefined }],
     width: 600, focus: '#pid-text',
@@ -3452,7 +3628,7 @@ async function onAsk(kind, i) {
         title: `Accept “${esc(n.name || shortDev(d.id))}”?`,
         sub: 'Accept it only if it is your own computer, or the one you sent a config file or this computer\'s SYNCTHING ID to.',
         html: `<div class="sy-kv"><div class="k">Computer</div><div class="v">${esc(n.name)}${n.os ? ` · ${esc(n.os)}` : ''}</div><div class="k">ID</div><div class="v mono">${esc(d.id)}</div>${d.address ? `<div class="k">From</div><div class="v mono">${esc(d.address)}</div>` : ''}</div>
-          <div class="hint">To be sure: on the remote computer, MODE ▾ → Sessions… → THIS COMPUTER shows its ID. The first group (<b class="mono">${esc(shortDev(d.id))}</b>) must be the same.</div>
+          <div class="hint">To be sure: on the remote computer, right-click LIVE SYNC (side bar) → Sessions… → THIS COMPUTER shows its ID. The first group (<b class="mono">${esc(shortDev(d.id))}</b>) must be the same.</div>
           ${open.length ? `<div class="sy-sub">Share with it <span>it becomes the SLAVE</span></div>${open.map(p => `<label class="chk"><input type="checkbox" data-share="${esc(p.id)}"${open.length === 1 ? ' checked' : ''}> ${esc(p.name)} <span class="sy-dim">· ${esc(SY_DIR_DIRECT[p.direction][0])}</span></label>`).join('')}
           <div class="hint">A session it imported from a config file links by itself: leave it unticked.</div>` : ''}`,
         buttons: [{ label: 'CANCEL', value: null }, { spacer: true }, { label: 'ACCEPT', cls: 'go', value: c => [...c.querySelectorAll('[data-share]:checked')].map(x => x.dataset.share) }], width: 600,
@@ -3534,6 +3710,15 @@ function renderStQueue() {
   const QC = QUEUE_COLORS[p.via] || QUEUE_COLORS.direct;
   $('st-panel').style.setProperty('--q-fill', QC.fill);
   const peer = p.peer ? splitDev(p.peer.name).name || shortDev(p.peer.id) : 'the remote computer';
+  // PAUSE / RESUME (Noar, 12/10/2026), as the FTP queue's buttons.
+  const held = (sy.status[p.id] || {}).state === 'held';
+  const hb = $('st-hold');
+  hb.style.setProperty('--q-color', QC.c);
+  hb.classList.toggle('held', held);
+  const hk = held ? 'play' : 'pause';
+  if (hb.dataset.k !== hk) { hb.dataset.k = hk; hb.innerHTML = I[hk]; }
+  hb.setAttribute('aria-label', held ? 'Resume' : 'Pause');
+  hb.dataset.tip = held ? 'RESUME: SYNCTHING moves the files again' : 'PAUSE: SYNCTHING stops moving files on this computer, the session stays connected. RESUME carries on where it stopped (filo restarted resumes it).';
   const row = it => {
     const up = it.dir === 'up', done = it.status === 'done', failed = it.status === 'failed';
     const pct = done ? 100 : it.size ? Math.min(100, (it.done || 0) * 100 / it.size) : 0;
@@ -3547,18 +3732,22 @@ function renderStQueue() {
   const moving = q.items.filter(x => x.status === 'running'), waiting = q.items.filter(x => x.status !== 'running');
   const left = q.items.reduce((a, x) => a + Math.max(0, (x.size || 0) - (x.done || 0)), 0);
   setHTML($('st-stats'), q.items.length ? esc(`${moving.length} moving · ${waiting.length} waiting · ${fmtSize(left)} left`) : '');
-  setHTML($('st-list'), q.items.length || q.done.length ? q.items.concat(q.done).map(row).join('') : '<div class="st-empty">Nothing to sync: both computers are up to date.</div>');
+  setHTML($('st-list'), q.items.length || q.done.length ? q.items.concat(q.done).map(row).join('') : `<div class="st-empty">${held ? 'Paused: nothing moves until RESUME.' : 'Nothing to sync: both computers are up to date.'}</div>`);
 }
 function setHTML(el, html) { if (el && el._h !== html) { el._h = html; el.innerHTML = html; } }
 // MODE sits at the same place in both views: the quick bar, or the head of
 // the LIVE SYNC view.
 function placeMode() {
-  const f = $('mode-f'), live = document.body.classList.contains('live-on');
-  const host = live ? document.querySelector('#live .lv-head') : $('quick');
-  if (f && host && f.parentNode !== host) host.insertBefore(f, host.firstChild);
+  const live = document.body.classList.contains('live-on');
   $('mode-client').classList.toggle('cur', !live);
-  $('btn-sync').classList.toggle('cur', live);
-  $('btn-sync').dataset.tip = live ? 'LIVE SYNC: new session, import, connect, sessions' : connectedPairs().length ? 'Show the LIVE SYNC view' : 'LIVE SYNC: no session connected (new, import, connect)';
+  const bs = $('btn-sync');
+  bs.classList.toggle('cur', live);
+  const sp = sy.pairs.find(x => x.id === sy.liveSel);
+  const via = sp && sp.via === 'server' ? 'server' : sp && sp.via === 'hybrid' ? 'hybrid' : 'direct';
+  bs.style.setProperty('--m-c', via === 'server' ? 'var(--violet)' : via === 'hybrid' ? 'var(--hybrid)' : 'var(--blue)');
+  bs.style.setProperty('--m-d', via === 'server' ? 'var(--violet-d)' : via === 'hybrid' ? 'rgba(143,140,251,.15)' : 'var(--blue-d)');
+  bs.classList.toggle('hy', via === 'hybrid');
+  $('btn-sync').dataset.tip = live ? 'LIVE SYNC: new session, import, connect, sessions (right-click: the same menu)' : connectedPairs().length ? 'Show the LIVE SYNC view (right-click: new session, import, connect)' : 'LIVE SYNC: no session connected (new, import, connect)';
 }
 function renderLive() {
   const on = connectedPairs();
@@ -3689,8 +3878,8 @@ function remoteCard(p, st) {
     return `<div class="lv-who">${SY_PC}<span>REMOTE COMPUTER</span></div><div class="lv-host"><span class="lv-state bad alone" data-tip="No remote computer yet: send it what is below">NOT LINKED YET</span></div>
       ${quick ? `<div class="lv-link"><div class="k">SEND IT THIS COMPUTER'S SYNCTHING ID</div>
         ${sy.myId ? idBlock(sy.myId, (sy.me || {}).name) : '<div class="sy-dim">…</div>'}
-        <div class="hint">There: MODE ▾ → Import session as SLAVE → PASTE A SYNCTHING ID. Then filo asks you here to accept it, and which session to share: this one.</div></div>
-        <div class="lv-or">OR</div>` : `<div class="lv-note">${p.via === 'hybrid' ? 'Save the config file and send it to the remote computer (it carries the S-FTP BACKUP). There: MODE ▾ → Import session as SLAVE. Then accept it here.' : 'Send the config file to the remote computer. There: MODE ▾ → Import session as SLAVE. Then accept it here.'}</div>`}
+        <div class="hint">There: right-click LIVE SYNC (side bar) → Import session as SLAVE → PASTE A SYNCTHING ID. Then filo asks you here to accept it, and which session to share: this one.</div></div>
+        <div class="lv-or">OR</div>` : `<div class="lv-note">${p.via === 'hybrid' ? 'Save the config file and send it to the remote computer (it carries the S-FTP BACKUP). There: right-click LIVE SYNC (side bar) → Import session as SLAVE. Then accept it here.' : 'Send the config file to the remote computer. There: right-click LIVE SYNC (side bar) → Import session as SLAVE. Then accept it here.'}</div>`}
       <button class="ibtn ins lab" id="lv-code" data-tip="Save the config file to send to the remote computer">${I.share}<span>CONFIG FILE</span></button>${p.via === 'hybrid' ? serverCard(p, st.server || {}, true) : ''}`;
   }
   const n = splitDev(p.peer.name);
@@ -3848,6 +4037,7 @@ function ringState0(p, st, mode) {
     if (st.state === 'starting') return { s: 'STARTING', t: 'off' };
     if (st.state === 'waiting') return { s: 'WAITING', t: 'off' };
     if (!p.auto) return { s: 'OFF', t: 'off' };
+    if (st.state === 'held') return { s: 'PAUSED', t: 'st', idle: true };
     if (!peer.connected) return { s: 'NOT REACHABLE', t: 'off' };
     if (st.state === 'scanning') return { s: 'SCANNING', t: 'st' };
     if (st.state === 'syncing') return { s: 'SYNCHRONIZING', t: 'st', run: true };
@@ -3911,6 +4101,27 @@ function ringTip(p, st, mode) {
   if (mode === 'SYNCTHING' && st.peer && st.peer.via === 'relay') out.push('Through a relay: the two internet boxes allow no direct path. It works, but slowly.');
   return out.join('\n');
 }
+// The file moving now, under the percentage (Noar, 12/10/2026). SYNCTHING:
+// the first one in progress in its queue, or, small files going faster than
+// the queue is read (every 2 s), the last one arrived or sent in the last
+// 4 s. S-FTP: the session's copy running in filo's queue.
+function ringFile(p, st, mode) {
+  const named = (rel, up) => { const i = rel.lastIndexOf('/'); return { rel, name: rel.slice(i + 1), up }; };
+  if (mode === 'SYNCTHING') {
+    const qq = (sy.q || {})[p.id];
+    if (!qq) return null;
+    const run = qq.items.filter(x => x.status === 'running');
+    const it = run.find(x => x.done > 0 && x.done < x.size) || run[0] || qq.done.find(x => x.status === 'done' && Date.now() - (x.at || 0) < 4000);
+    return it ? named(it.rel, it.dir === 'up') : null;
+  }
+  const label = `Sync · ${p.name}`;
+  for (const it of q.byId.values()) {
+    if (it.status !== 'running' || it.endpointLabel !== label) continue;
+    const up = it.dir === 'up';
+    return { rel: up ? it.remote : it.local, name: up ? posixBase(it.remote) : localBase(it.local), up };
+  }
+  return null;
+}
 function midParts(p, st, mode) {
   const rs = ringState(p, st, mode);
   const pct = livePct(p, st, mode);
@@ -3918,8 +4129,9 @@ function midParts(p, st, mode) {
   const a = sy.spark[p.id] || [];
   const avg = a.length ? a.slice(-10).reduce((x, y) => x + y, 0) / Math.min(10, a.length) : 0;
   const left = liveLeft(p, st, mode);
-  const eta = left.bytes && avg > 0 ? left.bytes / avg : 0;
-  const moving = sp.up + sp.down >= 1024;      // a few bytes a second: the two Syncthing talking, not files
+  const held = st.state === 'held' && mode === 'SYNCTHING';   // PAUSED: nothing moves, no time left to tell
+  const eta = left.bytes && avg > 0 && !held ? left.bytes / avg : 0;
+  const moving = !held && sp.up + sp.down >= 1024;      // a few bytes a second: the two Syncthing talking, not files
   const C = 2 * Math.PI * 86;
   // The graph: bars standing on the lower part of the inner disc, clipped to
   // it (r 79: inside the 11 px stroke at r 86).
@@ -3932,17 +4144,19 @@ function midParts(p, st, mode) {
   const o = LV_BARS + 1 - vals.length;
   const bars = `<g class="bars-in" data-max="${max}">` + vals.map((v, i) => { const h = Math.max(0.6, (v / max) * RB.hmax); return `<rect${i === vals.length - 1 ? ' class="now"' : ''} x="${(RB.x0 + (o + i) * RB.bw + 0.4).toFixed(2)}" y="${(RB.base - h).toFixed(2)}" width="${(RB.bw - 0.8).toFixed(2)}" height="${h.toFixed(2)}"/>`; }).join('') + '</g>';
   const tip = ringTip(p, st, mode);
+  const off = rs.t === 'off' || rs.t === 'bad';
+  const cur = off ? null : ringFile(p, st, mode);
   // An error: the ring closed in orange. Nothing can move: the ring empty, in grey.
   const fill = rs.t === 'bad' ? 100 : rs.t === 'off' ? 0 : (pct == null ? 0 : pct);
-  const fl = rs.t === 'bad' || rs.t === 'off' ? { out: false, in: false } : liveFlow(p, st, mode);
+  const fl = rs.t === 'bad' || rs.t === 'off' || held ? { out: false, in: false } : liveFlow(p, st, mode);
   return {
     fl,
     cls: `lv-ring ${rs.t}${rs.run ? ' run' : ''}${rs.idle ? ' idle' : ''}`, tip, bars, C: C.toFixed(2), off: (C * (1 - fill / 100)).toFixed(2),
     center: `<div class="r-status">${rs.s}</div>
       ${p.via === 'hybrid' && mode === 'S-FTP' ? '<div class="r-mode m-sf">VIA S-FTP</div>' : ''}
       <div class="r-pct">${pct == null || rs.t === 'off' || rs.t === 'bad' ? '–' : `${Math.floor(pct)}<span>%</span>`}</div>
-      <div class="r-bytes mono">${rs.t === 'off' || rs.t === 'bad' ? '&nbsp;' : esc(ringBytes(p, st, mode)) || '&nbsp;'}</div>
-      <div class="r-speed mono">${moving ? esc(fmtSpeed(sp.up + sp.down)) : '&nbsp;'}</div>
+      <div class="r-file"${cur ? ` data-tip="${esc(cur.rel)}"` : ''}>${cur ? `<span class="dirc">${cur.up ? ST_UP : ST_DOWN}</span><span class="nm">${esc(cur.name)}</span>` : '&nbsp;'}</div>
+      <div class="r-line mono">${off ? '&nbsp;' : [esc(ringBytes(p, st, mode)), moving ? `<b>${esc(fmtSpeed(sp.up + sp.down))}</b>` : ''].filter(Boolean).join('<i>·</i>') || '&nbsp;'}</div>
       <div class="r-row">
         <div class="r-fig"><div class="n mono">${left.files || 0}</div><div class="l">FILES LEFT</div></div>
         <div class="r-fig"><div class="n mono">${eta ? esc(fmtEta(eta)) : '–'}</div><div class="l">EST. TIME</div></div>
@@ -3958,7 +4172,15 @@ function bindSync() {
     if (connectedPairs().length) { sy.liveHidden = false; renderLive(); API.directFast(true); return; }
     onSyncBtn();                                          // nothing connected: new, import, connect
   };
-  $('mode-menu').onclick = onSyncBtn;
+  // The LIVE SYNC menu: a click on LIVE SYNC once its view is shown, or a right-click.
+  $('btn-sync').oncontextmenu = ev => { ev.preventDefault(); onSyncBtn(); };
+  $('st-hold').onclick = async () => {
+    const p = sy.pairs.find(x => x.id === sy.liveSel);
+    if (!p) return;
+    const held = (sy.status[p.id] || {}).state === 'held';
+    const r = await API.directHold(p.id, !held);
+    if (r && r.ok === false) toast(r.error, true);
+  };
   placeMode();
   $('sy-close').onclick = () => { closeSync(); };
   $('sy-new').onclick = newSync;
@@ -4007,7 +4229,7 @@ function bindSync() {
     await loadSync();
     if ($('ov-sync').classList.contains('open')) { const p = sy.pairs.find(x => x.id === sy.selId); if (p && sy.draft && JSON.stringify(p.peer) !== JSON.stringify(sy.draft.peer)) sy.draft = Object.assign({}, p); renderSyncList(); renderSyncForm(); }
   });
-  API.on('live-queue', ({ id, q }) => { (sy.q || (sy.q = {}))[id] = q; if (id === sy.liveSel) renderStQueue(); });
+  API.on('live-queue', ({ id, q }) => { (sy.q || (sy.q = {}))[id] = q; if (id === sy.liveSel) { renderStQueue(); renderMid(sy.pairs.find(x => x.id === id)); } });
   API.on('direct-pending', p => {
     const before = pendingCount();
     sy.direct.pending = p;
@@ -4067,7 +4289,11 @@ async function init() {
   $('btn-after').onclick = ev => {
     ev.stopPropagation();
     const r = $('btn-after').getBoundingClientRect();
-    showMenu(r.right - 220, r.bottom + 6, [{ head: 'When the queue finishes' }].concat(['none', 'quit', 'sleep', 'shutdown'].map(v => ({
+    const st = state.settings, cmd = (st.hookCommand || '').trim();
+    showMenu(Math.max(10, r.left), r.bottom + 6, [{ head: 'When the queue finishes' }]
+      .concat(cmd ? [{ label: `Run my command first (${cmd.split(/\s+/)[0].split(/[\\/]/).pop()})`, radio: true, on: !!st.hookEnabled, action: async () => { await saveSettings({ hookEnabled: !st.hookEnabled }); renderAfterBtn(); } }]
+        : [{ label: 'Run a command first… (Settings)', icon: I.plus, action: () => openSettings().then(() => { const e = $('st-hook-cmd'); if (e) { e.scrollIntoView({ block: 'center' }); e.focus(); } }) }], ['sep'])
+      .concat(['none', 'quit', 'sleep', 'shutdown'].map(v => ({
       label: AFTER[v][0], radio: true, on: state.afterAction === v,
       action: async () => { state.afterAction = await API.afterSet(v); renderAfterBtn(); },
     }))));
@@ -4130,6 +4356,8 @@ async function init() {
   });
   API.on('queue-blocked', b => { state.blocked = b; renderBlocked(); });
   API.on('queue-finished', s => onFinished(s));
+  API.on('hook-start', h => toast(`After the queue: running ${h.program}…`));
+  API.on('queue-scheduled', r => { state.qSched = r.at || 0; renderQueueHead(); if (r.fired) toast('Scheduled start: the queue starts'); });
   API.on('delete-progress', d => {
     delProgress.n++;
     const now = Date.now();
@@ -4146,7 +4374,7 @@ async function init() {
       renderLog(false);
     }
   });
-  API.on('update-available', u => { $('upd').innerHTML = ` · <a id="lnk-upd">filo ${esc(u.version)} is available</a>`; $('lnk-upd').onclick = () => API.openExternal(u.url); });
+  API.on('update-available', showUpdateNotice);
   API.on('menu', m => {
     switch (m.action) {
       case 'sites': return openSites();
