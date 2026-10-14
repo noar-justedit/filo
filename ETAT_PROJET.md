@@ -6,6 +6,17 @@
 
 ## 1. État actuel
 
+- **0.8.2 (14/10/2026)** : au lancement, plus rien ne se connecte sans action de
+  Noar : toutes les sessions LIVE SYNC (`auto` et `fsAuto` remis à faux dans
+  `main.js` au démarrage, ligne de LOG « not reconnected at launch ») ;
+  Syncthing ne démarre pas tant qu'aucune session n'est connectée
+  (`direct-app.js`, `apply()`). Dossier local manquant : session en pause avec
+  erreur claire, rien créé (`direct.js`, `localMissing`), reprise seule au
+  retour du dossier. En-tête de la file : IDLE tant qu'aucun transfert n'a
+  tourné dans cette ouverture (`state.qEver`), plus de FINISHED venu de
+  l'historique DONE. Tests : **736 (+18 FTP réels)** ; le dernier changement
+  (Syncthing non démarré seul) n'a été rejoué que sur les 66 tests LIVE SYNC
+  et dans l'app réelle. Limite : il faut cliquer CONNECT à chaque ouverture.
 - **0.8.1 (14/10/2026)** : correctif du speedtest sur NAS (« Permission denied » :
   la racine du serveur n'est pas inscriptible). Bookmark sur la racine : filo
   demande un dossier (sélecteur « Folder for the speed test », via IPC
@@ -1515,6 +1526,7 @@ SmartScreen, débits réels.
 
 | Version | Date | Tests | Contenu principal |
 |---|---|---|---|
+| 0.8.2 | 14/10 | 736 (+18 FTP réels) | Rien ne se connecte au lancement ; dossier local manquant jamais recréé ; FINISHED plus affiché au lancement |
 | 0.8.1 | 14/10 | 732 (+18 FTP réels) | Speedtest sur NAS : racine du serveur => sélecteur de dossier ; dossier en lecture seule => test en réception seule ou annuler |
 | 0.8.0 | 13/10 | 720 (+18 FTP réels) | Speedtest des bookmarks (profil par réseau, Auto part de là, mise à jour par un vrai transfert plus rapide) ; connexion visible (étapes, chrono, CANCEL, « slow ») ; onglets BOOKMARKS / FTP MODE / LIVE SYNC MODE en haut à la place du rail ; SITES devient BOOKMARKS |
 | 0.7.2 | 13/10 | 672 (+18 FTP réels) | Bookmarks LIVE SYNC dans SITES ; SESSION ID (invitation qui ne venait pas) ; l'anneau seul et icône de barre des menus ; DISCONNECT ; queue SYNCTHING qui se vide ; revue : téléchargement toujours en `.filopart`, fichier remplacé par LIVE SYNC S-FTP dans `.filo-trash`, préférences reprises du `.bak`, attente du MASTER, textes et alignements |
@@ -1552,5 +1564,7 @@ Le détail est dans `CHANGELOG.md`.
 5. `ETAT_PROJET.md` : sections 1 (état actuel) et 12 (historique).
 6. `AGENTS.md` : le nom du ZIP donné en exemple (règle 5).
 7. `README.md` : la légende de la capture d'écran.
-8. `docs/RELEASE-X.Y.Z.md` : à renommer, et les noms de fichiers dedans,
+8. `docs/screenshots/*.png` : les 6 captures, reprises à chaque bump (le numéro
+   de version apparaît dans le pied de fenêtre et dans le champ FILO du LIVE SYNC).
+9. `docs/RELEASE-X.Y.Z.md` : à renommer, et les noms de fichiers dedans,
    tant que la première Release n'est pas publiée.

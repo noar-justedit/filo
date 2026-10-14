@@ -2623,6 +2623,9 @@ function renderQueueHead() {
   let title = 'QUEUE';
   if (running) title = verifying ? 'VERIFYING' : (p && p.active.some(a => a.phase === 'connect') && !p.active.some(a => a.phase === 'transfer')) ? 'CONNECTING' : 'TRANSFERRING';
   else if (pending || paused) title = state.qRan ? 'PAUSED' : 'QUEUE';   // added "do not start": never ran
+  // FINISHED only after a run of this session: the DONE list kept from the
+  // last time filo was open is history, not something that just finished.
+  else if (!state.qEver) title = 'IDLE';
   else if (c.done || c.failed || c.stopped) title = c.failed || c.stopped ? 'FINISHED · WITH ERRORS' : 'FINISHED';
   // FINISHED for a few seconds, then IDLE with an empty bar (Noar, 0.7.0).
   // With errors, it stays said: the FAILED tab has something to look at.
@@ -4754,7 +4757,7 @@ async function init() {
   API.on('queue-state', s => {
     // A new run (not a resume after Pause) starts a new graph.
     if (s === 'running' && !state.qRan) resetSpark();
-    state.qstate = s; renderSparkVisibility(); if (s === 'running') state.qRan = true; if (s === 'running' && afterState.timer) stopCountdown(); renderQueueHead(); if (s === 'running') { state.blocked = null; renderBlocked(); } });
+    state.qstate = s; renderSparkVisibility(); if (s === 'running') { state.qRan = true; state.qEver = true; } if (s === 'running' && afterState.timer) stopCountdown(); renderQueueHead(); if (s === 'running') { state.blocked = null; renderBlocked(); } });
   API.on('queue-ask', a => { state.asks.push(a); nextAsk(); });
   API.on('queue-ask-closed', id => {
     state.asks = state.asks.filter(a => a.askId !== id);

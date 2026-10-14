@@ -68,6 +68,15 @@ function binPath() {
 
 // The folder ID carries the direction as its creator saw it, so the filo that
 // receives the offer knows its own (the other way round).
+// The local folder of a session must be there before Syncthing is given it:
+// Syncthing creates a folder it is given that does not exist (an empty
+// ~/Downloads/TEST after the user threw it away, or a fake /Volumes/DISK
+// while the disk is unplugged). Missing: the session is paused, nothing is
+// created, and it starts again by itself when the folder is back.
+function localMissing(p) {
+  try { return !fs.statSync(p.local).isDirectory(); } catch (_) { return true; }
+}
+
 function newFolderId(direction) {
   const abc = 'abcdefghijklmnopqrstuvwxyz0123456789';
   const b = crypto.randomBytes(12);
@@ -446,8 +455,16 @@ class Direct extends EventEmitter {
     }
     // Folders: one per pair.
     const haveFolder = new Map((cfg.folders || []).map(f => [f.id, f]));
+    const missingNow = new Set();
     for (let p of pairs) {
       if (!p.folderId || !p.local) continue;
+      if (localMissing(p)) {
+        missingNow.add(p.id);
+        if (!(this.missingLocal && this.missingLocal.has(p.id))) this.log('warn', `SYNCTHING: “${p.name}”: the local folder is missing (${p.local}): paused, nothing created`);
+        const h = haveFolder.get(p.folderId);
+        if (h && !h.paused) await this.req('PATCH', `/rest/config/folders/${p.folderId}`, { paused: true });
+        continue;
+      }
       const want = {
         label: p.name, path: p.local, type: TYPE[p.direction] || 'sendreceive',
         devices: p.peer ? [{ deviceID: p.peer.id }] : [],
@@ -504,6 +521,8 @@ class Direct extends EventEmitter {
     for (const id of haveFolder.keys()) {
       if ((id.startsWith(PREFIX) || id.startsWith(CTL_PREFIX)) && !ids.has(id)) { await this.req('DELETE', `/rest/config/folders/${id}`); this.log('info', `SYNCTHING: “${haveFolder.get(id).label || id}” removed (no file touched)`); }
     }
+    for (const id of (this.missingLocal || [])) if (!missingNow.has(id)) { const p = pairs.find(x => x.id === id); if (p) this.log('info', `SYNCTHING: “${p.name}”: the local folder is back, the session starts again`); }
+    this.missingLocal = missingNow;
     this.labels = new Map(pairs.map(p => [p.folderId, p]));
     this._poll().catch(() => {});
   }
@@ -675,10 +694,14 @@ class Direct extends EventEmitter {
     if (pj !== this.lastPending) { this.lastPending = pj; this.emit('pending', this.pending); }
 
     // Each live sync.
+    // A local folder gone or back (a disk unplugged or plugged in): written
+    // into Syncthing again (paused while missing, nothing created).
+    if (this.want.pairs.some(p => p.folderId && p.local && localMissing(p) !== !!(this.missingLocal && this.missingLocal.has(p.id)))) this.reconcile(this.want.pairs, this.want.devices).catch(() => {});
     for (const p of this.want.pairs) {
       if (!p.folderId) continue;
       let s;
-      try { s = await this._pairStatus(p, link); } catch (e) { s = { state: 'error', error: 'SYNCTHING: ' + e.message }; }
+      if (p.local && localMissing(p)) s = { direct: true, auto: !!p.auto, state: 'error', error: `The local folder is missing: ${p.local} (a disk not connected, or the folder moved or deleted?). The session waits; nothing is created or deleted.` };
+      else try { s = await this._pairStatus(p, link); } catch (e) { s = { state: 'error', error: 'SYNCTHING: ' + e.message }; }
       const txt = JSON.stringify(s);
       if (this.status.get(p.id) !== txt) { this.status.set(p.id, txt); this.emit('status', p.id, s); }
       // The queue of the LIVE SYNC view, while it is shown.

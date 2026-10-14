@@ -97,6 +97,12 @@ function createDirect({ prefs, log, send, home, bin, onStatus, onFailover, onMir
       for (const p of list) emitStatus(p.id, { direct: true, state: 'error', error: 'SYNCTHING is not in this build of filo (Syncthing missing).' });
       return Promise.resolve();
     }
+    // Not started for nothing: while no session is connected, Syncthing does
+    // not run (no network at all, Noar 14/10/2026); the first CONNECT starts it.
+    if (!direct.child && !list.some(p => p.auto)) {
+      for (const p of list) emitStatus(p.id, { direct: true, state: 'paused', auto: false, peer: p.peer ? { id: p.peer.id, name: p.peer.name, connected: false } : null });
+      return Promise.resolve();
+    }
     for (const p of list) if (!status[p.id]) emitStatus(p.id, { direct: true, state: 'starting', auto: !!p.auto });
     return direct.reconcile(list, prefs.listDirectDevices()).then(() => {
       // MASTER: its settings to the control folder; SLAVE: takes them.

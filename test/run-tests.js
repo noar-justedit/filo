@@ -1572,6 +1572,29 @@ SEC('command after the queue', async () => {
   ok(!slow.ok && /still running/.test(slow.error), 'too long: filo goes on');
 });
 
+SEC('direct: a missing local folder is never created', async () => {
+  const { Direct, binPath, newFolderId } = require('../src/main/direct');
+  if (!binPath()) { process.stdout.write(' (skipped: no Syncthing)'); return; }
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const until = async (fn, ms) => { const t = Date.now() + (ms || 20000); while (Date.now() < t) { try { if (fn()) return true; } catch (_) {} await sleep(200); } return false; };
+  const base = scratch(), gone = path.join(base, 'Downloads', 'TEST');
+  const logs = [];
+  const port = 22700 + Math.floor(Math.random() * 200);
+  const A = new Direct({ home: scratch(), log: (l, m) => logs.push(m), name: 'LINUX', testing: { listen: [`tcp://127.0.0.1:${port}`], addresses: {} } });
+  try {
+    await A.start();
+    const st = {}; A.on('status', (id, s) => { st[id] = s; });
+    const pair = { id: 'm', name: 'TEST', local: gone, direction: 'both', auto: true, folderId: newFolderId('both'), peer: null, exclude: '' };
+    await A.reconcile([pair], []);
+    await sleep(3000);
+    ok(!fs.existsSync(gone), 'a session whose folder was deleted does not create it again at launch');
+    ok(await until(() => st.m && st.m.state === 'error' && /missing/.test(st.m.error)), 'the session says its local folder is missing');
+    ok(logs.some(m => /local folder is missing/.test(m)), 'and the log says so');
+    fs.mkdirSync(gone, { recursive: true });
+    ok(await until(() => fs.existsSync(path.join(gone, '.stfolder')), 30000), 'the folder back: the session starts again by itself');
+  } finally { await A.stop().catch(() => {}); }
+});
+
 SEC('LIVE SYNC down: phone alert', () => {
   const { reason, SyncAlert } = require('../src/main/core/syncalert');
   const P = { id: 'p', name: 'Rushes', via: 'direct', auto: true, peer: { id: 'X', name: 'PC-MONTAGE · Windows 11' } };

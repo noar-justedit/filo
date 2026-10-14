@@ -429,6 +429,14 @@ app.whenReady().then(() => {
   if (prefs.recovered === 'bak') log('warn', 'preferences.json could not be read: the copy saved at the last start was taken back (the damaged file is kept next to it, .corrupt).');
   else if (prefs.recovered === 'lost') log('error', 'preferences.json could not be read and no copy was there: filo starts empty (the damaged file is kept next to it, .corrupt).');
   prefs.onError = m => log('error', m);
+  // Nothing connects at launch without the user (Noar, 14/10/2026): every
+  // LIVE SYNC session (S-FTP, SYNCTHING and its S-FTP BACKUP) starts
+  // DISCONNECTED, CONNECT starts it; Syncthing itself is not started before.
+  for (const p of prefs.listSyncPairs()) {
+    if (!p.auto && !p.fsAuto) continue;
+    prefs.saveSyncPair(Object.assign({}, p, { auto: false, fsAuto: false }));
+    log('info', `LIVE SYNC “${p.name}”: not reconnected at launch (CONNECT to start it)`);
+  }
   const policy = {
     known: (kind, host, port) => prefs.knownHost(kind, host, port),
     remember: (kind, host, port, fp) => { prefs.rememberHost(kind, host, port, fp); log('info', `Remembered the identity of ${host}:${port}: ${fp}`); },

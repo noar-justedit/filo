@@ -4,6 +4,31 @@ All notable changes to filo are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/lang/fr/).
 
+## [0.8.2] — 2026-10-14
+
+### Fixed
+
+- **A folder TEST created in Downloads at launch** (Noar, Linux). A SYNCTHING
+  session whose local folder had been deleted (or whose disk was unplugged)
+  made Syncthing create it again, empty. Now filo checks the folder first: if
+  it is missing, the session is paused with a clear error and nothing is
+  created or deleted; it starts again by itself when the folder is back.
+- **FINISHED shown at launch.** The DONE list kept from the last time filo was
+  open made the queue say FINISHED with a full bar. FINISHED now only appears
+  after a transfer run during this opening; at launch it says IDLE.
+
+### Changed
+
+- **Nothing connects at launch without the user** (Noar). Every LIVE SYNC
+  session (S-FTP, SYNCTHING, DUAL SYNC and its S-FTP BACKUP) starts
+  DISCONNECTED and CONNECT starts it. Syncthing itself does not start until a
+  session is connected. A session connected stays so until filo is closed.
+
+### Docs
+
+- The 6 screenshots are retaken at every version (rule in AGENTS.md);
+  `livesync.png` no longer shows an old version number.
+
 ## [0.8.1] — 2026-10-14
 
 ### Fixed

@@ -44,7 +44,7 @@ ensuite, en entier, avant de toucher au code.
 - Format : X.Y.Z.
 
 ### 5. Livraison : le ZIP
-- À chaque bump, fournir `NomDuProjet_vX.Y.Z.zip` (ici `filo_v0.8.1.zip`).
+- À chaque bump, fournir `NomDuProjet_vX.Y.Z.zip` (ici `filo_v0.8.2.zip`).
 - Une fois décompressé, le ZIP correspond exactement à ce que Noar pousse sur GitHub :
   sources, scripts de build, documentation et fichiers de suivi.
 - Le ZIP ne contient pas :
@@ -60,6 +60,11 @@ ensuite, en entier, avant de toucher au code.
 - `ETAT_PROJET.md` : état actuel, architecture en bref, décisions prises et leurs raisons,
   problèmes connus, prochaines étapes, emplacements de la version.
 - `CHANGELOG.md` : historique des versions.
+- `docs/screenshots/*.png` (captures du README et du site de Noar) : **toutes
+  reprises à chaque bump**, dans l'appli réelle avec des données fictives, et
+  regardées une par une avant livraison (numéro de version du pied de fenêtre,
+  champ FILO du LIVE SYNC, en-tête, nouvelles fonctions). Les fournir aussi en
+  ZIP à part pour le site.
 
 ### 7. Publication sur GitHub : scripts/push_github.command
 - Chaque projet contient `scripts/push_github.command`. Noar décompresse le ZIP et
