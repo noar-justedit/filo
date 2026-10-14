@@ -23,7 +23,7 @@ const state = {
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 function fmtSize(b) {
   const n = Number(b) || 0;
-  if (n < 1000) return n + ' B';
+  if (n < 999.5) return Math.round(n) + ' B';      // a rate under 1 KB/s is a fraction (359.333… B/s)
   const u = ['KB', 'MB', 'GB', 'TB'];
   let v = n / 1000, i = 0;
   while (v >= 1000 && i < u.length - 1) { v /= 1000; i++; }
@@ -77,6 +77,7 @@ const modKey = e => (isMac() ? e.metaKey : e.ctrlKey);
 // ── Icons (Lucide, ISC licence — the same set as syncto) ──────────────────
 const SVG = (d, w) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${w || 2}" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
 const I = {
+  gauge: SVG('<path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/>'),
   folder: SVG('<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>'),
   file: SVG('<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/>'),
   video: SVG('<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="m10 11 5 3-5 3v-6Z"/>'),
@@ -111,6 +112,7 @@ const I = {
   plus: SVG('<path d="M5 12h14"/><path d="M12 5v14"/>'),
   clock: SVG('<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>'),
   refresh: SVG('<path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/>'),
+  sync: SVG('<path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/>'),
   list: SVG('<path d="M3 12h.01"/><path d="M3 18h.01"/><path d="M3 6h.01"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M8 6h13"/>'),
   power: SVG('<path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.77.04"/>'),
   quit: SVG('<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/>'),
@@ -497,7 +499,7 @@ class Panel {
     });
     if (!enabled) {
       this.empty.style.display = '';
-      this.empty.innerHTML = `${I.server}<b>Not connected</b><span>Use the bar above for a quick connection,<br>or open your sites.</span><button class="btn" id="empty-sites">${I.server} SITES</button>`;
+      this.empty.innerHTML = `${I.server}<b>Not connected</b><span>Use the bar above for a quick connection,<br>or open your bookmarks.</span><button class="btn" id="empty-sites">${I.server} BOOKMARKS</button>`;
       this.empty.querySelector('#empty-sites').onclick = () => openSites();
       this.cancelRename();
       this.spacer.style.height = '0px'; this.spacer.innerHTML = '';
@@ -1151,12 +1153,69 @@ function setProto(p) {
   $('q-port').placeholder = String(DEFAULT_PORT[p]);
 }
 
+// ── A connection being opened (0.8.0): the title bar, a bar under it and the
+// server panel say where it is, step by step, with a clock and CANCEL. After
+// 8 s on one step, they say the server is slow to answer.
+const CONN_STEPS = { resolve: 'Finding the address', open: 'Opening the connection', secure: 'Secure handshake', login: 'Login', folder: 'Reading the folder' };
+const cu = { on: false, steps: [], i: 0, t0: 0, st0: 0, timer: null, label: '', address: '', proto: '' };
+function connStart(req, label) {
+  const site = req.siteId ? state.sites.find(s => s.id === req.siteId) : null;
+  const q = req.quick || {};
+  const proto = site ? site.protocol : q.protocol || 'sftp';
+  cu.steps = proto === 'ftp' ? ['resolve', 'open', 'login', 'folder'] : ['resolve', 'open', 'secure', 'login', 'folder'];
+  cu.i = 0; cu.t0 = cu.st0 = Date.now(); cu.on = true;
+  cu.label = site ? site.name : label || q.host || '';
+  const host = site ? site.host : q.host, port = site ? site.port : q.port, user = site ? site.user : q.user;
+  cu.address = host ? `${user ? user + '@' : ''}${host}${port ? ':' + port : ''}` : '';
+  cu.proto = PROTO_LABEL[proto] || '';
+  clearInterval(cu.timer); cu.timer = setInterval(renderConnecting, 250);
+  renderConnecting();
+}
+function connStep(id) {
+  if (!cu.on) return;
+  // The steps only go forward; a step this protocol does not have (plain FTP
+  // has no secure handshake) is skipped.
+  let k = cu.steps.indexOf(id);
+  if (k < 0 && id === 'secure') k = cu.steps.indexOf('login');
+  if (k > cu.i) { cu.i = k; cu.st0 = Date.now(); renderConnecting(); }
+}
+function connEnd() {
+  cu.on = false; clearInterval(cu.timer); cu.timer = null;
+  const pan = $('cp-pan'); if (pan) pan.remove();
+  const bar = $('cp-bar'); if (bar) bar.remove();
+  $('conn-pill').classList.remove('busy');
+  renderConnPill();
+}
+function renderConnecting() {
+  if (!cu.on) return;
+  const secs = Math.floor((Date.now() - cu.t0) / 1000);
+  const slow = Date.now() - cu.st0 >= 8000;
+  const cur = CONN_STEPS[cu.steps[cu.i]];
+  const pill = $('conn-pill');
+  pill.classList.add('busy'); pill.classList.remove('on');
+  $('conn-name').textContent = cu.label; $('conn-name').classList.remove('mono');
+  $('conn-addr').textContent = cu.address; $('conn-proto').textContent = cu.proto;
+  $('conn-badges').innerHTML = `<span class="cp-step">${esc(cur)}${slow ? ' (slow)' : ''}</span><span class="cp-t">${secs} s</span><button class="cp-x" id="cp-cancel">CANCEL</button>`;
+  $('cp-cancel').onclick = e => { e.stopPropagation(); API.connectCancel(); };
+  if (!$('cp-bar')) $('titlebar').insertAdjacentHTML('afterend', '<div class="cp-bar" id="cp-bar"><i></i></div>');
+  // The server panel is covered only when nothing is connected: another
+  // server's folder must stay readable while this one is tried.
+  let pan = $('cp-pan');
+  if (state.conn) { if (pan) pan.remove(); return; }
+  const rows = cu.steps.map((s, i) => i < cu.i ? `<div class="ok"><b>✓</b>${CONN_STEPS[s]}</div>` : i === cu.i ? `<div class="now"><b>›</b>${CONN_STEPS[s]}${slow ? ' (slow)' : ''}</div>` : `<div><b>·</b>${CONN_STEPS[s]}</div>`).join('');
+  const html = `<div class="ring"></div><div><div class="h">Connecting to ${esc(cu.label)}</div><div class="m">${esc(cu.address)} · ${secs} s</div></div><div class="cp-steps">${rows}</div>${slow ? '<div class="cp-warn">This server is slow to answer. filo keeps trying. Cancel here if it is not the right one.</div>' : ''}`;
+  if (!pan) { pan = document.createElement('div'); pan.id = 'cp-pan'; pan.className = 'cp-pan'; pan.setAttribute('role', 'status'); panels.remote.el.appendChild(pan); }
+  pan.innerHTML = html;
+}
+
 async function connectWith(req, label) {
   panels.remote.busy.style.display = '';
   state.connecting = true; renderConnectBtn();
+  connStart(req, label);
   let res;
   try { res = await API.connect(req); }
-  finally { state.connecting = false; panels.remote.busy.style.display = 'none'; renderConnectBtn(); }
+  finally { state.connecting = false; panels.remote.busy.style.display = 'none'; connEnd(); renderConnectBtn(); }
+  if (res.cancelled) return;
   if (res.ok) { if (res.warn) toast(res.warn, true); return onConnected(res); }
   if (res.code === 'TRUST_NEEDED' && res.trust) {
     const ok = await trustBox(res.trust);
@@ -1209,6 +1268,154 @@ async function disconnect() {
   if (!state.conn) return;
   await API.disconnect();
   setDisconnected();
+}
+
+
+// ══ Speed test of a bookmark (0.8.0) ═══════════════════════════════════════
+// The icon on a bookmark measures the server, sending and receiving, with
+// 1, 2, 4, 8 connections (and segments, in SFTP). SAVE keeps what it
+// suggests as the starting settings of the sessions on that server, with the
+// date and the network: elsewhere, Auto starts as usual.
+function speedTip(s) {
+  if (!s.speed) return 'Speed test: measure this server';
+  const sp = s.speed, d = x => (x ? `${x.conn} connection${x.conn > 1 ? 's' : ''}, ${x.mbps} MB/s` : '—');
+  return `Speed test. Last: ${new Date(sp.at).toLocaleDateString()}${sp.netLabel ? ' on ' + sp.netLabel : ''}\nSend: ${d(sp.out)}\nReceive: ${d(sp.in)}`;
+}
+const niceMax = v => { for (const m of [10, 20, 50, 100, 200, 500, 1000, 2000, 5000]) if (v <= m) return m; return Math.ceil(v / 1000) * 1000; };
+// The folder chooser of the speed test: the folders of the server, one level at a time.
+async function pickTestFolder(siteId, o, start) {
+  let dir = start || '/';
+  const up = d => (d === '/' ? '/' : d.replace(/\/[^/]*$/, '') || '/');
+  const join = (d, n) => (d === '/' ? '' : d) + '/' + n;
+  const body = () => $('spd-pick');
+  const show = async d => {
+    const el = body(); if (!el) return;
+    el.innerHTML = '<div class="hint">Reading the folder…</div>';
+    const r = await API.speedtestList({ siteId, dir: d, password: o.password, acceptFingerprint: o.accept });
+    if (!body()) return;
+    if (!r.ok) { body().innerHTML = `<div class="err-list">${esc(r.error || 'Cannot read this folder.')}</div>`; return; }
+    dir = r.dir;
+    body().innerHTML = `<div class="spd-path mono">${esc(dir)}</div><div class="spd-list">${dir !== '/' ? `<button data-up="1">${I.folder}<span>..</span></button>` : ''}${r.folders.map(n => `<button data-n="${esc(n)}">${I.folder}<span>${esc(n)}</span></button>`).join('') || '<div class="hint" style="padding:8px 10px">No subfolder here.</div>'}</div>`;
+    body().querySelectorAll('button').forEach(b => b.onclick = () => show(b.dataset.up ? up(dir) : join(dir, b.dataset.n)));
+  };
+  return dialog({ title: 'Folder for the speed test', sub: 'The bookmark points at the root of the server. Choose a folder you can write to.', width: 440, tag: 'speedtest-pick',
+    html: '<div id="spd-pick"></div>',
+    buttons: [{ label: 'CANCEL', value: null }, { spacer: true }, { label: 'USE THIS FOLDER', cls: 'go', value: () => dir }],
+    onOpen: () => show(dir) });
+}
+async function openSpeedTest(siteId, opt) {
+  const s = state.sites.find(x => x.id === siteId);
+  if (!s) return;
+  if (state.connecting) return;
+  const o = opt || {};
+  const st = { phase: 'idle', secs: o.secs || 20, out: [], in: [], steps: [], info: null, result: null, now: { out: 0, in: 0 }, scale: 10, label: '', stepsN: 0, closed: false, again: false };
+  const addr = `${s.user ? s.user + '@' : ''}${s.host}:${s.port} · ${PROTO_LABEL[s.protocol] || ''}`;
+  const card = () => $('dlg-card');
+  const mbs = v => (v >= 100 ? v.toFixed(0) : v.toFixed(1));
+  const gauge = (v, c, lab) => {
+    const L = 219.9, off = (L * (1 - Math.min(1, v / st.scale))).toFixed(1);
+    return `<div class="spd-g"><svg viewBox="0 0 160 90" width="160" height="90"><path d="M 10 82 A 70 70 0 0 1 150 82" fill="none" stroke="rgba(255,255,255,.07)" stroke-width="8" stroke-linecap="round"/><path d="M 10 82 A 70 70 0 0 1 150 82" fill="none" stroke="${c}" stroke-opacity=".55" stroke-width="8" stroke-linecap="round" stroke-dasharray="${L}" stroke-dashoffset="${off}"/></svg><div class="v"><b>${mbs(v)}</b><i style="color:${c}">${lab} MB/s</i></div></div>`;
+  };
+  const graph = () => {
+    const n = Math.max(1, st.stepsN), X = f => 8 + f * 404, Y = v => 92 - Math.min(1, v / st.scale) * 82;
+    const lab = (st.steps.length ? st.steps : []).map((l, i) => `<line x1="${X(i / n)}" y1="8" x2="${X(i / n)}" y2="92" stroke="var(--raise)" stroke-dasharray="3 4"/><text x="${X((i + .5) / n)}" y="108" fill="var(--text4)" font-size="10" font-weight="700" text-anchor="middle">${esc(l)}</text>`).join('');
+    const line = (arr, c) => arr.length > 1 ? `<polyline points="${arr.map(p => X(p.f).toFixed(1) + ',' + Y(p.v).toFixed(1)).join(' ')}" fill="none" stroke="${c}" stroke-width="2" stroke-linejoin="round"/>` : '';
+    return `<div class="spd-gr"><svg viewBox="0 0 420 114"><line x1="8" y1="51" x2="412" y2="51" stroke="var(--raise)"/><line x1="8" y1="92" x2="412" y2="92" stroke="#262a33"/>${lab}${line(st.out, 'var(--blue)')}${line(st.in, 'var(--green)')}</svg></div>`;
+  };
+  const kv = (k, v) => `<div><div class="spd-k">${k}</div><div class="mono spd-v">${v}</div></div>`;
+  const info = () => {
+    const i = st.info || {};
+    return `<div class="spd-info">${kv('LATENCY', i.latencyMs ? i.latencyMs + ' ms' : '…')}${kv('MAX CONN.', i.maxOpen ? (i.capped ? i.maxOpen : i.maxOpen + (i.maxOpen >= 8 ? '+' : '')) : '…')}${kv('ENGINE', esc(i.protocol || PROTO_LABEL[s.protocol] || ''))}${kv('CHECKSUM', i.hash ? (i.hash.length ? esc(String(i.hash[0]).toUpperCase()) : 'NONE') : '…')}</div>`;
+  };
+  const sugg = () => {
+    const r = st.result, cell = x => (x ? `<span class="mono spd-n">${x.conn}</span><span class="mono spd-n">${x.segOn === null ? '—' : x.segOn ? 'ON' : 'OFF'}</span>` : '<span class="mono spd-n">—</span><span class="mono spd-n">—</span>');
+    return `<div class="spd-sug"><span></span><span class="spd-k">CONNECTIONS</span><span class="spd-k">SEGMENTS</span><span class="spd-k" style="color:var(--blue)">↑ SEND</span>${cell(r.out)}<span class="spd-k" style="color:var(--green)">↓ RECEIVE</span>${cell(r.in)}</div>`;
+  };
+  const live = () => {
+    const el = $('spd-live'); if (!el) return;
+    el.innerHTML = `<div class="spd-gs">${gauge(st.now.out, 'var(--blue)', '↑')}${gauge(st.now.in, 'var(--green)', '↓')}</div>${graph()}${st.phase === 'done' ? sugg() : info()}`;
+  };
+  const phaseText = () => st.phase === 'connect' ? ['OPENING CONNECTIONS', 'var(--orange)'] : st.phase === 'out' ? [`SENDING · ${st.label} CONN.`.replace(' · SEG CONN.', ' · SEGMENTS'), 'var(--blue)'] : st.phase === 'in' ? [`RECEIVING · ${st.label} CONN.`.replace(' · SEG CONN.', ' · SEGMENTS'), 'var(--green)'] : st.phase === 'done' ? ['DONE', 'var(--green)'] : ['', ''];
+  const frame = () => {
+    const c = card(); if (!c) return;
+    const [pt, pc] = phaseText();
+    const gaugeIcon = `<span class="spd-ic">${I.gauge}</span>`;
+    if (st.phase === 'idle') {
+      c.style.width = '400px';
+      c.innerHTML = `<div class="m-h1">Start speedtest ?</div><div class="body"><div class="spd-site">${gaugeIcon}<div><div class="n">${esc(s.name)}</div><div class="mono a">${esc(addr)}</div></div></div>
+        <div class="spd-start"><button class="spd-go" id="spd-go" aria-label="Start">GO</button><div class="seg" id="spd-secs"><button data-s="20" class="${st.secs === 20 ? 'on' : ''}">20 s</button><button data-s="60" class="${st.secs === 60 ? 'on' : ''}">60 s</button></div></div>
+        <div class="hint" style="margin-top:10px">Writes temporary files in the bookmark folder, removed at the end.</div></div>
+        <div class="m-btns"><span class="sp"></span><button class="btn sm stop" id="spd-cancel">CANCEL</button></div>`;
+      c.querySelectorAll('#spd-secs button').forEach(b => b.onclick = () => { st.secs = +b.dataset.s; c.querySelectorAll('#spd-secs button').forEach(x => x.classList.toggle('on', x === b)); });
+      $('spd-go').onclick = go;
+    } else {
+      c.style.width = '460px';
+      c.innerHTML = `<div class="m-h1">SPEEDTEST<span class="spd-ph" style="color:${pc}">${esc(pt)}</span></div><div class="m-sub">${esc(s.name)} · ${esc(s.host)}</div><div class="body" id="spd-live"></div>
+        <div class="m-btns">${st.phase === 'done' ? '<button class="btn sm" id="spd-again">AGAIN</button>' : ''}<span class="sp"></span><button class="btn sm stop" id="spd-cancel">CANCEL</button>${st.phase === 'done' ? '<button class="btn sm go" id="spd-save">SAVE</button>' : ''}</div>`;
+      live();
+      if ($('spd-again')) $('spd-again').onclick = () => { st.again = true; closeDialog(null); };
+      if ($('spd-save')) $('spd-save').onclick = async () => {
+        $('spd-save').disabled = true;
+        const r = await API.speedtestSave(siteId);
+        if (!r.ok) { toast(r.error, true); $('spd-save').disabled = false; return; }
+        const i = state.sites.findIndex(x => x.id === siteId);
+        if (i >= 0) state.sites[i] = r.site;
+        if (r.warn) toast(r.warn, true); else toast(`Speed profile saved for ${s.name}`);
+        closeDialog(null);
+        if ($('ov-sites').classList.contains('open')) renderSiteList();
+      };
+    }
+    $('spd-cancel').onclick = () => closeDialog(null);
+  };
+  const onEvent = e => {
+    if (st.closed || !e) return;
+    if (e.type === 'phase') {
+      st.phase = e.phase;
+      if (e.steps) { st.steps = e.steps; st.stepsN = e.steps.length; st.label = e.steps[0]; }
+      frame();
+    } else if (e.type === 'info') { st.info = e; live(); }
+    else if (e.type === 'sample') {
+      st.label = e.label; st.now[e.dir] = Math.max(0, e.mbps);
+      st.scale = Math.max(st.scale, niceMax(e.mbps * 1.1));
+      st[e.dir].push({ f: Math.min(0.999, (e.step + e.frac) / Math.max(1, st.stepsN)), v: Math.max(0, e.mbps) });
+      const t = card() && card().querySelector('.spd-ph'); const [pt, pc] = phaseText(); if (t) { t.textContent = pt; t.style.color = pc; }
+      live();
+    } else if (e.type === 'dir') { st.now[e.dir] = e.result.mbps; st.scale = Math.max(st.scale, niceMax(e.result.mbps * 1.1)); live(); }
+  };
+  let off = null;
+  async function go() {
+    st.phase = 'connect'; frame();
+    off = API.on('speedtest-event', onEvent);
+    const res = await API.speedtestRun({ siteId, seconds: st.secs, password: o.password, acceptFingerprint: o.accept, dir: o.dir || '', readOnly: !!o.readOnly });
+    if (off) { off(); off = null; }
+    if (st.closed) return;
+    if (res.ok) { st.result = res.result; st.phase = 'done'; st.now.out = res.result.out ? res.result.out.mbps : 0; st.now.in = res.result.in ? res.result.in.mbps : 0; frame(); return; }
+    st.closed = true; st.failed = res;
+    closeDialog(null);
+  }
+  const p = dialog({ title: '', html: '', buttons: [], width: 400, tag: 'speedtest', onOpen: () => { frame(); if (o.autostart) go(); } });
+  await p;
+  st.closed = true;
+  if (off) { off(); off = null; }
+  if (st.phase === 'connect' || st.phase === 'out' || st.phase === 'in') API.speedtestCancel();
+  if (st.again) return openSpeedTest(siteId, { password: o.password, accept: o.accept, secs: st.secs, autostart: true, dir: o.dir, readOnly: o.readOnly });
+  const f = st.failed;
+  if (f && !f.cancelled) {
+    if (f.needsPassword) {
+      const pw = await passwordBox(s.name, { canSave: false, title: s.logon === 'key' ? 'Key passphrase' : 'Password' });
+      if (pw) return openSpeedTest(siteId, { password: pw.password, secs: st.secs, autostart: true, dir: o.dir, readOnly: o.readOnly });
+    } else if (f.code === 'TRUST_NEEDED' && f.trust) {
+      if (await trustBox(f.trust)) return openSpeedTest(siteId, { password: o.password, accept: f.trust.fingerprint, secs: st.secs, autostart: true, dir: o.dir, readOnly: o.readOnly });
+    } else if (f.code === 'PICK_DIR') {
+      // The bookmark points at the server root: the test needs a folder.
+      const d = await pickTestFolder(siteId, o, f.dir || '/');
+      if (d) return openSpeedTest(siteId, { password: o.password, accept: o.accept, secs: st.secs, autostart: true, dir: d });
+    } else if (f.code === 'READONLY') {
+      const yes = await dialog({ title: 'Read-only folder', html: `<div class="hint" style="margin-top:0"><span class="mono">${esc(f.dir || '')}</span> does not accept files from this account.<br>The test can still measure <b>reception</b> by reading files that are already there. Sending is not measured.</div>`,
+        buttons: [{ label: 'CANCEL', value: false }, { spacer: true }, { label: 'TEST RECEPTION ONLY', value: true, cls: 'go' }] });
+      if (yes) return openSpeedTest(siteId, { password: o.password, accept: o.accept, secs: st.secs, autostart: true, dir: f.dir, readOnly: true });
+    } else errorBox('Speed test failed', f.error);
+  }
 }
 
 // ── Favorite folders, per server (Noar, 12/10/2026) ──────────────────────
@@ -1359,7 +1566,7 @@ async function saveQuickAsSite() {
   if (!name) return;
   const r = await API.sitesFromQuick({ protocol: m[1], user: m[2], host: m[3], port: Number(m[4]) }, name);
   state.sites = r.sites;
-  toast(`Saved “${name}” in your sites`);
+  toast(`Saved “${name}” in your bookmarks`);
 }
 
 // ══ Site manager ═══════════════════════════════════════════════════════════
@@ -1369,6 +1576,7 @@ const sm = { selId: null, draft: null, pwAction: undefined, ppAction: undefined,
 // selected then, the same scroll. Nothing is unfolded on its own, unless a
 // given site is asked for.
 async function openSites(selectId) {
+  await loadSync().catch(() => {});                 // the LIVE SYNC folder lists the sessions
   const r = await API.sitesList();
   state.sites = r.sites; state.vault = r.vaultAvailable;
   if (r.siteFolderOrder) state.siteFolderOrder = r.siteFolderOrder;
@@ -1381,6 +1589,38 @@ async function openSites(selectId) {
   if (!selectId && top) requestAnimationFrame(() => { $('sm-list').scrollTop = top; });
 }
 function closeSites() { $('ov-sites').classList.remove('open'); }
+// The LIVE SYNC folder of the site manager (a key no folder of the user can take).
+const LIVE_FOLDER = '\u0000live';
+function liveBookmarkSub(p) {
+  const peer = p.peer ? splitDev(p.peer.name).name || shortDev(p.peer.id) : 'not linked yet';
+  const site = p.siteId && (state.sites || []).find(s => s.id === p.siteId);
+  const srv = site ? `${site.user ? site.user + '@' : ''}${site.host}` : 'server';
+  return p.via === 'direct' ? `SYNCTHING · ${peer}` : p.via === 'hybrid' ? `DUAL SYNC · ${peer} + ${srv}` : `S-FTP · ${srv}`;
+}
+// A LIVE SYNC bookmark: its session in the LIVE SYNC view (connected first
+// if it is not, asked).
+async function openLiveBookmark(id) {
+  await loadSync().catch(() => {});
+  const p = sy.pairs.find(x => x.id === id);
+  if (!p) return toast('This session is no longer there.', true);
+  closeSites();
+  if (!isOn(p)) {
+    if (await confirmBox(`Connect “${p.name}”?`, 'This session is disconnected: connect it to see it in LIVE SYNC.', 'CONNECT')) await menuConnect(p, true);
+    return;
+  }
+  sy.liveSel = p.id; sy.liveHidden = false;
+  renderSyncBtn(); renderLive(); API.directFast(true);
+}
+// Its folder on the server (S-FTP, DUAL SYNC), in the file panels.
+async function browseLiveBookmark(id) {
+  const p = sy.pairs.find(x => x.id === id);
+  if (!p || !p.siteId) return;
+  closeSites();
+  if (document.body.classList.contains('live-on')) { sy.liveHidden = true; renderLive(); API.directFast(false); }
+  const s = state.sites.find(x => x.id === p.siteId);
+  await connectWith({ siteId: p.siteId }, s && s.name);
+  if (state.conn && p.remote) panels.remote.load(p.remote);
+}
 
 // Folders form a tree ("Clients / Agency X" is Agency X inside Clients), folded
 // by default. What is open is remembered. A search opens everything, and the
@@ -1425,6 +1665,22 @@ function renderSiteList() {
   const ren = sm.renaming;
   let html = '';
   const short = { sftp: 'SFTP', ftps: 'FTPS', 'ftps-implicit': 'FTPS-i', ftp: 'FTP' };
+  // LIVE SYNC (Noar, 13/10/2026): every session is a bookmark here, in a
+  // folder of its own, always first. Made from the sessions themselves (not
+  // stored): a session renamed or deleted is so here at once. Double-click:
+  // the session in the LIVE SYNC view; right-click: also its server folder
+  // (S-FTP, DUAL SYNC) and its settings.
+  {
+    const lives = (sy.pairs || []).filter(p => !q || `${p.name} ${liveBookmarkSub(p)} live sync`.toLowerCase().includes(q));
+    if (lives.length) {
+      const isOpen = !!q || open.has(LIVE_FOLDER);
+      html += `<div class="sm-folder sm-livef${isOpen ? ' open' : ''}" data-path="${esc(LIVE_FOLDER)}" data-tip="The LIVE SYNC sessions, made here by themselves" style="padding-left:6px"><span class="chev">${I.chev}</span>${I.sync}<span class="nm">LIVE SYNC</span><span class="n">${lives.length}</span></div>`;
+      if (isOpen) for (const p of lives) {
+        const k = { direct: ['ST', 'st'], hybrid: ['DS', 'ds'], server: ['SF', 'sf'] }[p.via] || ['LS', 'st'];
+        html += `<div class="sm-item sm-live${sm.liveSel === p.id ? ' sel' : ''}" data-live="${esc(p.id)}" data-tip="Double-click: open it in LIVE SYNC · right-click: more" style="padding-left:31px"><span class="ic ls-${k[1]}">${k[0]}</span><div class="t"><div class="a">${esc(p.name)}</div><div class="b">${esc(liveBookmarkSub(p))}</div></div><i class="sm-live-dot ${isOn(p) ? 'on' : ''}"></i></div>`;
+      }
+    }
+  }
   const draw = (node, depth) => {
     const pad = depth * 14;
     for (const d of [...node.dirs.values()].sort(folderCmp)) {
@@ -1435,7 +1691,7 @@ function renderSiteList() {
     }
     for (const s of node.sites) {
       const editing = ren && ren.kind === 'site' && ren.key === s.id;
-      html += `<div class="sm-item${s.id === sm.selId ? ' sel' : ''}" data-id="${esc(s.id)}"${q || editing ? '' : ' draggable="true"'} style="padding-left:${9 + pad + (depth ? 8 : 0)}px"><span class="ic ${s.protocol}">${short[s.protocol]}</span><div class="t">${editing ? `<input class="sm-ren" id="sm-ren" value="${esc(s.name)}" aria-label="Site name" spellcheck="false">` : `<div class="a">${esc(s.name)}</div>`}<div class="b">${esc(s.user ? s.user + '@' : '')}${esc(s.host)}</div></div></div>`;
+      html += `<div class="sm-item${s.id === sm.selId ? ' sel' : ''}" data-id="${esc(s.id)}"${q || editing ? '' : ' draggable="true"'} style="padding-left:${9 + pad + (depth ? 8 : 0)}px"><span class="ic ${s.protocol}">${short[s.protocol]}</span><div class="t">${editing ? `<input class="sm-ren" id="sm-ren" value="${esc(s.name)}" aria-label="Site name" spellcheck="false">` : `<div class="a">${esc(s.name)}</div>`}<div class="b">${esc(s.user ? s.user + '@' : '')}${esc(s.host)}</div></div>${editing ? '' : `<button class="ibtn sm-spd${s.speed ? ' has' : ''}" data-spd="${esc(s.id)}" aria-label="Speed test" data-tip="${esc(speedTip(s))}">${I.gauge}</button>`}</div>`;
     }
   };
   draw(root, 0);
@@ -1577,6 +1833,8 @@ const inFolder = (folder, path) => folder === path || folder.startsWith(path + '
 
 function smDropSpot(ev) {
   let el = ev.target.closest('.sm-item, .sm-folder, .sm-drop-end');
+  // The LIVE SYNC folder and its bookmarks take no drop (made from the sessions).
+  if (el && (el.classList.contains('sm-live') || el.classList.contains('sm-livef'))) return null;
   // Anywhere else in the list (between rows, below them): the top level.
   if (!el && ev.target.closest('#sm-list')) el = document.querySelector('#sm-list .sm-drop-end');
   if (!el) return null;
@@ -1646,7 +1904,9 @@ async function smApplyDrop(spot) {
 
 function smFoldAll(openAll) {
   const o = smOpen();
+  const live = o.has(LIVE_FOLDER);
   o.clear();
+  if (live || openAll) o.add(LIVE_FOLDER);
   if (openAll) for (const s of state.sites) {
     const parts = String(s.folder || '').split(' / ').map(x => x.trim()).filter(Boolean);
     parts.forEach((_, i) => o.add(parts.slice(0, i + 1).join(' / ')));
@@ -1780,6 +2040,15 @@ function bindSites() {
     if (ev.target.closest('.sm-ren')) return;
     const f = ev.target.closest('.sm-folder');
     if (f) { sm.selFolder = f.dataset.path; if (ev.altKey) smFoldAll(!f.classList.contains('open')); else smToggle(f.dataset.path); return; }
+    const sp = ev.target.closest('[data-spd]');
+    if (sp) { ev.stopPropagation(); openSpeedTest(sp.dataset.spd); return; }
+    const lv = ev.target.closest('.sm-live');
+    if (lv) {
+      const id = lv.dataset.live, now = Date.now();
+      if (sm.lastClick && sm.lastClick.live === id && now - sm.lastClick.t < 450) { sm.lastClick = null; openLiveBookmark(id); return; }
+      sm.lastClick = { live: id, t: now }; sm.liveSel = id; renderSiteList();
+      return;
+    }
     const it = ev.target.closest('.sm-item'); if (!it) return;
     // Double-click = connect. Detected here: the first click redraws the list
     // (selection), so the browser's own dblclick never reaches a site row.
@@ -1825,7 +2094,19 @@ function bindSites() {
   $('sm-list').addEventListener('contextmenu', ev => {
     ev.preventDefault();
     if (sm.search) return;
+    const lv = ev.target.closest('.sm-live');
+    if (lv) {
+      const p = sy.pairs.find(x => x.id === lv.dataset.live);
+      if (!p) return;
+      sm.liveSel = p.id; renderSiteList();
+      return showMenu(ev.clientX, ev.clientY, [
+        { label: 'Open in LIVE SYNC', icon: I.sync, action: () => openLiveBookmark(p.id) },
+        { label: 'Browse its S-FTP folder', icon: I.folder, disabled: p.via === 'direct' || !p.siteId, action: () => browseLiveBookmark(p.id) },
+        { label: 'Session settings…', icon: I.list, action: () => { closeSites(); openSync(p.id); } },
+      ]);
+    }
     const f = ev.target.closest('.sm-folder'), it = ev.target.closest('.sm-item');
+    if (f && f.classList.contains('sm-livef')) return;
     if (f) {
       const path = f.dataset.path, isOpen = smOpen().has(path);
       sm.selFolder = path; renderSiteList();
@@ -2184,7 +2465,11 @@ function renderQueue() {
     const name = up ? posixBase(it.remote) : localBase(it.local);
     const to = up ? posixDir(it.remote) : localDir(it.local);
     const meta = [it.type === 'folder' ? 'folder' : fmtSize(it.size), '→ ' + tail(to, 60)].join(' · ');
-    r.innerHTML = `<div class="qr-top"><span class="pc">${pcText}</span>
+    // A LIVE SYNC copy says which way and where (Noar, 13/10/2026): to or
+    // from the S-FTP BACKUP of a DUAL SYNC, or the server of an S-FTP session.
+    const sp = String(it.endpointLabel || '').startsWith('Sync · ') ? sy.pairs.find(x => `Sync · ${x.name}` === it.endpointLabel) : null;
+    const way = sp ? `<span class="way ${up ? 'up' : 'down'} sf" data-tip="${up ? 'Sent to' : 'Received from'} ${sp.via === 'hybrid' ? 'the S-FTP BACKUP' : 'the server'} of “${esc(sp.name)}”">${up ? `SEND ${ST_UP}` : `${ST_DOWN} RECEIVE`}<b>${sp.via === 'hybrid' ? 'S-FTP BACKUP' : 'SERVER'}</b></span>` : '';
+    r.innerHTML = `<div class="qr-top"><span class="pc">${pcText}</span>${way}
         <span class="nm" data-tip="${esc(name)}">${esc(name)}</span>
         <span class="meta" data-tip="${esc((up ? it.endpointLabel + ' · ' : '') + to)}">${esc(meta)}</span>
         <span class="st">${statusOf(it)}</span>
@@ -2986,7 +3271,7 @@ const sy = {
 const SY_TYPES = {
   direct: ['SYNCTHING', 'Straight to another computer running filo, peer to peer: no server in between. Both filo must be open at the same time.'],
   hybrid: ['DUAL SYNC', 'SYNCTHING straight to the remote computer, and a server folder (S-FTP BACKUP) kept as an exact copy of the MASTER\'s folder. The remote computer away: the files go through the server.'],
-  server: ['S-FTP', 'Through a folder on an FTP, FTPS or SFTP server: a bookmark of the site manager.'],
+  server: ['S-FTP', 'Through a folder on an FTP, FTPS or SFTP server: a bookmark.'],
 };
 // In this order on screen: 2 WAYS first (Noar, 11/10/2026).
 const SY_DIR = {
@@ -3165,7 +3450,7 @@ async function onSyncBtn() {
   items.push('sep');
   // The switch between the FTP client and the LIVE SYNC view is MODE.
   items.push({ label: 'Sessions…', icon: I.list, action: () => openSync(connectedPairs().length ? sy.liveSel : null) });
-  showMenu(b.right + 8, b.top, items);
+  showMenu(b.left, b.bottom + 6, items);
 }
 async function menuConnect(p, on) {
   if (!on && !(await confirmBox(`Disconnect “${p.name}”?`, 'Nothing more is synced until you connect it again. No file is touched.', 'DISCONNECT', true))) return;
@@ -3207,10 +3492,10 @@ function renderSyncList() {
 function askHtml(pd) {
   return pd.devices.map((d, i) => { const n = splitDev(d.name); return `<div class="sy-ask"><div class="a">${I.link}<span><b>${esc(n.name || 'A computer')}</b>${n.os ? ` (${esc(n.os)})` : ''} wants to connect (SYNCTHING)</span></div>
       <div class="b mono">ID ${esc(d.id)}${d.address ? ` · ${esc(d.address)}` : ''}</div>
-      <div class="c"><button class="btn sm" data-ask="refuse" data-i="${i}">REFUSE</button><button class="btn sm go" data-ask="accept" data-i="${i}">ACCEPT</button></div></div>`; }).join('')
+      <div class="c"><button class="btn sm" data-ask="refuse" data-i="${i}" data-tip="Never: this computer is ignored from now on (it can no longer ask)">REFUSE</button><button class="btn sm go" data-ask="accept" data-i="${i}">ACCEPT</button></div></div>`; }).join('')
     + pd.folders.map((f, i) => `<div class="sy-ask"><div class="a">${I.link}<span><b>${esc(splitDev(f.deviceName).name)}</b> offers “${esc(f.name)}”</span></div>
       <div class="b">${esc(SY_DIR_DIRECT[f.direction][0])}: ${esc(SY_DIR_DIRECT[f.direction][1])}</div>
-      <div class="c"><button class="btn sm" data-ask="dismiss" data-i="${i}">NOT NOW</button><button class="btn sm go" data-ask="offer" data-i="${i}">ACCEPT…</button></div></div>`).join('');
+      <div class="c"><button class="btn sm" data-ask="dismiss" data-i="${i}" data-tip="Not now: the offer goes from this list, it can come again">NOT NOW</button><button class="btn sm go" data-ask="offer" data-i="${i}">ACCEPT…</button></div></div>`).join('');
 }
 
 // ── The settings window: the form ──────────────────────────────────────────
@@ -3232,7 +3517,7 @@ function renderSyncForm() {
     f.innerHTML = `<div class="m-h1" style="font-size:17px;margin-bottom:4px">LIVE SYNC</div><div class="m-sub" style="margin-bottom:16px">Keep a folder of this computer in step with another computer running filo, or with a folder on a server.</div>
       <div class="sy-types">
         <button class="mbtn sy-type k-direct" id="sy-start-new"><span class="mico">${I.plus}</span><span class="minfo"><span class="mbadge">CREATE A SESSION</span><span class="d">This computer will be the MASTER: its version wins a conflict, its direction and settings are the session's. You then send the other computer the config file (or, for a SYNCTHING session, this computer's SYNCTHING ID).</span></span></button>
-        <button class="mbtn sy-type k-server" id="sy-start-import"><span class="mico">${I.importIn}</span><span class="minfo"><span class="mbadge">IMPORT SESSION</span><span class="d">What the MASTER sent: its config file, or, for a SYNCTHING session, its SYNCTHING ID to paste (a DUAL SYNC session can also be found on its server). This computer will be the SLAVE.</span></span></button>
+        <button class="mbtn sy-type k-server" id="sy-start-import"><span class="mico">${I.importIn}</span><span class="minfo"><span class="mbadge">IMPORT SESSION</span><span class="d">What the MASTER sent: its config file, or, for a SYNCTHING session, its SESSION ID to paste (a DUAL SYNC session can also be found on its server). This computer will be the SLAVE.</span></span></button>
       </div>`;
     $('sy-start-new').onclick = newSync;
     $('sy-start-import').onclick = importSync;
@@ -3323,8 +3608,8 @@ function bookmarkField(d) {
   const site = state.sites.find(s => s.id === d.siteId);
   const askEach = site && (site.logon === 'ask' || (site.logon === 'normal' && !site.hasPassword));
   return `<div class="field"><label>Bookmark (server)</label><select id="sy-site"><option value="">Choose…</option>${state.sites.map(s => `<option value="${esc(s.id)}"${s.id === d.siteId ? ' selected' : ''}>${esc(s.name)} · ${esc(PROTO_INFO[s.protocol] ? PROTO_INFO[s.protocol][0] : s.protocol)}</option>`).join('')}</select>
-    ${askEach ? '<div class="hint" style="color:var(--orange)">This bookmark asks for its password each time: the session cannot run on its own. Save its password in the site manager, or use a key.</div>' : ''}
-    ${!state.sites.length ? '<div class="hint">No bookmark yet: add the server in the site manager (SITES) first.</div>' : ''}</div>`;
+    ${askEach ? '<div class="hint" style="color:var(--orange)">This bookmark asks for its password each time: the session cannot run on its own. Save its password in the bookmark, or use a key.</div>' : ''}
+    ${!state.sites.length ? '<div class="hint">No bookmark yet: add the server in the BOOKMARKS window first.</div>' : ''}</div>`;
 }
 function watchField(d) {
   const custom = d.customEvery || !SY_INTERVALS.includes(Number(d.interval));
@@ -3471,10 +3756,14 @@ async function shareSync() {
 // ── IMPORT ──────────────────────────────────────────────────────────────────
 async function importSync() {
   const how = await dialog({
+    // Buttons only (Noar, 13/10/2026); each says what it does on hover.
     title: 'Import session',
-    sub: 'What the MASTER sent: its config file (<span class="mono">.filosync</span>), or, for a SYNCTHING session, its SYNCTHING ID. For a DUAL SYNC session, filo can also find the config in the S-FTP folder, where the MASTER leaves it. This computer will be the SLAVE.',
-    buttons: [{ label: 'CANCEL', value: null }, { spacer: true }, { label: 'FIND ON A SERVER…', value: 'server' }, { label: 'PASTE A SYNCTHING ID…', value: 'id' }, { label: 'OPEN THE CONFIG FILE…', value: 'file', cls: 'go' }],
-    width: 640,
+    buttons: [{ label: 'PASTE', value: 'id' }, { label: 'IMPORT CONFIG', value: 'file', cls: 'go' }, { label: 'FIND', value: 'server' }, { spacer: true }, { label: 'CANCEL', value: null }],
+    width: 520,
+    onOpen: c => {
+      const tips = ['PASTE: the SESSION ID the MASTER sent (SYNCTHING session)', 'IMPORT CONFIG: open the .filosync file the MASTER sent', 'FIND: look for the config the MASTER left in a folder of a server of your sites (DUAL SYNC, S-FTP)', ''];
+      c.querySelectorAll('.m-btns button').forEach((b, i) => { if (tips[i]) b.dataset.tip = tips[i]; });
+    },
   });
   if (!how) return;
   if (how === 'id') return pasteDirectId();
@@ -3514,29 +3803,83 @@ async function importSync() {
 // offered here (a folder to choose).
 async function pasteDirectId() {
   const text = await dialog({
-    title: 'Paste the MASTER\'s SYNCTHING ID',
-    sub: 'The MASTER shows it in its LIVE SYNC view (REMOTE COMPUTER), or in right-click LIVE SYNC (side bar) → Sessions… → THIS COMPUTER. SYNCTHING sessions only: a DUAL SYNC session goes by its config file.',
-    html: '<div class="field"><label>SYNCTHING ID of the MASTER</label><input id="pid-text" class="mono" spellcheck="false" autocomplete="off" placeholder="XXXXXXX-XXXXXXX-XXXXXXX-XXXXXXX-…"></div>',
+    title: 'Paste the SESSION ID',
+    html: '<div class="field"><input id="pid-text" class="mono" spellcheck="false" autocomplete="off" placeholder="XXXXXXX-XXXXXXX-…/filo-…"></div>',
     buttons: [{ label: 'CANCEL', value: null }, { spacer: true }, { label: 'CONNECT', cls: 'go', value: c => c.querySelector('#pid-text').value.trim() || undefined }],
-    width: 600, focus: '#pid-text',
+    width: 560, focus: '#pid-text',
   });
   if (!text) return;
   const r = await API.directJoin(text);
   if (!r.ok) return errorBox('Not connected', r.error);
-  // The MASTER's answer, then its session, arrive in the sessions window.
-  if (!$('ov-sync').classList.contains('open')) await openSync();
   sy.pairs = r.pairs; sy.status = r.status || {};
   if (r.myId) sy.myId = r.myId;
-  renderSyncList(); renderSyncBtn();
-  await dialog({
-    title: 'Asked to the MASTER',
-    sub: `On the MASTER, filo now shows that this computer wants to connect (its ID starts with <b class="mono">${esc(shortDev(r.myId))}</b>). It accepts it and chooses the session to share. The session is then offered here: accept it, and choose your folder. Both filo must stay open meanwhile.`,
-    buttons: [{ spacer: true }, { label: 'OK', value: true, cls: 'go' }],
+  renderSyncBtn();
+  return waitForMaster(r.id, r.folder);
+}
+// The wait (Noar, 13/10/2026): the SLAVE chooses its folder meanwhile, and
+// sees where things stand, with the time going by: the MASTER reached, its
+// approval, the session opening. With a SESSION ID the session is made here
+// as soon as the folder is chosen; with a SYNCTHING ID alone, the MASTER's
+// offer is taken in that folder as soon as it comes.
+async function waitForMaster(id, folder) {
+  const t0 = Date.now();
+  // over: the window answered (CANCEL or open). Each step checks it after
+  // waiting on main: a step in flight never comes back to life, never makes
+  // the session after CANCEL, never closes another window.
+  let timer = null, joined = false, busy = false, over = false;
+  const STEP = (n, label, now) => `<div class="jw-step${now ? ' now' : ''}${n ? ' ok' : ''}"><i>${n ? I.check : now ? '<span class="jw-spin"></span>' : ''}</i>${label}</div>`;
+  const res = await dialog({
+    title: 'Waiting for MASTER approval…',
+    html: `${localPickHtml()}<div class="jw" id="jw"></div>`,
+    buttons: [{ label: 'CANCEL', value: null }],
+    width: 560, focus: '#syi-local', tag: 'join',
+    onOpen: c => {
+      bindLocalPick(c);
+      const tick = async () => {
+        if (over) return;
+        const st = await API.directJoinState(id, folder || '');
+        if (over || dialogTag !== 'join') return;
+        const local = c.querySelector('#syi-local').value.trim();
+        const secs = Math.round((Date.now() - t0) / 1000);
+        // With a folder chosen: make the session (SESSION ID), or take the offer.
+        if (local && !busy && !joined) {
+          if (folder && !st.pairId) { busy = true; const r = await API.directJoinSession({ id, folder, local }); busy = false; if (r.ok) { joined = true; sy.pairs = r.pairs; sy.status = r.status || sy.status; } else toast(r.error, true); }
+          else if (!folder && st.offer) {
+            busy = true;
+            const r = await API.directOfferAccept({ folderId: st.offer.folderId, deviceId: st.offer.deviceId, local, name: st.offer.name });
+            busy = false;
+            // From now on, this session only (an older one with the same
+            // computer never counts as "open").
+            if (r.ok) { joined = true; folder = st.offer.folderId; sy.pairs = r.pairs; sy.status = r.status || sy.status; } else toast(r.error, true);
+          }
+          if (over || dialogTag !== 'join') return;
+        }
+        if (st.pairId) joined = true;
+        const approved = !!(st.offer || (st.pairId && st.working));
+        const el = c.querySelector('#jw'); if (!el) return;
+        el.innerHTML = STEP(st.connected, st.connected ? `MASTER reached${st.via ? ` (${st.via === 'lan' ? 'local network' : st.via === 'relay' ? 'through a relay' : 'internet'})` : ''}` : 'Looking for the MASTER…', !st.connected)
+          + STEP(approved, approved ? 'Approved by the MASTER' : 'Waiting for the MASTER to accept this computer…', st.connected && !approved)
+          + STEP(joined && st.working, !local ? 'Choose your folder above' : st.working ? 'Session open' : 'Opening the session…', approved && !st.working)
+          + `<div class="jw-time">${fmtDur(secs)}${!st.connected && secs > 60 ? ' · filo must be open on the MASTER, both computers online' : st.connected && !approved && secs > 30 ? ' · on the MASTER, filo asks to accept this computer' : ''}</div>`;
+        if (joined && st.working) { if (!over && dialogTag === 'join') closeDialog('done'); return; }
+        if (!over) timer = setTimeout(tick, 1500);
+      };
+      tick();
+    },
   });
+  over = true;
+  clearTimeout(timer);
+  if (res === 'done') {
+    await loadSync();
+    const p = sy.pairs.find(x => x.peer && x.peer.id === id && (!folder || x.folderId === folder));
+    if (p) { sy.liveSel = p.id; sy.liveHidden = false; API.directFast(true); }
+    renderSyncBtn(); renderLive();
+    toast('Session open');
+  } else if (!joined) toast('Still asked on the MASTER: paste the SESSION ID again later to go on.');
 }
 // FAILSAFE: the bookmark and the S-FTP folder where the MASTER left its session.
 async function findOnServer() {
-  if (!state.sites.length) { errorBox('No bookmark', 'Add the server in the site manager (SITES) first, with its password or key.'); return null; }
+  if (!state.sites.length) { errorBox('No bookmark', 'Add the server in the BOOKMARKS window first, with its password or key.'); return null; }
   let cur = null;
   return dialog({
     title: 'Find the session on a server',
@@ -3559,7 +3902,7 @@ function serverKv(sv, remote, r) {
   return `<div class="sy-kv"><div class="k">Server</div><div class="v mono">${esc(PROTO_INFO[sv.protocol][0])} · ${esc(sv.user ? sv.user + '@' : '')}${esc(sv.host)}:${esc(sv.port)}</div>
     <div class="k">S-FTP folder</div><div class="v mono">${esc(remote)}</div>
     <div class="k">Identity</div><div class="v">${idText}</div>
-    ${r.site ? `<div class="k">Bookmark</div><div class="v">${esc(r.site.name)} (already in your sites)</div>` : ''}</div>`;
+    ${r.site ? `<div class="k">Bookmark</div><div class="v">${esc(r.site.name)} (already in your bookmarks)</div>` : ''}</div>`;
 }
 function localPickHtml() {
   return `<div class="field"><label>Your local folder</label><div class="inline"><input id="syi-local" spellcheck="false" placeholder="the folder where this session lives on this computer"><button class="ibtn ins" id="syi-pick" data-tip="Choose the folder" aria-label="Choose the folder">${I.folder}</button></div></div>`;
@@ -3709,6 +4052,7 @@ function renderStQueue() {
   // The SYNCTHING queue in its mode's colour (SYNCTHING blue, DUAL SYNC blue to violet).
   const QC = QUEUE_COLORS[p.via] || QUEUE_COLORS.direct;
   $('st-panel').style.setProperty('--q-fill', QC.fill);
+  $('st-panel').style.setProperty('--q-color', QC.c);
   const peer = p.peer ? splitDev(p.peer.name).name || shortDev(p.peer.id) : 'the remote computer';
   // PAUSE / RESUME (Noar, 12/10/2026), as the FTP queue's buttons.
   const held = (sy.status[p.id] || {}).state === 'held';
@@ -3719,20 +4063,26 @@ function renderStQueue() {
   if (hb.dataset.k !== hk) { hb.dataset.k = hk; hb.innerHTML = I[hk]; }
   hb.setAttribute('aria-label', held ? 'Resume' : 'Pause');
   hb.dataset.tip = held ? 'RESUME: SYNCTHING moves the files again' : 'PAUSE: SYNCTHING stops moving files on this computer, the session stays connected. RESUME carries on where it stopped (filo restarted resumes it).';
+  // One line per file (Noar, 13/10/2026): its %, which way (SEND to the
+  // other computer, RECEIVE from it), its name and folder, its size, its
+  // state; a thin bar under the line. Only what is still to move: like the
+  // FTP queue, the list empties as files arrive.
   const row = it => {
-    const up = it.dir === 'up', done = it.status === 'done', failed = it.status === 'failed';
-    const pct = done ? 100 : it.size ? Math.min(100, (it.done || 0) * 100 / it.size) : 0;
-    const badge = failed ? '<span class="badge r">Failed</span>' : done ? `<span class="badge g">${up ? 'Sent' : 'Received'}</span>` : it.status === 'running' ? `<span class="badge g">${up ? 'Sending' : 'Receiving'}</span>` : '<span class="badge n">Queued</span>';
+    const up = it.dir === 'up', failed = it.status === 'failed', run = it.status === 'running';
+    const pct = it.size ? Math.min(100, (it.done || 0) * 100 / it.size) : 0;
     const i = it.rel.lastIndexOf('/'), name = it.rel.slice(i + 1), dir = i > 0 ? it.rel.slice(0, i) : '';
-    return `<div class="qrow${done ? ' dim' : ''}"><div class="qr-top"><span class="pc">${it.status === 'queued' ? '' : fmtPct(pct)}</span><span class="dirc">${up ? ST_UP : ST_DOWN}</span>
-      <span class="nm" data-tip="${esc(it.rel)}">${esc(name)}</span><span class="meta">${esc([it.size ? fmtSize(it.size) : '', (up ? 'to ' : 'from ') + peer].filter(Boolean).join(' · '))}</span><span class="st">${badge}</span></div>
-      <div class="qbar"><i class="${failed ? 'r' : ''}" style="width:${pct.toFixed(2)}%"></i></div>
-      <div class="qr-sub"><span class="l">${esc(dir || '/')}</span>${it.at ? `<span class="tm">${fmtTime(it.at)}</span>` : ''}</div></div>`;
+    const badge = failed ? '<span class="badge r">Failed</span>' : run ? `<span class="badge g">${up ? 'Sending' : 'Receiving'}</span>` : '<span class="badge n">Queued</span>';
+    return `<div class="strow${run ? ' run' : ''}"><span class="pc">${run ? fmtPct(pct) : ''}</span>
+      <span class="way ${up ? 'up' : 'down'}" data-tip="${up ? `Sent from this computer to ${esc(peer)}` : `Received from ${esc(peer)}`}">${up ? `SEND ${ST_UP}` : `${ST_DOWN} RECEIVE`}<b>${esc(peer)}</b></span>
+      <span class="nm" data-tip="${esc(it.rel)}">${esc(name)}</span><span class="fd">${esc(dir ? dir + '/' : '')}</span>
+      <span class="sz">${it.size ? esc(fmtSize(it.size)) : ''}</span><span class="st">${badge}</span>
+      ${run || failed ? `<i class="bar${failed ? ' r' : ''}" style="width:${pct.toFixed(2)}%"></i>` : ''}</div>`;
   };
   const moving = q.items.filter(x => x.status === 'running'), waiting = q.items.filter(x => x.status !== 'running');
   const left = q.items.reduce((a, x) => a + Math.max(0, (x.size || 0) - (x.done || 0)), 0);
-  setHTML($('st-stats'), q.items.length ? esc(`${moving.length} moving · ${waiting.length} waiting · ${fmtSize(left)} left`) : '');
-  setHTML($('st-list'), q.items.length || q.done.length ? q.items.concat(q.done).map(row).join('') : `<div class="st-empty">${held ? 'Paused: nothing moves until RESUME.' : 'Nothing to sync: both computers are up to date.'}</div>`);
+  const sent = q.done.filter(x => x.status === 'done').length;
+  setHTML($('st-stats'), q.items.length || sent ? esc([q.items.length ? `${moving.length} moving · ${waiting.length} waiting · ${fmtSize(left)} left` : '', sent ? `${sent} done lately` : ''].filter(Boolean).join(' · ')) : '');
+  setHTML($('st-list'), q.items.length ? q.items.map(row).join('') : `<div class="st-empty">${held ? 'Paused: nothing moves until RESUME.' : !p.peer ? 'No remote computer yet: nothing moves until it joins the session.' : 'Nothing to sync: both computers are up to date.'}</div>`);
 }
 function setHTML(el, html) { if (el && el._h !== html) { el._h = html; el.innerHTML = html; } }
 // MODE sits at the same place in both views: the quick bar, or the head of
@@ -3749,17 +4099,29 @@ function placeMode() {
   bs.classList.toggle('hy', via === 'hybrid');
   $('btn-sync').dataset.tip = live ? 'LIVE SYNC: new session, import, connect, sessions (right-click: the same menu)' : connectedPairs().length ? 'Show the LIVE SYNC view (right-click: new session, import, connect)' : 'LIVE SYNC: no session connected (new, import, connect)';
 }
+// The ring alone (Noar, 13/10/2026): the window shrinks to LIVE SYNC's ring;
+// back to the full window as it was.
+async function setMini(on) {
+  if (on) {
+    if (!connectedPairs().length) return toast('No LIVE SYNC session connected.', true);
+    sy.liveHidden = false; renderLive(); API.directFast(true);
+  }
+  document.body.classList.toggle('mini', on);
+  if (!on) { $('lv-mini-pin').classList.remove('on'); }
+  await API.winMini(on);
+  renderLive();
+}
 function renderLive() {
   const on = connectedPairs();
   const show = on.length > 0 && !sy.liveHidden;
   document.body.classList.toggle('live-on', show);
   placeMode();
-  if (!show) { document.body.classList.remove('live-st'); return; }
+  if (!show) { document.body.classList.remove('live-st'); if (document.body.classList.contains('mini')) setMini(false); return; }
   if (!on.some(p => p.id === sy.liveSel)) sy.liveSel = on[0].id;
   const p = on.find(x => x.id === sy.liveSel);
   const st = sy.status[p.id] || {};
   const mode = sessionMode(p);
-  setHTML($('lv-tabs'), on.length > 1 ? on.map(x => `<button data-id="${esc(x.id)}" class="${x.id === p.id ? 'on' : ''}${sessionError(x) ? ' err' : ''}">${esc(x.name)}</button>`).join('') : `<span class="lv-name">${esc(p.name)}</span>`);
+  setHTML($('lv-tabs'), on.length > 1 ? on.map(x => `<button data-id="${esc(x.id)}" class="${x.id === p.id ? 'on' : ''}${x.via === 'server' ? ' sf' : ''}${sessionError(x) ? ' err' : ''}">${esc(x.name)}</button>`).join('') : `<span class="lv-name">${esc(p.name)}</span>`);
   // Another computer waiting for an answer.
   const pd = sy.direct.pending || { devices: [], folders: [] };
   setHTML($('lv-ask'), askHtml(pd));
@@ -3769,12 +4131,17 @@ function renderLive() {
     sy.myIdAsk = true;
     API.directInfo(false).then(r => { if (r && r.id) { sy.myId = r.id; sy.myIdAsk = false; renderLive(); } else setTimeout(() => { sy.myIdAsk = false; renderLive(); }, 3000); });
   }
+  $('lv-mini-name').textContent = p.name;
   setHTML($('lv-local'), localCard(p, st));
   renderStQueue();
   renderMid(p);
   setHTML($('lv-remote'), remoteCard(p, st));
   if ($('lv-code')) $('lv-code').onclick = () => showShareInfo(p);
   setHTML($('lv-modeb'), modeBadge(p, st));
+  { const on = isOn(p), b = $('lv-disc');
+    b.classList.toggle('on', !on);
+    b.innerHTML = `${on ? I.unplug : I.plugged}${on ? 'DISCONNECT' : 'CONNECT'}`;
+    b.dataset.tip = on ? 'Disconnect this session: nothing more moves until you connect it again. No file is touched.' : 'Connect this session again'; }
   // This computer's trash (SYNCTHING): its size, every 10 s per session.
   if (p.via !== 'server' && Date.now() - (sy.trashAt[p.id] || 0) > 10000) {
     sy.trashAt[p.id] = Date.now();
@@ -3803,7 +4170,7 @@ function modeBadge(p, st) {
   const m = modeState(p, st);
   const cls = { direct: 'm-direct', hybrid: 'm-hybrid', server: 'm-server' }[p.via];
   const parts = p.via === 'hybrid' ? ` (SYNCTHING ${p.auto ? 'on' : 'off'}, S-FTP BACKUP ${p.fsAuto ? 'on' : 'off'})` : '';
-  const tip = !m.on ? `Disconnected${parts}: click to connect` : m.bad ? `Connected, but ${m.bad}${parts}: click to ${p.via === 'hybrid' ? 'choose' : 'disconnect (confirmed)'}` : `Connected${parts}: click to ${p.via === 'hybrid' ? 'choose' : 'disconnect (confirmed)'}`;
+  const tip = !m.on ? `Disconnected${parts}: click to connect` : m.bad ? `Connected, but ${m.bad}${parts}: click to ${p.via === 'hybrid' ? 'connect or disconnect each way' : 'disconnect (confirmed)'}` : `Connected${parts}: click to ${p.via === 'hybrid' ? 'connect or disconnect each way' : 'disconnect (confirmed)'}`;
   return `<button class="badge lv-modeb ${cls}" data-tip="${esc(tip)}"><span class="st ${!m.on ? 'off' : m.bad ? 'warn' : 'on'}">${m.on ? I.plugged : I.unplug}</span>${MODE_NAME[p.via]}</button>`;
 }
 async function onModeBadge() {
@@ -3825,21 +4192,40 @@ async function onModeBadge() {
 async function onConnSwitch(on, w) {
   const p = sy.pairs.find(x => x.id === sy.liveSel);
   if (!p) return;
-  const what = w === 'st' ? 'Syncthing' : w === 'fs' ? 'the S-FTP BACKUP' : 'this S-FTP session';
-  // Connecting: one click. Disconnecting: confirmed (Noar, 12/10/2026).
-  if (on && !(await confirmBox(`Disconnect ${what}?`, 'Nothing more goes this way until you connect it again. No file is touched.', 'DISCONNECT', true))) return;
+  // Connecting: one click. Disconnecting: confirmed (Noar, 12/10/2026), with
+  // the same words as DISCONNECT and the menu (review 0.7.2).
+  const title = w === 'st' ? `Disconnect SYNCTHING of “${p.name}”?` : w === 'fs' ? `Disconnect the S-FTP BACKUP of “${p.name}”?` : `Disconnect “${p.name}”?`;
+  if (on && !(await confirmBox(title, w ? 'Nothing more goes this way until you connect it again. No file is touched.' : 'Nothing more is synced until you connect it again. No file is touched.', 'DISCONNECT', true))) return;
   const r = await API.syncConnect(p.id, !on, w);
   if (!r.ok) return toast(r.error, true);
   sy.pairs = r.pairs; sy.status = r.status || {};
   renderSyncBtn(); renderLive();
 }
 // A SYNCTHING ID, whole, with COPY and EXPORT (Noar, 11/10/2026).
+// The SESSION ID (Noar, 13/10/2026): this computer's SYNCTHING ID and the
+// session, what the SLAVE pastes. Asked once per session.
+function sessionIdBlock(p) {
+  const sid = (sy.sessionIds || (sy.sessionIds = {}))[p.id];
+  // Asked again every 2 s while SYNCTHING is starting (no ID yet): an empty
+  // answer is never kept (it left "…" until filo restarted).
+  if (sid === undefined) {
+    sy.sessionIds[p.id] = null;
+    API.directSessionId(p.id).then(v => {
+      if (v) { sy.sessionIds[p.id] = v; renderLive(); }
+      else setTimeout(() => { if (sy.sessionIds[p.id] === null) delete sy.sessionIds[p.id]; renderLive(); }, 2000);
+    });
+  }
+  if (!sid) return '<div class="sy-dim">…</div>';
+  return `<div class="lv-id"><div class="t"><div class="k">SESSION ID</div><div class="v mono">${esc(sid)}</div></div>
+    <div class="b"><button class="ibtn ins" data-idact="copy-session" data-id="${esc(sid)}" data-tip="Copy the SESSION ID" aria-label="Copy the SESSION ID">${I.copy}</button></div></div>`;
+}
 function idBlock(id, name) {
   if (!id) return '';
   return `<div class="lv-id"><div class="t"><div class="k">SYNCTHING ID</div><div class="v mono">${esc(id)}</div></div>
     <div class="b">${[['copy', I.copy, 'Copy the ID'], ['export', I.exportFile, 'Export the ID to a text file']].map(([a, ic, tip]) => `<button class="ibtn ins" data-idact="${a}" data-id="${esc(id)}" data-name="${esc(name || '')}" data-tip="${tip}" aria-label="${tip}">${ic}</button>`).join('')}</div></div>`;
 }
 async function idAction(act, id, name) {
+  if (act === 'copy-session') { API.copyText(id); toast('SESSION ID copied: send it to the other computer'); return; }
   if (act === 'copy') { API.copyText(id); toast('SYNCTHING ID copied'); return; }
   const r = await API.directIdShare({ id, name, how: act });
   if (!r.ok) { if (!r.cancelled) toast(r.error, true); return; }
@@ -3876,9 +4262,9 @@ function remoteCard(p, st) {
     // file only (it carries the server).
     const quick = p.via === 'direct' && !isSlave(p);
     return `<div class="lv-who">${SY_PC}<span>REMOTE COMPUTER</span></div><div class="lv-host"><span class="lv-state bad alone" data-tip="No remote computer yet: send it what is below">NOT LINKED YET</span></div>
-      ${quick ? `<div class="lv-link"><div class="k">SEND IT THIS COMPUTER'S SYNCTHING ID</div>
-        ${sy.myId ? idBlock(sy.myId, (sy.me || {}).name) : '<div class="sy-dim">…</div>'}
-        <div class="hint">There: right-click LIVE SYNC (side bar) → Import session as SLAVE → PASTE A SYNCTHING ID. Then filo asks you here to accept it, and which session to share: this one.</div></div>
+      ${quick ? `<div class="lv-link"><div class="k">SEND IT THE SESSION ID</div>
+        ${sessionIdBlock(p)}
+        <div class="hint">There: right-click LIVE SYNC (side bar) → Import session as SLAVE → PASTE. Accept it here when filo asks.</div></div>
         <div class="lv-or">OR</div>` : `<div class="lv-note">${p.via === 'hybrid' ? 'Save the config file and send it to the remote computer (it carries the S-FTP BACKUP). There: right-click LIVE SYNC (side bar) → Import session as SLAVE. Then accept it here.' : 'Send the config file to the remote computer. There: right-click LIVE SYNC (side bar) → Import session as SLAVE. Then accept it here.'}</div>`}
       <button class="ibtn ins lab" id="lv-code" data-tip="Save the config file to send to the remote computer">${I.share}<span>CONFIG FILE</span></button>${p.via === 'hybrid' ? serverCard(p, st.server || {}, true) : ''}`;
   }
@@ -3887,7 +4273,7 @@ function remoteCard(p, st) {
   // Its role, in the colour of the link (Noar, 12/10/2026): green and plugged
   // when connected, red and unplugged when not.
   const on = !!(peer && peer.connected);
-  const why = on ? 'Connected' : !p.auto ? 'Disconnected: Syncthing is switched off' : 'Disconnected: is filo open there, and the computer online?';
+  const why = on ? 'Connected' : !p.auto ? 'Disconnected: SYNCTHING is switched off' : 'Disconnected: is filo open there, and the computer online?';
   return `<div class="lv-who">${SY_PC}<span>REMOTE COMPUTER</span></div>
     <div class="lv-host"><span>${esc(n.name || shortDev(p.peer.id))}</span><span class="lv-state ${on ? 'ok' : 'red'}" data-tip="${esc(otherRole(p) + ' · ' + why)}">${on ? I.plugged : I.unplug}${otherRole(p)}</span></div>
     ${idBlock(p.peer.id, n.name)}
@@ -3916,7 +4302,7 @@ function serverCard(p, st, failsafe) {
   const mirrorUse = isSlave(p) ? 'standby (the MASTER writes the backup)'
     : mirrorNow ? 'copying to the backup'
     : st.state === 'mirrored' ? 'backup up to date'
-    : 'waits for Syncthing to finish';
+    : 'waits for SYNCTHING to finish';
   // Connected: switched on, and the last look at the server went well.
   const on = (failsafe ? p.fsAuto : p.auto) && st.state !== 'error';
   const why = !(failsafe ? p.fsAuto : p.auto) ? 'Switched off' : st.state === 'error' ? (st.error || 'The server is in error') : '';
@@ -4172,6 +4558,16 @@ function bindSync() {
     if (connectedPairs().length) { sy.liveHidden = false; renderLive(); API.directFast(true); return; }
     onSyncBtn();                                          // nothing connected: new, import, connect
   };
+  // The ring alone, and back.
+  // DISCONNECT (review 0.7.2): one meaning everywhere, the whole session,
+  // confirmed, the same as the LIVE SYNC menu. Each way of a DUAL SYNC: the
+  // mode badge. A session switched off: the same button connects it.
+  $('lv-disc').onclick = () => { const p = sy.pairs.find(x => x.id === sy.liveSel); if (p) menuConnect(p, !isOn(p)); };
+  $('lv-mini').onclick = () => setMini(true);
+  $('lv-mini-back').onclick = () => setMini(false);
+  $('lv-mid').addEventListener('dblclick', () => { if (document.body.classList.contains('mini')) setMini(false); });
+  $('lv-mini-pin').onclick = async () => { const on = !$('lv-mini-pin').classList.contains('on'); await API.winPin(on); $('lv-mini-pin').classList.toggle('on', on); };
+  $('lv-mini-tray').onclick = () => API.winToTray();
   // The LIVE SYNC menu: a click on LIVE SYNC once its view is shown, or a right-click.
   $('btn-sync').oncontextmenu = ev => { ev.preventDefault(); onSyncBtn(); };
   $('st-hold').onclick = async () => {
@@ -4192,7 +4588,9 @@ function bindSync() {
   $('sy-save').onclick = async () => { if (await saveSync()) toast('Saved'); };
   $('sy-run').onclick = async () => {
     const d = sy.draft;
-    if (d && d.id && d.auto) { if (await saveSync()) { toast('Saved'); closeSync(); renderLive(); } return; }
+    // Same test as the label: SAVE on a session that runs only saves (a DUAL
+    // SYNC with SYNCTHING off and its S-FTP BACKUP on stays so).
+    if (d && d.id && isOn(sy.pairs.find(x => x.id === d.id))) { if (await saveSync()) { toast('Saved'); closeSync(); renderLive(); } return; }
     connectSync();
   };
   $('sy-delete').onclick = () => { if (sy.draft && sy.draft.id) deleteSession(sy.draft.id); };
@@ -4216,6 +4614,7 @@ function bindSync() {
   $('lv-ask').addEventListener('click', ev => { const b = ev.target.closest('[data-ask]'); if (b) onAsk(b.dataset.ask, +b.dataset.i); });
   $('live').addEventListener('click', ev => { const b = ev.target.closest('[data-idact]'); if (b) idAction(b.dataset.idact, b.dataset.id, b.dataset.name); });
   setInterval(sampleLive, 1000);
+  API.on('connect-step', e => connStep(e && e.step));
   API.on('sync-status', ({ id, status }) => {
     sy.status[id] = status;
     renderSyncBtn(); renderLive();
@@ -4234,6 +4633,14 @@ function bindSync() {
     const before = pendingCount();
     sy.direct.pending = p;
     if (pendingCount() > before) toast(p.devices.length ? `SYNCTHING: ${splitDev(p.devices[p.devices.length - 1].name).name || 'a computer'} wants to connect` : 'SYNCTHING: a session is offered (LIVE SYNC)');
+    // A computer asking to connect: the MASTER is asked at once, wherever it
+    // is in filo (a badge alone was easy to miss: "the invitation never came").
+    for (const d of p.devices) {
+      if ((sy.asked || (sy.asked = new Set())).has(d.id)) continue;
+      sy.asked.add(d.id);
+      const i = sy.direct.pending.devices.findIndex(x => x.id === d.id);
+      if (i >= 0) onAsk('accept', i);
+    }
     renderSyncBtn(); renderLive();
     if ($('ov-sync').classList.contains('open')) renderSyncList();
   });
@@ -4290,7 +4697,7 @@ async function init() {
     ev.stopPropagation();
     const r = $('btn-after').getBoundingClientRect();
     const st = state.settings, cmd = (st.hookCommand || '').trim();
-    showMenu(Math.max(10, r.left), r.bottom + 6, [{ head: 'When the queue finishes' }]
+    showMenu(Math.max(10, r.right - 250), r.bottom + 6, [{ head: 'When the queue finishes' }]
       .concat(cmd ? [{ label: `Run my command first (${cmd.split(/\s+/)[0].split(/[\\/]/).pop()})`, radio: true, on: !!st.hookEnabled, action: async () => { await saveSettings({ hookEnabled: !st.hookEnabled }); renderAfterBtn(); } }]
         : [{ label: 'Run a command first… (Settings)', icon: I.plus, action: () => openSettings().then(() => { const e = $('st-hook-cmd'); if (e) { e.scrollIntoView({ block: 'center' }); e.focus(); } }) }], ['sep'])
       .concat(['none', 'quit', 'sleep', 'shutdown'].map(v => ({
@@ -4382,6 +4789,7 @@ async function init() {
       case 'disconnect': return disconnect();
       case 'sites-import': openSites(); return importSites();
       case 'sites-export': return Promise.resolve(openSites()).then(() => setTimeout(() => $('sm-export').click(), 60));
+      case 'mini': return setMini(!!m.value);
       case 'queue-start': return playQueue();
       case 'queue-pause': refreshAfterStop(new Set(['up', 'down'])); return API.queuePause();
       case 'queue-retry': return retryItems([]);

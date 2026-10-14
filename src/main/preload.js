@@ -38,6 +38,9 @@ const api = {
   localList   : (dir)         => inv('local-list', dir),
   localRoots  : ()            => inv('local-roots'),
   localPlaces : ()            => inv('local-places'),
+  winMini     : (on)          => inv('win-mini', !!on),
+  winPin      : (on)          => inv('win-pin', !!on),
+  winToTray   : ()            => inv('win-to-tray'),
   localMkdir  : (dir, name)   => inv('local-mkdir', dir, name),
   localRename : (from, name)  => inv('local-rename', from, name),
   localMove   : (paths, target) => inv('local-move', paths, target),
@@ -50,6 +53,11 @@ const api = {
 
   connect     : (req)         => inv('connect', req),
   disconnect  : ()            => inv('disconnect'),
+  connectCancel: ()           => inv('connect-cancel'),
+  speedtestRun: (req)         => inv('speedtest-run', req),
+  speedtestCancel: ()         => inv('speedtest-cancel'),
+  speedtestList: (req)        => inv('speedtest-list', req),
+  speedtestSave: (siteId)     => inv('speedtest-save', siteId),
   quickClear  : ()            => inv('quick-clear'),
   endpointPassword: (id, pw)  => inv('endpoint-password', id, pw),
 
@@ -74,6 +82,9 @@ const api = {
   directOfferAccept: (req)    => inv('direct-offer-accept', req),
   directOfferDismiss: (req)   => inv('direct-offer-dismiss', req),
   directJoin  : (text)        => inv('direct-join', text),
+  directSessionId: (id)       => inv('direct-session-id', id),
+  directJoinState: (id, f)    => inv('direct-join-state', id, f),
+  directJoinSession: (req)    => inv('direct-join-session', req),
   directFast  : (on)          => inv('direct-fast', !!on),
   directHold  : (id, on)      => inv('direct-hold', id, !!on),
   hookTest    : (cmd)         => inv('hook-test', cmd),
@@ -120,7 +131,7 @@ const api = {
 
   on: (channel, cb) => {
     const allowed = ['queue-progress', 'queue-changed', 'queue-state', 'queue-ask', 'queue-ask-closed', 'queue-blocked',
-      'queue-finished', 'log', 'scan-progress', 'delete-progress', 'menu', 'update-available', 'sync-status', 'sync-pairs', 'direct-pending', 'live-queue', 'hook-start', 'queue-scheduled', 'compare-progress'];
+      'queue-finished', 'log', 'scan-progress', 'delete-progress', 'menu', 'update-available', 'sync-status', 'sync-pairs', 'direct-pending', 'live-queue', 'hook-start', 'queue-scheduled', 'compare-progress', 'connect-step', 'speedtest-event'];
     if (!allowed.includes(channel)) throw new Error('Unknown channel ' + channel);
     const h = (_, payload) => cb(payload);
     ipcRenderer.on(channel, h);

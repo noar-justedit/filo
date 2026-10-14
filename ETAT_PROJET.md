@@ -6,6 +6,37 @@
 
 ## 1. État actuel
 
+- **0.8.1 (14/10/2026)** : correctif du speedtest sur NAS (« Permission denied » :
+  la racine du serveur n'est pas inscriptible). Bookmark sur la racine : filo
+  demande un dossier (sélecteur « Folder for the speed test », via IPC
+  `speedtest-list`, une connexion courte par navigation). Bookmark avec dossier :
+  sonde d'écriture (petit fichier créé puis supprimé) ; refus : choix entre
+  test en réception seule (lit les plus gros fichiers du dossier, n'écrit rien,
+  `readOnly`) et annuler. Codes d'erreur du moteur : `PICK_DIR`, `READONLY`,
+  `NO_FILE`. Tests : **732 (+18 FTP réels)** verts, un passage complet ; flux
+  mot de passe, choix de dossier et test complet manipulés dans l'app réelle.
+  Pas essayé sur le vrai NAS de Noar ni sur FTP / FTPS ; la fenêtre « Read-only
+  folder » n'a été testée que côté logique. Le dossier choisi n'est pas mémorisé
+  dans le bookmark (à proposer à Noar si besoin). Un profil enregistré après un
+  test en réception seule garde l'ancien chiffre d'envoi (même réseau).
+- **0.8.0 (13/10/2026)** : speedtest des bookmarks (profil de vitesse),
+  connexion visible (étapes, chrono, CANCEL), onglets en haut de fenêtre
+  (BOOKMARKS en icône, FTP MODE, LIVE SYNC MODE) à la place du rail, SITES
+  devient BOOKMARKS. Tests : **720 (+18 FTP réels)** verts, un passage complet ;
+  le speedtest, la connexion lente et le CANCEL ont été manipulés dans l'app
+  réelle (Playwright, serveur SFTP, relais avec délai). Voir la section
+  « Speedtest, connexion visible et en-tête (0.8.0) ». Pas essayé sur un vrai
+  serveur FTP / FTPS (aucun dans l'environnement de test).
+- **0.7.2 (13/10/2026)** : bookmarks LIVE SYNC dans SITES, SESSION ID (le
+  SLAVE crée la session et l'offre, le MASTER la lie seul), l'anneau seul et
+  l'icône de barre des menus / notification, DISCONNECT, queue SYNCTHING
+  qui se vide ; revue A à E : rien de local perdu (téléchargement toujours
+  en `.filopart`, fichier remplacé par la synchro S-FTP dans `.filo-trash`,
+  préférences reprises du `.bak`), attente du MASTER corrigée, textes
+  harmonisés (voir « Prochaines étapes », point 0000). Tests : **672 (+18
+  FTP réels)** verts, deux passages complets ; maquette cliquable faite sur
+  l'app réelle (Playwright). Pas encore essayé entre deux vrais filo : le
+  parcours SESSION ID.
 - **0.7.1 (13/10/2026)** : raccourcis du panneau local (Bureau,
   Téléchargements, menu des disques ; voir « Prochaines étapes », point 000).
   Tests : **652 (+18 FTP réels)** verts.
@@ -21,6 +52,58 @@
   (menus, nouveau dossier, renommage, duplication et suppression d'un
   dossier, glisser vers la zone vide et dans un dossier, réouverture après
   un redémarrage), pas par un test automatique.
+
+### Speedtest, connexion visible et en-tête (0.8.0, demandes de Noar)
+- **En-tête** : `#t-tabs` dans `#titlebar` (les boutons gardent leurs
+  identifiants : `#q-sites` icône seule, `#mode-client` « FTP MODE »,
+  `#btn-sync` « LIVE SYNC MODE »). `#rail` n'existe plus ; la pastille du
+  serveur (`#conn-pill`) et `#btn-settings` (icône) sont dans `.t-actions`.
+  Le mode réduit (anneau seul) cache toujours la barre de titre.
+- **Connexion visible** : les backends envoient leurs étapes par
+  `opts.onStep` (`resolve`, `open`, `secure`, `login`, `folder`), main les
+  transmet (`connect-step`), le renderer les affiche (`cu`, `connStart`,
+  `connStep`, `connEnd`, `renderConnecting`) : pastille orange, barre
+  `#cp-bar`, panneau `#cp-pan` (seulement s'il n'y a pas de connexion en
+  cours d'usage). Plus de 8 s sur une étape : « slow ». CANCEL :
+  `connect-cancel` → `remote.close()`, qui coupe aussi une connexion SFTP
+  encore en train de s'ouvrir (`_pending`). SFTP : l'étape `secure` écoute
+  `conn._sock` d'ssh2 (champ interne, protégé par try/catch ; à revoir si
+  ssh2 est mis à jour). FTP sans TLS n'a pas d'étape `secure`.
+- **Speedtest** (`core/speedtest.js`, `core/netid.js`, fenêtre dans app.js
+  `openSpeedTest`) : ouvre jusqu'à 8 connexions (moins si le site a une
+  limite ou si le serveur refuse : `maxOpen`, `capped`), puis des paliers
+  1, 2, 4, 8 (et le dernier nombre ouvert) en OUT puis en IN, plus un fichier
+  unique en 4 segments en SFTP (`canSegment`). OUT envoie des octets
+  aléatoires dans des fichiers `.filo-speedtest-<id>-…` (512 Mo au plus par
+  connexion et par palier) du dossier de login (`home()`), IN les relit.
+  Débit = octets / temps réel du palier. Suggestion : le plus petit nombre de
+  connexions dont aucun voisin plus grand ne gagne 10 % (`better` d'Auto) ;
+  segments ON si le fichier en segments va 10 % plus vite qu'une connexion.
+  Fichiers supprimés dans tous les cas (fin, échec, annulation).
+- **Profil** (`site.speed` : `at`, `net`, `netLabel`, `out`/`in` =
+  `{conn, seg, mbps, src}`, `latencyMs`, `maxOpen`) : enregistré par SAVE
+  (`speedtest-save`), jamais exporté, effacé si l'hôte, le port, le protocole
+  ou l'utilisateur du site changent. Le réseau (`netid.js`) = sous-réseau +
+  passerelle + adresse matérielle de la passerelle quand le système la donne
+  (relu chaque minute). Pas de réseau reconnu : le profil n'est jamais appliqué.
+- **Application** : `TransferQueue.opts.speedProfile(endpointId, dir)` (main,
+  seulement sur le même réseau). En Auto : `AutoTuner.preset(conn)` une fois
+  par run, au premier fichier (remplace les départs « segments » de `boost` /
+  `startLow`) ; Auto continue de mesurer (un palier de plus doit gagner 10 %).
+  `seg === false` : le fichier est envoyé entier (`settings.segments = false`
+  dans l'unité). Concurrence fixe : le profil n'agit pas.
+- **Mise à jour par un vrai transfert** : `summary.profile` (un serveur, un
+  sens, 100 Mo et 10 s au moins, Auto a mesuré) → `sites.learnFromTransfer` :
+  remplace conn et débit du sens seulement si le débit réel dépasse de plus de
+  5 % celui du profil ; ne crée jamais un profil, ne baisse jamais.
+- **Limites connues** : le test utilise les flux JavaScript, pas le moteur
+  Rust (les débits réels peuvent être plus hauts ; les nombres de connexions
+  restent un bon départ, Auto corrige) ; un serveur qui met en cache ou
+  compresse peut flatter l'IN ; deux réseaux au même sous-réseau, même
+  passerelle et sans adresse matérielle lisible se confondent ; les
+  commandes `route`, `ip`, `arp` sont appelées avec un délai de 1,5 s ;
+  FTP / FTPS : la mesure passe par `upload` / `download` de basic-ftp, essayée
+  sur le serveur SFTP de test seulement.
 
 ### Gestionnaire de sites (12/10/2026, Noar, validé sur une simulation)
 - **Vue retrouvée** : `openSites` reprend le site choisi (`ui.sitesSel`), les
@@ -146,7 +229,7 @@
   refait (section suivante). Tests : **586 (+18 FTP réels)** verts.
 
 ### Barre de connexion et en-tête de file (12/10/2026, demandes de Noar)
-- **0.7.0 : MODE n'existe plus**, remplacé par le rail latéral (`#rail` :
+- **0.7.0 : MODE n'existe plus**, remplacé par le rail latéral (0.8.0 : le rail est remplacé à son tour par les onglets de la barre de titre, mêmes identifiants ; `#rail` :
   `#mode-client` TRANSFER, `#btn-sync` LIVE SYNC, `#q-sites` SITES,
   `#btn-settings` SETTINGS ; `placeMode()` ne fait plus que colorer la vue
   affichée). Le menu LIVE SYNC : clic sur LIVE SYNC quand sa vue est
@@ -1233,6 +1316,73 @@ SmartScreen, débits réels.
 
 ## 11. Prochaines étapes
 
+0000. **Livré en 0.7.2** (Noar, 13/10) :
+   queue SYNCTHING sur une ligne par fichier (`.strow` : %, sens SEND →
+   ou ← RECEIVE avec le nom de l'autre ordinateur, nom, dossier, taille,
+   état, barre fine), et elle se vide au fur et à mesure (les fichiers finis
+   ne sont plus affichés, seulement comptés « done lately ») ; les copies
+   LIVE SYNC de la file FTP disent SEND / RECEIVE et S-FTP BACKUP ou SERVER ;
+   **l'anneau seul** (bouton de la tête de la vue LIVE SYNC, `body.mini`,
+   IPC `win-mini` : fenêtre de 300 × 330, épingle au-dessus des autres,
+   retour à la fenêtre d'avant) ; **icône dans la barre des menus / zone de
+   notification** sur les trois systèmes (`Tray`, `src/main/tray/` :
+   modèle noir sur Mac, anneau turquoise ailleurs ; menu : ouvrir, sessions
+   LIVE SYNC et leur état, l'anneau seul, cacher dans la barre, quitter).
+   Fermer la fenêtre garde le comportement d'avant.
+   Fenêtres simplifiées : « Import session » n'a plus que ses boutons
+   (PASTE, IMPORT CONFIG, FIND, CANCEL ; l'explication au survol) ; après un
+   SESSION ID collé : « Waiting for MASTER approval… » (le SLAVE choisit son
+   dossier pendant l'attente, étapes et chrono).
+   **SESSION ID** (`ID/filo-both-xxxx`, `direct-app.js` sessionId / join /
+   joinState / joinSession) : le SLAVE crée la session tout de suite et
+   l'offre au MASTER, qui la lie seul, même pour un ordinateur déjà accepté
+   (cause de « l'invitation ne vient jamais ») ; le MASTER ouvre de lui-même
+   la demande d'accord d'un nouvel ordinateur. Bouton **DISCONNECT** rouge
+   dans la tête de la vue LIVE SYNC ; bouton « fin de queue » dans la barre
+   de titre (comme syncto). **Bookmarks LIVE SYNC** : dans SITES, un dossier
+   « LIVE SYNC » toujours en tête liste chaque session (fabriqué à partir des
+   sessions, rien de stocké ; clé interne `\u0000live`) ; double-clic : la
+   session dans la vue LIVE SYNC (connexion proposée si elle est coupée) ;
+   clic droit : ouvrir, parcourir son dossier S-FTP, réglages.
+   **Revue du 13/10** (Noar a validé A à E) :
+   A. alignements : `.inline` et `.m-btns` centrés, DISCONNECT aligné.
+   B. LIVE SYNC : l'attente du MASTER s'arrête vraiment à CANCEL (drapeau
+   `over`, fenêtre marquée `join` : elle ne ferme plus une autre fenêtre) ;
+   le SESSION ID est redemandé tant que SYNCTHING n'a pas son ID (il restait
+   sur « … ») ; « Session open » seulement quand le MASTER partage le dossier
+   (`remoteState` de `/rest/db/completion`, `peerShares`, sinon état
+   `waiting`) ; un SYNCTHING ID seul ne retombe plus sur une ancienne session ;
+   le MASTER journalise un second ordinateur qui colle le SESSION ID d'une
+   session déjà liée ; l'anneau seul ne s'enregistre plus comme taille de
+   fenêtre (et une taille trop petite est remontée au minimum), `miniPrev`
+   remis à zéro à la fermeture ; SAVE d'une DUAL SYNC n'allume plus SYNCTHING.
+   C. sécurité : un téléchargement passe **toujours** par `.filopart` (le
+   réglage « temporary files » ne concerne plus que l'envoi : sinon une
+   coupure détruisait le fichier local) ; `preferences.json` et `queue.json`
+   écrits avec fsync, gardés en `.bak` au démarrage, un fichier abîmé est mis
+   de côté (`.corrupt-<date>`) et le `.bak` repris ; `sync-delete` refuse un
+   identifiant inconnu.
+   D. LIVE SYNC S-FTP : un fichier local remplacé par la synchro part d'abord
+   dans `.filo-trash` du dossier de la session (`nom~AAAAMMJJ-HHMMSS.ext`,
+   mêmes sous-dossiers ; `keepOldLocal` dans transfer.js, `sync.trash` posé
+   par syncer.js). Un téléchargement manuel remplace comme demandé. La
+   corbeille n'est jamais vidée par filo (comme celle de SYNCTHING).
+   E. textes : DISCONNECT = toute la session, confirmé, comme le menu (le
+   badge de mode garde le choix voie par voie) ; SESSION ID partout où le
+   SLAVE colle ; plus de « MODE ▾ » dans les fichiers envoyés ; SYNCTHING en
+   capitales pour le mode (Syncthing seulement pour le programme) ; SLAVE en
+   contour, MASTER plein ; onglet violet pour une session S-FTP ; icône
+   « cacher dans la barre » ; infobulles REFUSE / NOT NOW.
+   Aussi : débit sous 1 KB/s arrondi (`fmtSize` affichait
+   « 359.3333333333333 B/s » sur un petit fichier ; Noar, 13/10).
+   Reste de la revue, non traité : tray « The ring alone » quand la fenêtre
+   n'existe pas, double-clic sur l'anneau (zone de déplacement, à tester sur
+   Mac), alerte téléphone d'une DUAL SYNC dont le backup prend le relais,
+   mode mini qui revient en plein écran à la déconnexion, build sans
+   Syncthing (DUAL SYNC en ERROR), dossier changé d'une session SYNCTHING
+   (même folderId), règles « Resume » / « newer » qui écrasent plus que leur
+   nom, `config.xml` de Syncthing non atomique.
+
 000. **Livré en 0.7.1** : raccourcis du panneau
    local (Noar, 13/10) : Bureau, Téléchargements et menu des disques à côté
    du bouton de choix de dossier (`.p-places`, IPC `local-places` :
@@ -1365,6 +1515,9 @@ SmartScreen, débits réels.
 
 | Version | Date | Tests | Contenu principal |
 |---|---|---|---|
+| 0.8.1 | 14/10 | 732 (+18 FTP réels) | Speedtest sur NAS : racine du serveur => sélecteur de dossier ; dossier en lecture seule => test en réception seule ou annuler |
+| 0.8.0 | 13/10 | 720 (+18 FTP réels) | Speedtest des bookmarks (profil par réseau, Auto part de là, mise à jour par un vrai transfert plus rapide) ; connexion visible (étapes, chrono, CANCEL, « slow ») ; onglets BOOKMARKS / FTP MODE / LIVE SYNC MODE en haut à la place du rail ; SITES devient BOOKMARKS |
+| 0.7.2 | 13/10 | 672 (+18 FTP réels) | Bookmarks LIVE SYNC dans SITES ; SESSION ID (invitation qui ne venait pas) ; l'anneau seul et icône de barre des menus ; DISCONNECT ; queue SYNCTHING qui se vide ; revue : téléchargement toujours en `.filopart`, fichier remplacé par LIVE SYNC S-FTP dans `.filo-trash`, préférences reprises du `.bak`, attente du MASTER, textes et alignements |
 | 0.7.1 | 13/10 | 652 (+18 FTP réels) | Panneau local : Bureau, Téléchargements et menu des disques montés (chemins donnés par le système, toutes langues) |
 | 0.7.0 | 13/10 | 650 (+18 FTP réels) | Rail latéral TRANSFER / LIVE SYNC / SITES / SETTINGS ; barre de connexion allégée ; départ de la queue à une heure ; commande après la queue (sans shell, modèle ingesto) ; vérification contre l'autre côté par checksum ; dossiers favoris par serveur ; Quick Look ; LIVE SYNC : fichier en cours dans l'anneau, PAUSE SYNCTHING, ordre alphabétique, alerte ntfy ; FINISHED puis IDLE ; notification de mise à jour comme les autres apps ; « Command line » |
 | 0.6.4 | 12/10 | 608 (+18 FTP réels) | Gestionnaire de sites : vue retrouvée, clic droit (nouveau, renommer, dupliquer, supprimer), bouton NEW FOLDER, dossiers vides, ligne de dépôt droite, zone vide = racine ; dossier « LIVE SYNC » |

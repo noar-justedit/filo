@@ -44,7 +44,7 @@ ensuite, en entier, avant de toucher au code.
 - Format : X.Y.Z.
 
 ### 5. Livraison : le ZIP
-- À chaque bump, fournir `NomDuProjet_vX.Y.Z.zip` (ici `filo_v0.7.1.zip`).
+- À chaque bump, fournir `NomDuProjet_vX.Y.Z.zip` (ici `filo_v0.8.1.zip`).
 - Une fois décompressé, le ZIP correspond exactement à ce que Noar pousse sur GitHub :
   sources, scripts de build, documentation et fichiers de suivi.
 - Le ZIP ne contient pas :

@@ -16,7 +16,7 @@
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
-const { app, BrowserWindow, ipcMain, dialog, shell, Menu, powerSaveBlocker, clipboard } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, Menu, powerSaveBlocker, clipboard, Tray, nativeImage } = require('electron');
 const path  = require('path');
 const posix = path.posix;
 const fs    = require('fs');
@@ -39,6 +39,8 @@ const { createDirect } = require('./direct-app');
 const { RemoteError } = require('./core/errors');
 const { walkRemote, deleteRemoteTree, safeLocalName, localJoin } = require('./core/scan');
 const sites = require('./core/sites');
+const netid = require('./core/netid');
+const { runSpeedTest } = require('./core/speedtest');
 const { LABELS: EXISTING_LABELS, ACTIONS: EXISTING_ACTIONS } = require('./core/existing');
 
 const IS_MAC = process.platform === 'darwin';
@@ -296,8 +298,9 @@ function errOut(e) {
 
 // ── Window ─────────────────────────────────────────────────────────────────
 function createWindow() {
-  const w = (prefs.data.window && prefs.data.window.width) || 1360;
-  const h = (prefs.data.window && prefs.data.window.height) || 880;
+  // Never below the minimum (a size saved by an older version in the ring alone).
+  const w = Math.max(1100, (prefs.data.window && prefs.data.window.width) || 1360);
+  const h = Math.max(680, (prefs.data.window && prefs.data.window.height) || 880);
   win = new BrowserWindow({
     width: w, height: h, minWidth: 1100, minHeight: 680,
     backgroundColor: '#0a0b0e',
@@ -349,7 +352,7 @@ function createWindow() {
     if (resizeTimer) clearTimeout(resizeTimer);
     resizeTimer = setTimeout(() => {
       resizeTimer = null;
-      if (!win || win.isDestroyed()) return;
+      if (!win || win.isDestroyed() || miniPrev) return;   // the ring alone is not the window's size
       const [ww, hh] = win.getSize();
       prefs.save({ window: { width: ww, height: hh } });
     }, 400);
@@ -369,6 +372,7 @@ function createWindow() {
   // connection with the old one. The queue keeps running either way.
   win.on('closed', () => {
     win = null;
+    miniPrev = null;                // a new window starts full size
     if (browser.remote) { try { browser.remote.close(); } catch (_) {} }
     Object.assign(browser, { endpointId: null, remote: null, label: '', ep: null });
   });
@@ -420,6 +424,10 @@ function buildMenu() {
 // ── Lifecycle ──────────────────────────────────────────────────────────────
 app.whenReady().then(() => {
   prefs = new Prefs(app.getPath('userData')).load();
+  // Which network this is, for the speed profiles (read again every minute).
+  netid.refresh(); setInterval(() => netid.refresh(), 60000).unref();
+  if (prefs.recovered === 'bak') log('warn', 'preferences.json could not be read: the copy saved at the last start was taken back (the damaged file is kept next to it, .corrupt).');
+  else if (prefs.recovered === 'lost') log('error', 'preferences.json could not be read and no copy was there: filo starts empty (the damaged file is kept next to it, .corrupt).');
   prefs.onError = m => log('error', m);
   const policy = {
     known: (kind, host, port) => prefs.knownHost(kind, host, port),
@@ -433,6 +441,13 @@ app.whenReady().then(() => {
     settings: () => prefs.settings(),
     laneMode: process.env.FILO_LANES === 'inline' ? 'inline' : 'worker',
     remember: (kind, host, port, fp) => prefs.rememberHost(kind, host, port, fp),
+    // The speed test of a site (0.8.0), on the network it was measured on only.
+    speedProfile: (id, dir) => {
+      if (!id.startsWith('site:')) return null;
+      const st = prefs.getSite(id.slice(5)), sp = st && st.speed;
+      if (!sp || !sp.net || sp.net !== netid.current()) return null;
+      return sp[dir === 'up' ? 'out' : 'in'] || null;
+    },
     endpointCap: id => { if (!id.startsWith('site:')) return 0; const st = prefs.getSite(id.slice(5)); return st ? st.maxConnections : 0; },
     log,
     store: prefs.queueStore(),
@@ -485,7 +500,8 @@ app.whenReady().then(() => {
 
   buildMenu();
   createWindow();
-  app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
+  createTray();
+  app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); else if (win && !win.isVisible()) win.show(); });
 });
 
 // ⌘Q / Quit with transfers running.
@@ -527,7 +543,23 @@ function holdSleep(on) {
 // The queue is empty: phone notification, then — only if nothing failed —
 // the action chosen in the title bar (the window runs the 30 s countdown).
 let lastFinished = null;   // what the end action is allowed to rely on
+// A real transfer that went faster than the speed test said: the bookmark
+// keeps the better figures (never lower ones: a slow disk or a small file
+// says nothing against the server). Only a bookmark already tested, on the
+// network it was tested on.
+function learnSpeed(p) {
+  if (!p || !p.endpointId || !p.endpointId.startsWith('site:')) return;
+  const st = prefs.getSite(p.endpointId.slice(5));
+  if (!st) return;
+  const next = sites.learnFromTransfer(st.speed, netid.current(), p.dir, p.conn, p.mbps);
+  if (!next) return;
+  prefs.saveSite({ id: st.id, speed: next });
+  const key = p.dir === 'up' ? 'out' : 'in';
+  log('info', `${st.name}: the speed profile (${key === 'out' ? 'send' : 'receive'}) now holds what this transfer reached, ${next[key].mbps} MB/s with ${p.conn} connection${p.conn > 1 ? 's' : ''}`);
+}
+
 async function onQueueFinished(summary) {
+  try { learnSpeed(summary.profile); } catch (e) { log('warn', 'Speed profile: ' + e.message); }
   if (summary.syncOnly) { send('queue-finished', Object.assign({ afterAction: 'none' }, summary)); return; }
   const cfg = prefs.ntfy();
   if (cfg.enabled && cfg.topic) {
@@ -613,7 +645,10 @@ ipcMain.handle('sync-save', guard((_, pair) => {
   return { ok: true, pair: saved, pairs: prefs.listSyncPairs(), status: allSyncStatus() };
 }));
 ipcMain.handle('sync-delete', guard((_, id) => {
-  const prev = prefs.getSyncPair(id);
+  // Only a session that exists: its id names a file (review 0.7.2).
+  const prev = prefs.getSyncPair(String(id || ''));
+  if (!prev) return { ok: false, error: 'This session is no longer there.', pairs: prefs.listSyncPairs(), status: allSyncStatus() };
+  id = prev.id;
   syncer.unschedule(id);
   syncer.forgetState(id);
   // Its copies held for SYNCTHING would wait forever: stopped (review 0.6.2).
@@ -724,6 +759,12 @@ ipcMain.handle('direct-join', guard(async (_, text) => {
   const r = await D.join(String(text || '').slice(0, 400));
   return Object.assign(r, { pairs: prefs.listSyncPairs(), status: allSyncStatus() });
 }));
+ipcMain.handle('direct-session-id', (_, pairId) => D.sessionId(String(pairId || '')));
+ipcMain.handle('direct-join-state', (_, id, folder) => D.joinState(String(id || ''), String(folder || '')));
+ipcMain.handle('direct-join-session', guard((_, req) => {
+  const r = D.joinSession(Object.assign({}, req, { local: req && req.local ? absLocal(req.local) : '' }));
+  return Object.assign(r, { pairs: prefs.listSyncPairs(), status: allSyncStatus() });
+}));
 ipcMain.handle('direct-offer-dismiss', guard((_, req) => D.offerDismiss(req || {})));
 ipcMain.handle('direct-fast', (_, on) => { D.setFast(!!on); return true; });
 ipcMain.handle('direct-hold', guard((_, id, on) => D.hold(String(id || ''), !!on)));
@@ -734,7 +775,7 @@ ipcMain.handle('direct-id-share', async (_, req) => {
     const id = String((req && req.id) || '');
     if (!DEVICE_ID.test(id)) return { ok: false, error: 'This is not a SYNCTHING ID.' };
     const name = String((req && req.name) || '').slice(0, 120);
-    const text = `filo SYNCTHING ID${name ? ' of ' + name : ''}:\n${id}\n\n(MODE ▾ → Sessions… → THIS COMPUTER shows it in filo. It is not a secret: a computer still has to be accepted by hand.)\n`;
+    const text = `filo SYNCTHING ID${name ? ' of ' + name : ''}:\n${id}\n\n(In filo: right-click LIVE SYNC (side bar) → Sessions… → THIS COMPUTER. It is not a secret: a computer still has to be accepted by hand.)\n`;
     if (req.how === 'email') { shell.openExternal(`mailto:?subject=${encodeURIComponent('filo SYNCTHING ID' + (name ? ' · ' + name : ''))}&body=${encodeURIComponent(text)}`); return { ok: true }; }
     const safe = (name || 'filo').replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').trim() || 'filo';
     const res = await dialog.showSaveDialog(win, { title: 'Export the SYNCTHING ID', defaultPath: path.join(app.getPath('desktop'), `${safe} SYNCTHING ID.txt`), filters: [{ name: 'Text', extensions: ['txt'] }] });
@@ -817,7 +858,7 @@ ipcMain.handle('sync-share-save', async (_, id) => {
     const safe = pair.name.replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').trim() || 'sync';
     const res = await dialog.showSaveDialog(win, { title: 'Save the sync to share', defaultPath: path.join(app.getPath('desktop'), safe + '.filosync'), filters: [{ name: 'filo sync', extensions: ['filosync'] }] });
     if (res.canceled || !res.filePath) return { ok: false, cancelled: true };
-    fs.writeFileSync(res.filePath, JSON.stringify(Object.assign({ _about: sh.filo === 'direct' ? 'A filo SYNCTHING live sync to import in filo on the other computer (MODE ▾ → Import session as SLAVE).' : 'A filo LIVE SYNC to import in filo (MODE ▾ → Import session as SLAVE). No password inside.' }, sh), null, 2));
+    fs.writeFileSync(res.filePath, JSON.stringify(Object.assign({ _about: sh.filo === 'direct' ? 'A filo SYNCTHING live sync to import in filo on the other computer (right-click LIVE SYNC in the side bar → Import session as SLAVE → IMPORT CONFIG).' : 'A filo LIVE SYNC to import in filo (right-click LIVE SYNC in the side bar → Import session as SLAVE → IMPORT CONFIG). No password inside.' }, sh), null, 2));
     return { ok: true, path: res.filePath };
   } catch (e) { return { ok: false, error: e.message }; }
 });
@@ -1350,8 +1391,19 @@ ipcMain.handle('local-stat-many', async (_, paths) => {
 // ── IPC: connecting ────────────────────────────────────────────────────────
 // req: { siteId } or { quick: { protocol, host, port, user } }
 //      + password (typed now), savePassword, acceptFingerprint
+// The connection being opened (one at a time): { remote, cancelled }.
+let connecting = null;
+ipcMain.handle('connect-cancel', async () => {
+  const c = connecting;
+  if (!c) return false;
+  c.cancelled = true;
+  try { if (c.remote) await c.remote.close(); } catch (_) {}
+  log('info', 'Connection cancelled');
+  return true;
+});
+
 ipcMain.handle('connect', async (_, req) => {
-  let endpointId, site = null;
+  let endpointId, site = null, attempt = null;
   try {
     if (req.siteId) {
       site = prefs.getSite(req.siteId);
@@ -1381,9 +1433,15 @@ ipcMain.handle('connect', async (_, req) => {
       memSecrets.set(endpointId, m);
     }
     const ep = await resolveEndpoint(endpointId);
-    const remote = createRemote(Object.assign({}, ep, { acceptFingerprint: req.acceptFingerprint || null }), { log });
+    // The window follows the connection step by step, and can cancel it.
+    attempt = { remote: null, cancelled: false };
+    connecting = attempt;
+    const remote = createRemote(Object.assign({}, ep, { acceptFingerprint: req.acceptFingerprint || null, onStep: s => { if (connecting === attempt) send('connect-step', { step: s }); } }), { log });
+    attempt.remote = remote;
     log('info', `Connecting to ${describe(ep)}…`);
-    await remote.connect();
+    try { await remote.connect(); }
+    finally { if (connecting === attempt) connecting = null; }
+    if (attempt.cancelled) { try { remote.close(); } catch (_) {} return { ok: false, cancelled: true, error: 'Cancelled.' }; }
 
     // Connected: the new connection replaces the old one.
     if (browser.remote) { try { browser.remote.close(); } catch (_) {} }
@@ -1413,6 +1471,7 @@ ipcMain.handle('connect', async (_, req) => {
       warn,
     };
   } catch (e) {
+    if (attempt && attempt.cancelled) return { ok: false, cancelled: true, error: 'Cancelled.' };
     const r = errOut(e);
     // A refused login: the password (or passphrase) typed for it was wrong.
     // Forget it, so the next attempt asks again, or uses the saved one.
@@ -1423,6 +1482,75 @@ ipcMain.handle('connect', async (_, req) => {
     log(r.code === 'TRUST_NEEDED' || r.needsPassword ? 'info' : 'error', r.error.split('\n')[0]);
     return r;
   }
+});
+
+// ── The speed test of a bookmark (0.8.0) ──────────────────────────────────
+let speedRun = null;         // { token } while a test runs (one at a time)
+let speedLast = null;        // the last finished test: what SAVE keeps
+ipcMain.handle('speedtest-run', async (_, req) => {
+  if (speedRun) return { ok: false, error: 'A speed test is already running.' };
+  const site = req && req.siteId ? prefs.getSite(req.siteId) : null;
+  if (!site) return { ok: false, error: 'This bookmark no longer exists.' };
+  const endpointId = 'site:' + site.id;
+  const token = { cancelled: false, cut: null };
+  speedRun = { token };
+  try {
+    if (req.password !== undefined && req.password !== null && req.password !== '') {
+      const mem = memSecrets.get(endpointId) || {};
+      if (site.logon === 'key') mem.passphrase = req.password; else mem.password = req.password;
+      memSecrets.set(endpointId, mem);
+    }
+    const ep = await resolveEndpoint(endpointId);
+    await netid.refresh();
+    const res = await runSpeedTest({
+      create: () => createRemote(Object.assign({}, ep, { acceptFingerprint: req.acceptFingerprint || null }), { log }),
+      protocol: LABEL[ep.protocol] || '', maxConnections: ep.maxConnections,
+      dir: req.dir || (site.remoteDir && site.remoteDir !== '/' ? site.remoteDir : ''), readOnly: !!req.readOnly,
+      durationMs: req.seconds === 60 ? 60000 : 20000, token, log,
+      onEvent: e => send('speedtest-event', e),
+    });
+    speedLast = { siteId: site.id, result: res, net: netid.current(), netLabel: netid.label() };
+    return { ok: true, result: res };
+  } catch (e) {
+    if (e && e.cancelled) return { ok: false, cancelled: true };
+    if (e && (e.code === 'PICK_DIR' || e.code === 'READONLY' || e.code === 'NO_FILE')) return { ok: false, code: e.code, dir: e.dir, error: e.message };
+    const r = errOut(e);
+    if (/refused the login|private key cannot be read/i.test(r.error)) { const mm = memSecrets.get(endpointId); if (mm) { delete mm.password; delete mm.passphrase; } }
+    log(r.code === 'TRUST_NEEDED' || r.needsPassword ? 'info' : 'warn', 'Speed test: ' + r.error.split('\n')[0]);
+    return r;
+  } finally { speedRun = null; }
+});
+// The folder chooser of the test: the folders of `dir` (the login folder by default).
+ipcMain.handle('speedtest-list', async (_, req) => {
+  const site = req && req.siteId ? prefs.getSite(req.siteId) : null;
+  if (!site) return { ok: false, error: 'This bookmark no longer exists.' };
+  let r = null;
+  try {
+    const ep = await resolveEndpoint('site:' + site.id);
+    r = createRemote(Object.assign({}, ep, { acceptFingerprint: req.acceptFingerprint || null }), { log });
+    await r.connect();
+    let dir = req.dir || '/';
+    const l = await r.list(dir);
+    const folders = l.filter(e => e.type === 'folder' || e.linkTo === 'folder').map(e => e.name).filter(n => !n.startsWith('.')).sort((a, b) => a.localeCompare(b));
+    return { ok: true, dir, folders };
+  } catch (e) { return errOut(e); }
+  finally { try { if (r) r.close(); } catch (_) {} }
+});
+ipcMain.handle('speedtest-cancel', () => {
+  if (!speedRun) return false;
+  speedRun.token.cancelled = true;
+  try { if (speedRun.token.cut) speedRun.token.cut(); } catch (_) {}
+  return true;
+});
+// SAVE: the bookmark keeps the figures as its starting settings, with the
+// date and the network they were measured on.
+ipcMain.handle('speedtest-save', (_, siteId) => {
+  if (!speedLast || speedLast.siteId !== siteId) return { ok: false, error: 'No speed test to save.' };
+  const r = speedLast.result, d = x => (x ? { conn: x.conn, seg: x.segOn, mbps: x.mbps, src: 'test' } : null);
+  const prev = (prefs.getSite(siteId) || {}).speed;
+  const saved = prefs.saveSite({ id: siteId, speed: { at: r.at, net: speedLast.net, netLabel: speedLast.netLabel, out: d(r.out) || ((prev && prev.net === speedLast.net) ? prev.out : null), in: d(r.in), latencyMs: r.latencyMs, maxOpen: r.maxOpen } });
+  const warn = speedLast.net ? null : 'filo could not recognise this network, so these settings will not be applied automatically.';
+  return { ok: true, site: saved, warn };
 });
 
 ipcMain.handle('disconnect', async () => {
@@ -1767,3 +1895,86 @@ ipcMain.handle('compare-cancel', () => { if (compareToken) compareToken.cancelle
 ipcMain.on('win-minimize', () => win && win.minimize());
 ipcMain.on('win-maximize', () => { if (!win) return; win.isMaximized() ? win.unmaximize() : win.maximize(); });
 ipcMain.on('win-close',    () => win && win.close());
+
+// ── The ring alone (Noar, 13/10/2026) ──────────────────────────────────────
+// LIVE SYNC reduced to its ring in a small window; back to the full window
+// as it was. PIN keeps it above the other windows.
+let miniPrev = null;
+ipcMain.handle('win-mini', (_, on) => {
+  if (!win) return false;
+  if (on && !miniPrev) {
+    miniPrev = { bounds: win.getBounds(), max: win.isMaximized() };
+    if (miniPrev.max) win.unmaximize();
+    win.setMinimumSize(220, 250);
+    const b = win.getBounds();
+    win.setBounds({ x: b.x + b.width - 300, y: b.y, width: 300, height: 330 });
+    if (IS_MAC && win.setWindowButtonVisibility) win.setWindowButtonVisibility(false);
+  } else if (!on && miniPrev) {
+    win.setAlwaysOnTop(false);
+    win.setMinimumSize(1100, 680);
+    win.setBounds(miniPrev.bounds);
+    if (miniPrev.max) win.maximize();
+    if (IS_MAC && win.setWindowButtonVisibility) win.setWindowButtonVisibility(true);
+    miniPrev = null;
+  }
+  updateTray();
+  return !!miniPrev;
+});
+ipcMain.handle('win-pin', (_, on) => { if (win) win.setAlwaysOnTop(!!on, 'floating'); return !!on; });
+ipcMain.handle('win-to-tray', () => { hideToTray(); return true; });
+
+// ── In the menu bar / notification area, on every system ───────────────────
+// The tray icon brings filo back, shows the LIVE SYNC sessions and their
+// state, opens the ring alone, or quits. "Hide to the tray": the window goes,
+// filo (transfers, LIVE SYNC) keeps running; on Windows and Linux it leaves
+// the task bar, on a Mac the Dock icon stays.
+let tray = null, trayText = '';
+function trayIcon() {
+  const dir = path.join(__dirname, 'tray');
+  const img = nativeImage.createFromPath(path.join(dir, IS_MAC ? 'trayTemplate.png' : process.platform === 'linux' ? 'tray-64.png' : 'tray.png'));
+  if (IS_MAC) img.setTemplateImage(true);
+  return img;
+}
+function showWindow() {
+  if (!win) { createWindow(); return; }
+  if (win.isMinimized()) win.restore();
+  win.show(); win.focus();
+}
+function hideToTray() {
+  if (!win) return;
+  if (!tray) createTray();
+  win.hide();
+}
+const TRAY_STATE = { insync: 'up to date', syncing: 'synchronizing', scanning: 'checking', offline: 'not reachable', paused: 'disconnected', held: 'paused', error: 'error', waiting: 'waiting', starting: 'starting', mirror: 'S-FTP BACKUP', mirrored: 'up to date', standby: 'standby', checking: 'checking' };
+function updateTray() {
+  if (!tray || !prefs) return;
+  const pairs = prefs.listSyncPairs().filter(p => p.auto || p.fsAuto);
+  const lines = pairs.map(p => { const st = statusFor(p.id) || {}; return `${p.name}: ${TRAY_STATE[st.state] || st.state || '…'}`; });
+  const running = queue && queue.state === 'running';
+  const text = JSON.stringify([lines, running, !!miniPrev, win && win.isVisible()]);
+  if (text === trayText) return;
+  trayText = text;
+  tray.setToolTip(['filo'].concat(running ? ['transfers running'] : [], lines).join('\n'));
+  const items = [
+    { label: win && win.isVisible() ? 'Show filo' : 'Open filo', click: () => { if (miniPrev) send('menu', { action: 'mini', value: false }); showWindow(); } },
+  ];
+  if (pairs.length) {
+    items.push({ type: 'separator' }, { label: 'LIVE SYNC', enabled: false });
+    for (const l of lines) items.push({ label: '  ' + l, enabled: false });
+    items.push({ label: 'The ring alone', click: () => { showWindow(); send('menu', { action: 'mini', value: true }); } });
+  }
+  if (running) items.push({ type: 'separator' }, { label: 'Transfers running', enabled: false });
+  items.push({ type: 'separator' },
+    { label: 'Hide to the tray', enabled: !!(win && win.isVisible()), click: hideToTray },
+    { label: 'Quit filo', click: () => app.quit() });
+  tray.setContextMenu(Menu.buildFromTemplate(items));
+}
+function createTray() {
+  if (tray) return;
+  try { tray = new Tray(trayIcon()); } catch (e) { log('warn', 'Tray icon not available: ' + e.message); return; }
+  // Windows / Linux: a click shows or hides the window; macOS: the menu.
+  if (!IS_MAC) tray.on('click', () => { if (win && win.isVisible() && !win.isMinimized()) hideToTray(); else showWindow(); });
+  trayText = '';
+  updateTray();
+}
+setInterval(() => { try { updateTray(); } catch (_) {} }, 3000).unref();

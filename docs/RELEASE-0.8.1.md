@@ -1,11 +1,44 @@
-# filo 0.7.1
+# filo 0.8.1
 
-Text for the GitHub Release **v0.7.1** (title: `filo 0.7.1`).
+Text for the GitHub Release **v0.8.1** (title: `filo 0.8.1`).
 
 ---
 
 A two-panel FTP, FTPS and SFTP client for video professionals: large files,
 moved as fast as the line allows, and verified on arrival.
+
+**New in 0.8.1**
+
+- **The speed test works on a server whose root is read-only** (a NAS shows
+  its shared folders at the root). If the bookmark points at the root, filo
+  asks for a folder to test in. If the bookmark's folder refuses files, filo
+  offers a reception-only test (it reads files already there and writes
+  nothing) or CANCEL.
+
+**New in 0.8.0**
+
+- **Speed test of a bookmark**: the gauge icon measures the server sending
+  and receiving, with 1, 2, 4 and 8 connections, and suggests the starting
+  settings. SAVE keeps them with the date and the network; Auto starts from
+  them on that network. A faster real transfer improves them.
+- **You can see a connection being made**: the step it is on, a clock, and a
+  CANCEL that really cuts it; a slow server is said to be slow.
+- **A new header**: BOOKMARKS, FTP MODE and LIVE SYNC MODE in the title bar;
+  the server on the right.
+
+**New in 0.7.2**
+
+- **LIVE SYNC bookmarks** in SITES: every session, one double-click away.
+- **SESSION ID**: the MASTER sends it, the SLAVE pastes it and chooses its
+  folder while it waits; the session opens by itself once the MASTER
+  accepts. The invitation that sometimes never came is fixed.
+- **The ring alone**: LIVE SYNC reduced to its ring in a small window, and
+  filo in the menu bar / notification area on every system.
+- A clear **DISCONNECT** button; the SYNCTHING queue empties as files
+  arrive and says what is sent and what is received.
+- **Nothing local is lost**: a download always goes to `.filopart` first,
+  a file LIVE SYNC replaces goes to `.filo-trash`, damaged preferences are
+  taken back from the copy saved at start.
 
 **New in 0.7.1**
 
@@ -53,17 +86,17 @@ moved as fast as the line allows, and verified on arrival.
 
 | System | File |
 |---|---|
-| macOS, Apple Silicon | `filo-0.7.1-mac-arm64.dmg` |
-| Windows x64, installer | `filo-Setup-0.7.1.exe` |
-| Windows x64, portable | `filo-0.7.1-win-x64.zip` |
-| Linux x64, Debian / Ubuntu | `filo_0.7.1_amd64.deb` |
-| Linux x64, any distribution | `filo-0.7.1-linux-x86_64.AppImage` |
+| macOS, Apple Silicon | `filo-0.8.1-mac-arm64.dmg` |
+| Windows x64, installer | `filo-Setup-0.8.1.exe` |
+| Windows x64, portable | `filo-0.8.1-win-x64.zip` |
+| Linux x64, Debian / Ubuntu | `filo_0.8.1_amd64.deb` |
+| Linux x64, any distribution | `filo-0.8.1-linux-x86_64.AppImage` |
 
 **Notes**
 
 - Windows: the build is not signed. SmartScreen asks once: *More info → Run
   anyway*.
-- Linux: `sudo apt install ./filo_0.7.1_amd64.deb`. The AppImage needs FUSE 2
+- Linux: `sudo apt install ./filo_0.8.1_amd64.deb`. The AppImage needs FUSE 2
   (`sudo apt install libfuse2t64`). On Ubuntu 24.04 and later, prefer the
   `.deb`: it installs the AppArmor profile Electron's sandbox needs.
 - Server passwords on Linux need a desktop keyring (GNOME Keyring or KWallet).
@@ -76,10 +109,10 @@ Full list of changes: [CHANGELOG.md](https://github.com/noar-justedit/filo/blob/
 
 1. Builds: `build_mac.command` (dmg), `build_windows.command` or
    `build_on_windows.bat` (exe + zip), `./build_linux.sh` on Linux (deb +
-   AppImage). Five files, all named `0.7.1`. The build downloads Syncthing once (internet needed): the build log says "SYNCTHING: included".
+   AppImage). Five files, all named `0.8.1`. The build downloads Syncthing once (internet needed): the build log says "SYNCTHING: included".
 2. Try each one once: it opens, connects, transfers.
 3. `scripts/push_github.command`: the code goes to GitHub, `version.json` waits.
-4. On GitHub: *Releases → Draft a new release*, tag `v0.7.1` on `main`, title
-   `filo 0.7.1`, the text above, the five files. Publish.
+4. On GitHub: *Releases → Draft a new release*, tag `v0.8.1` on `main`, title
+   `filo 0.8.1`, the text above, the five files. Publish.
 5. `scripts/push_github.command` again: `version.json` goes out, and installed
-   copies of filo now announce 0.7.1.
+   copies of filo now announce 0.8.1.

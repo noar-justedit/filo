@@ -136,7 +136,8 @@ class TransferQueue extends EventEmitter {
         endpointLabel: s.endpointLabel || '',
         existing: s.existing || null,
         // LIVE SYNC: which pair and which relative path this item serves.
-        sync: s.sync && typeof s.sync === 'object' ? { pairId: String(s.sync.pairId), rel: String(s.sync.rel) } : undefined,
+        // trash: the session's local .filo-trash, where a replaced file goes.
+        sync: s.sync && typeof s.sync === 'object' ? Object.assign({ pairId: String(s.sync.pairId), rel: String(s.sync.rel) }, typeof s.sync.trash === 'string' && path.isAbsolute(s.sync.trash) ? { trash: s.sync.trash } : {}) : undefined,
         // Segment relay: an upload that announces its segments (relayOut),
         // or a download that takes them as they are announced (relay).
         relayOut: s.relayOut ? true : undefined,
@@ -473,6 +474,9 @@ class TransferQueue extends EventEmitter {
       const idx = ch.findIndex(c => c.st === 'p' && (!c.retryAt || c.retryAt <= now));
       if (idx >= 0) {
         if (this.tuner && !this.tuner.boosted && this.settings().concurrency === 'auto') {
+          this._applyProfile(it);
+        }
+        if (this.tuner && !this.tuner.boosted && this.settings().concurrency === 'auto') {
           if (it.dir === 'up' ? this.tuner.startLow(SEGMENT_UP_START) : this.tuner.boost(SEGMENT_START)) {
             this.log('info', it.dir === 'up'
               ? `Auto: ${this.tuner.limit()} transfer at a time (a file sent in segments: more only if it is faster)`
@@ -489,9 +493,23 @@ class TransferQueue extends EventEmitter {
       if (!it) continue;
       if (it.status !== 'queued' && !(it.status === 'waiting' && it.retryAt <= now)) continue;
       if (it._hold || isFull(it.endpointId)) continue;
+      this._applyProfile(it);
       return { kind: 'item', it };
     }
     return null;
+  }
+
+  // The speed test of the site (0.8.0) gives Auto its starting level, for the
+  // direction of the first file of the run. Only on the network it was
+  // measured on (the caller decides), only in Auto.
+  _profile(it) {
+    try { return this.opts.speedProfile ? this.opts.speedProfile(it.endpointId, it.dir) : null; } catch (_) { return null; }
+  }
+  _applyProfile(it) {
+    if (!this.tuner || this.tuner.preset_done || this.settings().concurrency !== 'auto') return;
+    const p = this._profile(it);
+    if (!p) return;
+    if (this.tuner.preset(p.conn)) this.log('info', `Auto: ${this.tuner.limit()} simultaneous transfers to start (this server's speed test)`);
   }
 
   _pump() {
@@ -556,6 +574,16 @@ class TransferQueue extends EventEmitter {
     // A run made only of LIVE SYNC copies: no "queue finished" notice and no
     // end action (a sync every few minutes must not shut the machine down).
     summary.syncOnly = ![...this.items.values()].some(i => i.type === 'file' && !i.sync && (i.finishedAt || 0) >= (r.startedAt || 0));
+    // What this run measured, for the speed profile of the site (0.8.0): only
+    // when it was one server and one direction, and Auto had a reading.
+    try {
+      const done = [...this.items.values()].filter(i => i.type === 'file' && !i.sync && i.status === 'done' && (i.finishedAt || 0) >= (r.startedAt || 0));
+      const eps = new Set(done.map(i => i.endpointId)), dirs = new Set(done.map(i => i.dir));
+      if (this.tuner && this.tuner.results.size && eps.size === 1 && dirs.size === 1 && summary.bytes >= 100 * 1024 * 1024 && summary.durationMs >= 10000) {
+        const lv = this.tuner.bestLevel(), rd = this.tuner.results.get(lv);
+        if (rd && rd.bps > 0) summary.profile = { endpointId: [...eps][0], dir: [...dirs][0], conn: lv, mbps: rd.bps / 1e6 };
+      }
+    } catch (_) {}
     this.log(summary.failed ? 'warn' : 'info', `Queue finished: ${summary.done} done, ${summary.failed} failed, ${summary.skipped} skipped`);
     this.emit('state', this.state);
     this.emit('finished', summary);
@@ -641,7 +669,10 @@ class TransferQueue extends EventEmitter {
       if (u.aborted) throw Object.assign(new Error('Stopped.'), { aborted: true });
       u.phase = 'transfer';
       if (u.kind === 'item') it.phase = 'transfer';
-      const unit = { kind: u.kind, idx: u.idx, settings: this.settings(), item: plainItem(it) };
+      // A site whose speed test found no gain from segments: this file goes whole.
+      const prof = this._profile(it);
+      const setg = prof && prof.seg === false ? Object.assign({}, this.settings(), { segments: false }) : this.settings();
+      const unit = { kind: u.kind, idx: u.idx, settings: setg, item: plainItem(it) };
       const hooks = {
         onBytes: (n, ph) => this._onBytes(it, u, n, ph),
         ask: (src, dst) => this._ask(it, u, src, dst),
@@ -981,6 +1012,8 @@ function plainItem(it) {
   const o = {};
   for (const k of ['id', 'dir', 'type', 'local', 'remote', 'size', 'existing', 'resume', 'restartFromZero', 'offset', 'seg', 'ownTarget', 'relayOut', 'relay']) if (it[k] !== undefined) o[k] = it[k];
   if (o.relay) o.relay = JSON.parse(JSON.stringify(o.relay));
+  // LIVE SYNC: where a local file it replaces goes (.filo-trash).
+  if (it.sync && it.sync.trash) o.sync = { rel: it.sync.rel, trash: it.sync.trash };
   if (o.seg) o.seg = JSON.parse(JSON.stringify(o.seg));
   return o;
 }

@@ -658,6 +658,7 @@ class Direct extends EventEmitter {
           // Our own live sync, offered back by the computer that imported its
           // code: the two are linked, nothing to ask.
           if (!pair.peer) this.emit('link', { pairId: pair.id, peer: { id: dev, name: this._nameOf(dev) } });
+          else if (pair.peer.id !== dev && !(this.foreign || (this.foreign = new Set())).has(fid + dev)) { this.foreign.add(fid + dev); this.emit('foreign', { pairId: pair.id, dev }); }
           continue;
         }
         if (!fid.startsWith(PREFIX)) continue;
@@ -767,11 +768,15 @@ class Direct extends EventEmitter {
     if (l.connected) {
       const c = await this.req('GET', `/rest/db/completion?folder=${q}&device=${encodeURIComponent(p.peer.id)}`).catch(() => null);
       if (c) { s.peerCompletion = Math.floor(c.completion * 10) / 10; s.peerNeedBytes = c.needBytes || 0; s.peerNeedFiles = c.needItems || 0; }
+      // Does the other computer share this folder with us? (valid, notSharing,
+      // paused, unknown). An older Syncthing without it: taken as shared.
+      s.peerShares = c ? (c.remoteState || 'valid') : 'unknown';
     }
     if (!s.state) {
       s.state = !p.auto ? 'paused'
         : this.held.has(p.folderId) ? 'held'
         : !l.connected ? 'offline'
+        : s.peerShares === 'notSharing' ? 'waiting'
         : /scan/.test(db.state) ? 'scanning'
         : (db.state === 'syncing' || db.state === 'sync-preparing' || s.needBytes > 0 || (s.peerNeedBytes || 0) > 0) ? 'syncing'
         : 'insync';

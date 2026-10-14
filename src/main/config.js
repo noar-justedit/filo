@@ -86,12 +86,33 @@ const DEFAULT_NTFY = { enabled: false, server: 'https://ntfy.sh', topic: '', syn
 
 function writeAtomic(file, text) {
   const tmp = file + '.tmp-' + process.pid;
-  fs.writeFileSync(tmp, text, { mode: 0o600 });
+  // On the disk before the rename: a power cut leaves the old file or the new
+  // one, never a half one.
+  const fd = fs.openSync(tmp, 'w', 0o600);
+  try { fs.writeSync(fd, text); try { fs.fsyncSync(fd); } catch (_) {} } finally { fs.closeSync(fd); }
   fs.renameSync(tmp, file);
 }
 
 function readJson(file) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch (_) { return null; }
+}
+
+// Preferences and queue (review 0.7.2): the file read well at start is kept
+// as "<file>.bak". A file that cannot be read is put aside
+// ("<file>.corrupt-<date>") and the .bak taken instead: the sites, the
+// trusted servers and the saved passwords are never replaced by an empty
+// profile at the next save. recovered: '' | 'bak' (taken back) | 'lost'.
+function readWithBackup(file) {
+  const d = readJson(file);
+  if (d && typeof d === 'object') {
+    try { fs.copyFileSync(file, file + '.bak'); } catch (_) {}
+    return { data: d, recovered: '' };
+  }
+  if (!fs.existsSync(file)) return { data: null, recovered: '' };
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  try { fs.renameSync(file, `${file}.corrupt-${stamp}`); } catch (_) {}
+  const b = readJson(file + '.bak');
+  return { data: b && typeof b === 'object' ? b : null, recovered: b ? 'bak' : 'lost' };
 }
 
 function normalizeSettings(s) {
@@ -126,7 +147,9 @@ class Prefs {
 
   load() {
     try { fs.mkdirSync(this.dir, { recursive: true }); } catch (_) {}
-    const d = readJson(this.file) || {};
+    const r = readWithBackup(this.file);
+    this.recovered = r.recovered;
+    const d = r.data || {};
     this.data = {
       settings: normalizeSettings(d.settings),
       ntfy: Object.assign({}, DEFAULT_NTFY, d.ntfy || {}),
@@ -190,6 +213,8 @@ class Prefs {
       passwordEnc: prev ? prev.passwordEnc : null,
       passphraseEnc: prev ? prev.passphraseEnc : null,
     }));
+    // A speed profile belongs to a server and an account: another one, another profile.
+    if (prev && prev.speed && !('speed' in site) && (prev.host !== merged.host || prev.port !== merged.port || prev.protocol !== merged.protocol || prev.user !== merged.user)) merged.speed = null;
     const sp = secretsPatch || {};
     if (sp.passwordEnc !== undefined) merged.passwordEnc = sp.passwordEnc;
     if (sp.passphraseEnc !== undefined) merged.passphraseEnc = sp.passphraseEnc;
@@ -296,7 +321,7 @@ class Prefs {
   // ── Queue store ─────────────────────────────────────────────────────────
   queueStore() {
     return {
-      load: () => readJson(this.queueFile),
+      load: () => { const r = readWithBackup(this.queueFile); this.queueRecovered = r.recovered; return r.data; },
       save: list => writeAtomic(this.queueFile, JSON.stringify(list)),
     };
   }

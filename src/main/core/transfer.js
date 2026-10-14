@@ -26,6 +26,30 @@ const { Tap, hashFile, createHasher, LABELS: HASH_LABELS } = require('./hash');
 const existing = require('./existing');
 const { RemoteError } = require('./errors');
 
+// LIVE SYNC S-FTP (Noar, 13/10/2026): a local file the sync replaces is not
+// lost, it goes to the session's .filo-trash first, as SYNCTHING does
+// ("name~20261013-154210.ext", same sub-folders). Moved, not copied: the
+// trash is inside the synced folder, on the same disk. Only for items the
+// sync marked (sync.trash); a manual download replaces as asked.
+async function keepOldLocal(item, finalPath) {
+  const trash = item.sync && item.sync.trash;
+  if (!trash) return;
+  const st = await local.stat(finalPath);
+  if (!st || st.type !== 'file') return;
+  const { localJoin } = require('./scan');
+  const rel = String(item.sync.rel || path.basename(finalPath));
+  const ext = path.posix.extname(rel), base = rel.slice(0, rel.length - ext.length);
+  const stamp = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
+  const dest = localJoin(trash, `${base}~${stamp}${ext}`);
+  try {
+    await require('fs').promises.mkdir(path.dirname(dest), { recursive: true });
+    await require('fs').promises.rename(finalPath, dest);
+  } catch (e) {
+    // Not kept: not replaced either (the new version waits in .filopart).
+    throw new RemoteError(`The version here could not be put in .filo-trash (${e.message}): not replaced.`, { fatal: true });
+  }
+}
+
 const PART = '.filopart';
 const OLD = '.filoold';
 
@@ -425,9 +449,12 @@ async function download(item, ctx) {
   let writePath, offset = 0, useTemp;
   if (action === 'resume') { writePath = finalPath; offset = dst.size; useTemp = false; }
   else {
-    useTemp = settings.tempNames !== false;
-    writePath = useTemp ? finalPath + PART : finalPath;
-    if (useTemp) {
+    // A download ALWAYS goes to .filopart first (review 0.7.2): written
+    // straight into the file, a cut or a full disk destroyed the file that
+    // was there. The "temporary names" switch only concerns sending.
+    useTemp = true;
+    writePath = finalPath + PART;
+    {
       const part = await local.stat(writePath);
       if (part && part.type === 'file' && sameSource(item, src) && part.size <= src.size && !item.restartFromZero) offset = part.size;
     }
@@ -477,6 +504,7 @@ async function download(item, ctx) {
     const target = await recheckTarget(item, ctx, src, finalPath, !!dst);
     if (!target) { await dropWritten(item, ctx, writePath); return { status: 'skipped', note: 'Already there' }; }
     finalPath = target;
+    await keepOldLocal(item, finalPath);
     await local.replace(writePath, finalPath);
   }
   if (settings.keepDates !== false && src.mtime) {
@@ -845,7 +873,7 @@ async function finalizeSegments(item, ctx) {
     if (seg.relay) await dropRelayDir(remote, seg.relay.dir);
     if (settings.keepDates !== false && remote.canSetMTime && src.mtime) { try { await remote.setMTime(seg.finalPath, src.mtime); } catch (_) {} }
   } else {
-    if (seg.useTemp) await local.replace(seg.writePath, seg.finalPath);
+    if (seg.useTemp) { await keepOldLocal(item, seg.finalPath); await local.replace(seg.writePath, seg.finalPath); }
     if (settings.keepDates !== false && src.mtime) { try { await local.setMTime(seg.finalPath, src.mtime); } catch (_) {} }
   }
   item.seg = null;

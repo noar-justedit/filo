@@ -209,10 +209,15 @@ class FtpRemote {
       rejectUnauthorized: false,
       minVersion: 'TLSv1.2',
     };
+    // Where the connection is, for the window (0.8.0).
+    const step = s => { try { if (this.opts.onStep) this.opts.onStep(s); } catch (_) {} };
+    step('resolve');
+    try { require('dns').lookup(host, () => step('open')); } catch (_) {}
     try {
       if (this.protocol === 'ftps-implicit') await client.connectImplicitTLS(host, port, tlsOptions);
       else await client.connect(host, port);
       if (this.protocol === 'ftps') {
+        step('secure');
         try { await client.useTLS(tlsOptions); }
         catch (e) {
           throw new RemoteError('This server does not accept FTPS (explicit TLS). Try FTPS implicit, SFTP, or — if you accept that the password travels in clear — plain FTP.', { code: 'NO_TLS', fatal: true });
@@ -222,8 +227,10 @@ class FtpRemote {
         this._checkCertificate(client.ftp.socket);
         guardDataTls(client.ftp, certFingerprint(client.ftp.socket.getPeerCertificate()));
       }
+      step('login');
       await client.sendIgnoringError('OPTS UTF8 ON');
       await client.login(this.opts.user || 'anonymous', this.opts.password || (this.opts.user ? '' : 'anonymous@'));
+      step('folder');
       await client.useDefaultSettings();
       try { this.features = await client.features(); } catch (_) { this.features = new Map(); }
       this.log('info', `Connected to ${host}:${port} (${this.protocol === 'ftp' ? 'FTP, not encrypted' : this.protocol === 'ftps' ? 'FTPS explicit' : 'FTPS implicit'})`);

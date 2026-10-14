@@ -135,8 +135,14 @@ class SftpRemote {
     this._connectPromise = new Promise((resolve, reject) => {
       const { Client } = getSsh2();
       const conn = new Client();
+      this._pending = conn;                // while it opens: close() can cut it
       let settled = false;
       const host = this.opts.host, port = this.port;
+      // Where the connection is, for the window (0.8.0): finding the address,
+      // opening the connection, the secure handshake, the login, the folder.
+      const step = s => { try { if (this.opts.onStep) this.opts.onStep(s); } catch (_) {} };
+      step('resolve');
+      try { require('dns').lookup(host, () => { if (!settled) step('open'); }); } catch (_) {}
       const cfg = {
         host, port,
         username: this.opts.user,
@@ -183,18 +189,21 @@ class SftpRemote {
           err = RemoteError.from(err, 'sftp');
         }
         try { conn.end(); } catch (_) {}
+        this._pending = null;
         this.conn = null; this.sftp = null; this._connectPromise = null;
         reject(err);
       };
 
       // What the two sides agreed on (cipher, MAC): shown in the log, and
       // what a speed comparison needs to know first.
-      conn.on('handshake', n => { this.algos = n; });
+      conn.on('handshake', n => { this.algos = n; step('login'); });
       conn.on('ready', () => {
+        step('folder');
         conn.sftp((err, sftp) => {
           if (err) return bail(err);
           if (settled) { try { conn.end(); } catch (_) {} return; }
           settled = true;
+          this._pending = null;
           this.conn = conn; this.sftp = sftp; this.dead = null;
           this._installWindow(sftp);
           if (seenKey && hostKeyPolicy && hostKeyPolicy.remember) {
@@ -214,6 +223,8 @@ class SftpRemote {
       conn.on('error', bail);
       conn.on('close', () => bail(new Error('The SFTP connection was closed before it was ready.')));
       try { conn.connect(cfg); } catch (e) { bail(e); }
+      // The socket is ssh2's own: its first event is the TCP connection made.
+      try { const sk = conn._sock; if (sk && typeof sk.once === 'function') sk.once('connect', () => { if (!settled) step('secure'); }); } catch (_) {}
     });
     return this._connectPromise;
   }
@@ -253,6 +264,9 @@ class SftpRemote {
 
   async close() {
     this.closing = true;
+    // A connection still opening has no socket of ours yet: cut it at once.
+    try { if (this._pending) this._pending.destroy(); } catch (_) {}
+    this._pending = null;
     if (this._engine) { this._engine.kill(); this._engine = null; }
     for (const s of this._streams) { try { s.destroy(); } catch (_) {} }
     this._streams.clear();

@@ -42,10 +42,52 @@ function normalizeSite(s) {
     remoteDir: String(o.remoteDir || ''),
     localDir: String(o.localDir || ''),
     comment: String(o.comment || '').slice(0, 4000),
+    // The speed test's result (0.8.0): { at, net, netLabel, out, in, latencyMs, maxOpen }
+    // or null. Measured on one network; never exported.
+    speed: normalizeSpeed(o.speed),
     // Opaque blobs from secrets.js. Kept only by the profile, never exported.
     passwordEnc: o.passwordEnc || null,
     passphraseEnc: o.passphraseEnc || null,
   };
+}
+
+
+// What a speed test leaves on a site. Numbers are clamped, anything odd is dropped.
+function normalizeSpeed(v) {
+  if (!v || typeof v !== 'object') return null;
+  const dir = d => {
+    if (!d || typeof d !== 'object') return null;
+    const conn = Math.max(1, Math.min(10, parseInt(d.conn, 10) || 0));
+    const mbps = Number(d.mbps);
+    if (!parseInt(d.conn, 10) || !(mbps >= 0)) return null;
+    return { conn, seg: d.seg === true ? true : d.seg === false ? false : null, mbps: Math.round(mbps * 10) / 10, src: d.src === 'transfer' ? 'transfer' : 'test' };
+  };
+  const out = dir(v.out), inn = dir(v.in);
+  if (!out && !inn) return null;
+  return {
+    at: Number(v.at) > 0 ? Number(v.at) : Date.now(),
+    net: String(v.net || '').slice(0, 40),
+    netLabel: String(v.netLabel || '').slice(0, 120),
+    out, in: inn,
+    latencyMs: Number(v.latencyMs) > 0 ? Math.round(Number(v.latencyMs)) : null,
+    maxOpen: Math.max(0, Math.min(10, parseInt(v.maxOpen, 10) || 0)),
+  };
+}
+
+
+// A real transfer that went faster than the speed test said: the figures it
+// reached replace the old ones for that direction, never lower ones (a slow
+// disk or a small file says nothing against the server). Only a profile that
+// exists for this direction, on the network it was measured on. Returns the
+// new profile, or null for "leave it".
+function learnFromTransfer(speed, netNow, dir, conn, mbps, now) {
+  if (!speed || !speed.net || speed.net !== netNow) return null;
+  const key = dir === 'up' ? 'out' : 'in';
+  const cur = speed[key];
+  if (!cur || !(mbps > cur.mbps * 1.05) || !(conn >= 1)) return null;
+  const next = Object.assign({}, speed, { at: now || Date.now() });
+  next[key] = { conn: Math.min(10, Math.round(conn)), seg: cur.seg, mbps: Math.round(mbps * 10) / 10, src: 'transfer' };
+  return next;
 }
 
 // For the window and for exports: everything but the secrets, plus whether
@@ -61,7 +103,7 @@ function exportFilo(sites) {
     format: 'filo-sites',
     version: 1,
     exported: new Date().toISOString(),
-    sites: sites.map(s => { const p = publicSite(normalizeSite(s)); delete p.hasPassword; delete p.hasPassphrase; delete p.id; return p; }),
+    sites: sites.map(s => { const p = publicSite(normalizeSite(s)); delete p.hasPassword; delete p.hasPassphrase; delete p.id; delete p.speed; return p; }),
   }, null, 2) + '\n';
 }
 
@@ -264,6 +306,7 @@ function detectFormat(text) {
 }
 
 module.exports = {
+  normalizeSpeed, learnFromTransfer,
   normalizeSite, publicSite, newSiteId, LOGONS,
   exportFilo, importFilo, importFileZilla, exportFileZilla, detectFormat,
   parseXml, parseFzRemoteDir, fzRemoteDir,

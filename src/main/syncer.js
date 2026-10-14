@@ -426,7 +426,7 @@ class Syncer extends EventEmitter {
     for (const f of out.folders) specs.push({ dir: 'up', type: 'folder', local: lp(f), remote: rp(f), endpointId, endpointLabel: label });
     for (const f of out.localFolders) specs.push({ dir: 'down', type: 'folder', local: lp(f), remote: rp(f), endpointId, endpointLabel: label });
     for (const u of out.uploads) specs.push({ dir: 'up', type: 'file', local: lp(u.rel), remote: rp(u.rel), size: u.size, endpointId, endpointLabel: label, existing: 'overwrite', sync: { pairId: pair.id, rel: u.rel, mirror: true } });
-    for (const d of out.downloads) specs.push({ dir: 'down', type: 'file', local: lp(d.rel), remote: rp(d.rel), size: d.size, endpointId, endpointLabel: label, existing: d.isNew ? 'skip' : 'overwrite', sync: { pairId: pair.id, rel: d.rel, mirror: true } });
+    for (const d of out.downloads) specs.push({ dir: 'down', type: 'file', local: lp(d.rel), remote: rp(d.rel), size: d.size, endpointId, endpointLabel: label, existing: d.isNew ? 'skip' : 'overwrite', sync: { pairId: pair.id, rel: d.rel, mirror: true, trash: path.join(pair.local, TRASH) } });
     const ids = [];
     if (specs.length) {
       const added = q.add(specs);
@@ -586,7 +586,8 @@ class Syncer extends EventEmitter {
       specs.push({
         dir: c.from === 'l' ? 'up' : 'down', type: 'file', local: lp(c.rel), remote: rp(c.rel), size: c.size,
         endpointId, endpointLabel: label, existing: c.reason === 'new' ? 'skip' : 'overwrite',
-        sync: { pairId: pair.id, rel: c.rel },
+        // A local file replaced goes to .filo-trash first (Noar, 13/10/2026).
+        sync: c.from === 'r' ? { pairId: pair.id, rel: c.rel, trash: path.join(pair.local, TRASH) } : { pairId: pair.id, rel: c.rel },
         relayOut: c.from === 'l' && pair.relay ? true : undefined,
       });
     }

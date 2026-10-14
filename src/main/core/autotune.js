@@ -75,6 +75,7 @@ class AutoTuner {
   newRun(now) {
     this.cap = Infinity;
     this.boosted = false;
+    this.preset_done = false;
     if (this.phase === 'hold' && /^server allows/.test(this.note)) { this.phase = 'climb'; this.note = 'measuring'; }
     this._reset(now || Date.now());
   }
@@ -109,6 +110,22 @@ class AutoTuner {
     if (this.phase !== 'climb' || this.results.size || target >= this.level) return false;
     this.level = target;
     this.note = 'measuring';
+    this._reset(now || Date.now());
+    return true;
+  }
+
+  // The starting level from a speed test of this server (0.8.0), once, before
+  // anything was measured. Auto goes on measuring from there: one more must
+  // buy 10 %, and a level that buys nothing is left, so a profile that is no
+  // longer true costs one window, not a run.
+  preset(n, now) {
+    if (this.preset_done) return false;
+    this.preset_done = true;
+    this.boosted = true;                 // the segment start below is replaced by the profile
+    const target = Math.max(1, Math.min(n, this.max, this.cap));
+    if (this.phase !== 'climb' || this.results.size || target === this.level) return false;
+    this.level = target;
+    this.note = 'from the speed test';
     this._reset(now || Date.now());
     return true;
   }

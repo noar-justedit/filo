@@ -1048,6 +1048,10 @@ SEC('auto sync with a real server', async () => {
   eq(r.copies, 1, 'a changed file is sent again');
   await runQueue(q);
   eq(sha(path.join(root, 'sync/exports/a.bin')), sha(path.join(loc, 'a.bin')), 'the server has the new version');
+  // The "settling" run armed by the first look at the changed file (stableMs
+  // + 1 s) is let go first: under load it fired in the middle of the next
+  // step and counted a.bin again (test timing, review 0.7.2).
+  await sleep(1500); if ([...q.items.values()].some(i => i.status !== 'done' && !i.removed)) await runQueue(q);
   fs.unlinkSync(path.join(root, 'sync/exports/sub/b.bin'));
   r = await sy.run(pairs[0].id, 'test');
   eq([r.copies, r.respected.length], [0, 1], 'deleted on the server: not sent again');
@@ -1618,6 +1622,217 @@ SEC('ftp (real servers, optional)', async () => {
       await r.unlink(p);
       await r.close();
     }
+  }
+});
+
+SEC('review 0.7.2: nothing local is lost', async () => {
+  const { srv, ep, root } = await server();
+  SRV = srv; EP = ep; SRV_ROOT = () => root;
+  const d = scratch();
+  // 1. "Temporary names" off: a download still goes to .filopart; stopped half
+  //    way, the file that was there is as it was.
+  randomFile(path.join(root, 'big.bin'), 6 * 1024 * 1024);
+  const mine = randomFile(path.join(d, 'big.bin'), 1000);
+  const before = sha(mine);
+  {
+    const settings = Object.assign({}, SETTINGS, { tempNames: false, segments: false, concurrency: 1, limitDown: 2 });
+    const q = makeQueue(ep, settings, 'worker');
+    const [id] = q.add([{ dir: 'down', type: 'file', local: mine, remote: '/big.bin', size: 6 * 1024 * 1024, endpointId: 'e', endpointLabel: 't', existing: 'overwrite' }]);
+    q.start(); await sleep(1500); q.stopItems([id]); await sleep(500);
+    eq(sha(mine), before, 'temp names off, download stopped: the local file is untouched');
+    ok(fs.existsSync(mine + '.filopart'), 'the bytes received went to .filopart');
+    q.closeAll();
+  }
+  // 2. LIVE SYNC S-FTP replacing a local file: the old one goes to .filo-trash.
+  {
+    const { Syncer } = require('../src/main/syncer');
+    const loc = path.join(d, 'Here');
+    const old = randomFile(path.join(loc, 'sub', 'a.bin'), 40000);
+    const oldSha = sha(old);
+    const past = new Date(Date.now() - 3600e3);
+    fs.utimesSync(old, past, past);
+    randomFile(path.join(root, 'sync2', 'sub', 'a.bin'), 50000);
+    const pairs = [{ id: 'cccccccccccccccc', name: 'Here', siteId: 's1', local: loc, remote: '/sync2', direction: 'down', auto: false, interval: 5, exclude: '' }];
+    const prefs = { listSyncPairs: () => pairs, getSyncPair: id => pairs.find(p => p.id === id), getSite: () => ({ id: 's1' }) };
+    const q = makeQueue(ep, SETTINGS, 'inline');
+    const sy = new Syncer({ prefs, queue: q, log: () => {}, resolveEndpoint: async () => ep, createRemote: e => proto.createRemote(e), dir: path.join(d, 'state'), stableMs: 0 });
+    let r = await sy.run(pairs[0].id, 'test');
+    if (!r.copies) { await sleep(400); r = await sy.run(pairs[0].id, 'test'); }
+    eq(r.copies, 1, 'server newer on first look: one copy planned');
+    await runQueue(q);
+    eq(sha(path.join(loc, 'sub', 'a.bin')), sha(path.join(root, 'sync2', 'sub', 'a.bin')), 'the server version is here');
+    const tdir = path.join(loc, '.filo-trash', 'sub');
+    const kept = fs.existsSync(tdir) ? fs.readdirSync(tdir) : [];
+    ok(kept.length === 1 && /^a~\d{8}-\d{6}\.bin$/.test(kept[0]), `the replaced version is in .filo-trash/sub (${kept.join(', ')})`);
+    if (kept.length === 1) eq(sha(path.join(tdir, kept[0])), oldSha, 'and it is the old file, whole');
+    // A manual download replacing a file never goes to the trash.
+    const q2 = makeQueue(ep, SETTINGS, 'inline');
+    q2.add([{ dir: 'down', type: 'file', local: path.join(loc, 'sub', 'a.bin'), remote: '/big.bin', size: 6 * 1024 * 1024, endpointId: 'e', endpointLabel: 't', existing: 'overwrite' }]);
+    await runQueue(q2); q2.closeAll();
+    eq(fs.readdirSync(tdir).length, 1, 'a manual download does not use the trash');
+    sy.stopAll(); q.closeAll();
+  }
+  await srv.close();
+  // 3. preferences.json damaged: the copy from the last start is taken back.
+  {
+    const { Prefs } = require('../src/main/config');
+    const dir = path.join(d, 'prefs');
+    const p1 = new Prefs(dir).load();
+    p1.data.sites = [{ id: 'a1b2c3d4e5f60718', name: 'Kept', protocol: 'sftp', host: 'h', port: 22, user: 'u' }];
+    p1.save();
+    new Prefs(dir).load();                                  // a start that reads it well: .bak made
+    ok(fs.existsSync(path.join(dir, 'preferences.json.bak')), 'a good file is kept as .bak at start');
+    fs.writeFileSync(path.join(dir, 'preferences.json'), '{"sites": [ {"id": "a1b2');   // cut by a power failure
+    const p2 = new Prefs(dir).load();
+    eq([p2.recovered, p2.data.sites.length, p2.data.sites[0] && p2.data.sites[0].name], ['bak', 1, 'Kept'], 'damaged file: the .bak is taken back');
+    ok(fs.readdirSync(dir).some(n => n.startsWith('preferences.json.corrupt-')), 'the damaged file is kept aside');
+  }
+});
+
+SEC('speed test (0.8.0)', async () => {
+  const { runSpeedTest, stepsFor, suggest, PREFIX } = require('../src/main/core/speedtest');
+  const netid = require('../src/main/core/netid');
+  // 1. The model: a profile is clamped, kept, never exported.
+  eq(sites.normalizeSpeed(null), null, 'no profile');
+  eq(sites.normalizeSpeed({ out: { conn: 0, mbps: 5 } }), null, 'a profile with nothing usable is dropped');
+  const sp = sites.normalizeSpeed({ at: 5, net: 'abc', out: { conn: 99, seg: true, mbps: 12.34 }, in: { conn: 3, seg: 'x', mbps: -1 }, maxOpen: 50 });
+  eq([sp.out.conn, sp.out.seg, sp.out.mbps, sp.in, sp.maxOpen], [10, true, 12.3, null, 10], 'clamped, a bad direction dropped');
+  const withSpeed = sites.normalizeSite({ id: 'a1b2c3d4e5f60718', name: 'x', host: 'h', speed: sp });
+  ok(JSON.parse(sites.exportFilo([withSpeed])).sites[0].speed === undefined, 'the filo export never carries a speed profile');
+  {
+    const { Prefs } = require('../src/main/config');
+    const d = scratch();
+    const p = new Prefs(d).load();
+    const s1 = p.saveSite({ name: 'NAS', protocol: 'sftp', host: 'nas', port: 22, user: 'u' });
+    p.saveSite({ id: s1.id, speed: sp });
+    ok(p.getSite(s1.id).speed && p.getSite(s1.id).speed.out.conn === 10, 'the profile is stored');
+    p.saveSite({ id: s1.id, name: 'NAS 2', protocol: 'sftp', host: 'nas', port: 22, user: 'u' });
+    ok(p.getSite(s1.id).speed, 'renaming the bookmark keeps its profile');
+    p.saveSite({ id: s1.id, name: 'NAS 2', protocol: 'sftp', host: 'other', port: 22, user: 'u' });
+    eq(p.getSite(s1.id).speed, null, 'another server: the old profile is gone');
+  }
+  {
+    const prof = { at: 1, net: 'n1', out: { conn: 4, seg: true, mbps: 50 }, in: null };
+    ok(sites.learnFromTransfer(prof, 'n1', 'up', 6, 80, 9).out.conn === 6, 'a faster real transfer updates the profile');
+    eq(sites.learnFromTransfer(prof, 'n1', 'up', 6, 80, 9).out.src, 'transfer', 'and says where the figures come from');
+    eq(sites.learnFromTransfer(prof, 'n1', 'up', 6, 80, 9).out.seg, true, 'segments are kept as measured');
+    eq(sites.learnFromTransfer(prof, 'n1', 'up', 6, 51, 9), null, 'hardly faster: left alone');
+    eq(sites.learnFromTransfer(prof, 'n1', 'up', 2, 20, 9), null, 'slower: never lowered');
+    eq(sites.learnFromTransfer(prof, 'n2', 'up', 6, 80, 9), null, 'another network: left alone');
+    eq(sites.learnFromTransfer(prof, 'n1', 'down', 6, 80, 9), null, 'a direction never tested is not created');
+    eq(sites.learnFromTransfer(null, 'n1', 'up', 6, 80, 9), null, 'no profile: nothing');
+  }
+  // 2. Auto starts where the profile says, once, and still measures.
+  {
+    const t = new AutoTuner({ max: 6, start: 2 });
+    ok(t.preset(5) && t.limit() === 5, 'preset moves the start');
+    ok(!t.preset(3) && t.limit() === 5, 'only once');
+    const t2 = new AutoTuner({ max: 4, start: 2 }); t2.preset(9);
+    eq(t2.limit(), 4, 'never above the maximum');
+    const t3 = new AutoTuner({ max: 8, start: 2 }); t3.serverRefused(3); t3.newRun(); t3.preset(7);
+    ok(t3.limit() <= 7, 'a new run presets again');
+  }
+  eq(stepsFor(8), [1, 2, 4, 8], 'steps for 8'); eq(stepsFor(3), [1, 2, 3], 'steps for 3'); eq(stepsFor(1), [1], 'steps for 1');
+  eq(suggest([{ n: 1, mbps: 10 }, { n: 2, mbps: 20 }, { n: 4, mbps: 21 }]), 2, 'one more connection must buy 10 %');
+  // 3. The network is read, or left empty; never an error.
+  const c = await netid.refresh();
+  ok(typeof c.id === 'string' && typeof netid.current() === 'string', 'the network identity is a string');
+  // 4. The engine against a real server; nothing is left on it.
+  const left = root => { const out = []; (function walk(d) { for (const f of fs.readdirSync(d, { withFileTypes: true })) { const p = path.join(d, f.name); if (f.isDirectory()) walk(p); else out.push(p); } })(root); return out; };
+  {
+    const { srv, ep, root } = await server({ maxSessions: 3 });
+    fs.mkdirSync(path.join(root, 'home'), { recursive: true });
+    const events = [];
+    const res = await runSpeedTest({ create: () => proto.createRemote(Object.assign({}, ep, { acceptFingerprint: null })), protocol: 'SFTP', dir: '/', durationMs: 6000, token: { cancelled: false }, onEvent: e => events.push(e.type + (e.phase ? ':' + e.phase : '')) });
+    eq([...new Set(events)].filter(x => x !== 'sample'), ['phase:connect', 'info', 'phase:out', 'dir', 'phase:in', 'done'], 'the test goes connect, out, in, done');
+    eq([res.maxOpen, res.capped], [3, true], 'a server that takes 3 connections: 3 found, and said so');
+    eq(res.out.steps.map(x => x.n), [1, 2, 3], 'steps stop at what the server accepts');
+    ok(res.out.mbps > 0 && res.in.mbps > 0, `both directions measured (${res.out.mbps.toFixed(1)} / ${res.in.mbps.toFixed(1)} MB/s)`);
+    ok(res.out.conn >= 1 && res.out.conn <= 3 && res.in.conn >= 1 && res.in.conn <= 3, 'a suggestion within what the server takes');
+    eq(left(root), [], 'no temporary file is left on the server');
+    // Cancelled half way: stops at once, and still cleans.
+    const token = { cancelled: false };
+    setTimeout(() => { token.cancelled = true; if (token.cut) token.cut(); }, 2500);
+    let err = null;
+    const t0 = Date.now();
+    try { await runSpeedTest({ create: () => proto.createRemote(Object.assign({}, ep)), protocol: 'SFTP', dir: '/', durationMs: 20000, token }); } catch (e) { err = e; }
+    ok(err && err.cancelled, 'a cancelled test says so');
+    ok(Date.now() - t0 < 8000, `and stops at once (${Date.now() - t0} ms)`);
+    eq(left(root), [], 'a cancelled test leaves nothing either');
+    await srv.close();
+  }
+  // 5. Not even one connection: the real reason, nothing left behind.
+  {
+    const { srv, ep, root } = await server();
+    let err = null;
+    try { await runSpeedTest({ create: () => proto.createRemote(Object.assign({}, ep, { password: 'wrong' })), dir: '/', durationMs: 6000, token: { cancelled: false } }); } catch (e) { err = e; }
+    ok(err && /refused the login|login/i.test(err.message), 'a wrong password is reported as such: ' + (err && err.message.split('\n')[0]));
+    await srv.close();
+  }
+  // 5b. Where the test works: root => the user chooses; read-only => asked; picked folder => used.
+  {
+    const { resolveDir } = require('../src/main/core/speedtest');
+    const fake = writable => ({
+      upload: async (_s, p) => { if (!writable.some(w => p.startsWith(w === '/' ? '/' : w + '/'))) throw new Error('Permission denied'); },
+      unlink: async () => {},
+    });
+    const code = async f => { try { await f(); return null; } catch (e) { return e.code; } };
+    eq(await code(() => resolveDir(fake(['/']), '/', { dir: '' })), 'PICK_DIR', 'bookmark on the server root: the user is asked for a folder');
+    eq(await code(() => resolveDir(fake(['/']), '/', { dir: '' , readOnly: false })), 'PICK_DIR', 'login folder = root, no folder set: asked');
+    eq(await resolveDir(fake(['/video']), '/', { dir: '/video' }), '/video', 'a folder picked or kept in the bookmark is used when it accepts a file');
+    eq(await resolveDir(fake(['/home/me']), '/home/me', { dir: '' }), '/home/me', 'a writable login folder that is not the root: no question');
+    eq(await code(() => resolveDir(fake([]), '/', { dir: '/docs' })), 'READONLY', 'a read-only bookmark folder: the user is asked');
+    eq(await resolveDir(fake([]), '/', { dir: '/docs', readOnly: true }), '/docs', 'reception only: no write needed');
+  }
+  // 5c. Reception only, on the real server: nothing is written, only RECEIVE is measured.
+  {
+    const { srv, ep, root } = await server();
+    fs.mkdirSync(path.join(root, 'media'));
+    fs.writeFileSync(path.join(root, 'media', 'clip.bin'), crypto.randomBytes(3 * 1024 * 1024));
+    const before = fs.readdirSync(path.join(root, 'media')).join();
+    const res = await runSpeedTest({ create: () => proto.createRemote(Object.assign({}, ep, { acceptFingerprint: null })), protocol: 'SFTP', durationMs: 6000, dir: '/media', readOnly: true, token: { cancelled: false } });
+    ok(res.out === null && res.in && res.in.mbps > 0, 'reception only: no send figure, a receive figure');
+    eq(fs.readdirSync(path.join(root, 'media')).join(), before, 'reception only: nothing written on the server');
+    let c = null; try { await runSpeedTest({ create: () => proto.createRemote(Object.assign({}, ep, { acceptFingerprint: null })), durationMs: 6000, dir: '/', readOnly: true, token: { cancelled: false } }); } catch (e) { c = e.code; }
+    eq(c, 'NO_FILE', 'reception only on an empty folder: clear error');
+    let pk = null; try { await runSpeedTest({ create: () => proto.createRemote(Object.assign({}, ep, { acceptFingerprint: null })), durationMs: 6000, dir: '', token: { cancelled: false } }); } catch (e) { pk = e.code; }
+    eq(pk, 'PICK_DIR', 'server root as login folder, no folder set: asked');
+    await srv.close();
+  }
+  // 6. The queue starts Auto from the profile, and sends a file whole when
+  //    the test found no gain from segments.
+  {
+    const { srv, ep, root } = await server();
+    const d = scratch();
+    const mk = (n, name) => ({ dir: 'up', type: 'file', local: randomFile(path.join(d, name), 3 * 1024 * 1024), remote: '/' + name, size: 3 * 1024 * 1024, endpointId: 'site:' + n, endpointLabel: 't' });
+    const seen = [];
+    const q = makeQueue(ep, Object.assign({}, SETTINGS, { concurrency: 'auto', autoMax: 6, segments: true }), 'inline', { speedProfile: (id, dir) => { seen.push(id + ':' + dir); return { conn: 4, seg: false, mbps: 50 }; } });
+    q.add([mk('a1b2c3d4e5f60718', 'p1.bin'), mk('a1b2c3d4e5f60718', 'p2.bin')]);
+    let sawSeg = false;
+    const watch = setInterval(() => { for (const i of q.items.values()) if (i.seg) sawSeg = true; }, 10);
+    await runQueue(q, 60000);
+    clearInterval(watch);
+    ok(seen.length > 0 && seen.every(x => x === 'site:a1b2c3d4e5f60718:up'), 'the queue asks the profile of the site, for the direction of the file');
+    ok(q.logs.some(l => /this server's speed test/.test(l)), 'Auto says it started from the speed test');
+    ok(q.tuner.preset_done, 'the preset was used once');
+    ok(!sawSeg, 'segments off by the profile: the files went whole');
+    q.closeAll();
+    // And without a profile the same file is cut in segments (control).
+    const q2 = makeQueue(ep, Object.assign({}, SETTINGS, { concurrency: 'auto', autoMax: 6, segments: true }), 'inline');
+    q2.add([mk('x', 'p3.bin')]);
+    let sawSeg2 = false;
+    const watch2 = setInterval(() => { for (const i of q2.items.values()) if (i.seg) sawSeg2 = true; }, 10);
+    await runQueue(q2, 60000);
+    clearInterval(watch2);
+    ok(sawSeg2, 'control: without a profile, a file this size is sent in segments');
+    q2.closeAll();
+    // What a run measured goes up with the summary (one server, one direction, big enough).
+    const q3 = makeQueue(ep, Object.assign({}, SETTINGS, { concurrency: 'auto', autoMax: 6 }), 'inline');
+    q3.add([mk('a1b2c3d4e5f60718', 'p4.bin')]);
+    const s3 = await runQueue(q3, 60000);
+    ok(s3.profile === undefined, 'a small run says nothing about the server (under 100 MB, under 10 s)');
+    q3.closeAll();
+    await srv.close();
   }
 });
 

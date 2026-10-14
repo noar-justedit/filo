@@ -4,6 +4,114 @@ All notable changes to filo are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/lang/fr/).
 
+## [0.8.1] — 2026-10-14
+
+### Fixed
+
+- **Speed test: "Permission denied" on a NAS** (Noar). The test wrote its
+  temporary files at the login folder, which on a NAS is the server root and
+  not writable. Now, a bookmark pointing at the root makes filo ask for a
+  folder to test in (folder chooser). A bookmark with a folder is used as it
+  is; only if that folder refuses a file, filo offers a **reception-only
+  test** (reads files already there, writes nothing, sending is not measured)
+  or CANCEL. Saving a reception-only result keeps the previous send figure
+  when it was measured on the same network.
+
+## [0.8.0] — 2026-10-13
+
+### Added
+
+- **Speed test of a bookmark** (Noar): the gauge icon on a bookmark measures
+  the server, sending (OUT) and receiving (IN), with 1, 2, 4 and 8
+  connections (as many as the server accepts) and, in SFTP, one big file in
+  segments; 20 s or 60 s. Two gauges, one graph, then what it suggests: the
+  starting number of connections (one more only if it buys 10 %) and whether
+  segments help. The latency, the connections the server accepts and its
+  checksums are shown live. SAVE keeps the figures in the bookmark with the
+  date and the network they were measured on; **Auto starts from them**
+  whenever filo is on that network (elsewhere it starts as usual), and a file
+  is sent whole when segments gained nothing there. The test writes
+  temporary files (`.filo-speedtest-…`) in the login folder and removes them
+  at the end, also when cancelled or failed.
+- A real transfer that goes **faster than the speed test** says updates the
+  bookmark's figures for that direction (never lower ones); only a bookmark
+  already tested, on the same network.
+- **Connection in progress**: the title bar shows the server, the step
+  (finding the address, opening the connection, secure handshake, login,
+  reading the folder), a clock and CANCEL; an orange bar runs under the
+  title bar; the server panel lists the steps. After 8 s on one step it says
+  the server is slow to answer. CANCEL really cuts the connection.
+
+### Changed
+
+- **The three places are in the title bar**: BOOKMARKS (an icon), FTP MODE
+  and LIVE SYNC MODE replace the side bar. The server (name, address,
+  protocol) moves to the right, with Settings as an icon.
+- SITES is now called **BOOKMARKS** everywhere.
+
+## [0.7.2] — 2026-10-13
+
+### Added
+
+- **LIVE SYNC bookmarks** (Noar): in SITES, a LIVE SYNC folder, always
+  first, lists every session (made from the sessions: renamed or deleted
+  there, at once here). Double-click: the session in the LIVE SYNC view
+  (connected first if it is off, asked). Right-click: open, browse its
+  S-FTP folder, session settings.
+- **SESSION ID**: what the MASTER sends and the SLAVE pastes (its SYNCTHING
+  ID and the session). The SLAVE creates the session at once and offers it
+  back; the MASTER links it by itself, even with a computer it accepted
+  before (that computer was never asked again: the invitation never came).
+  The MASTER opens the approval of a new computer by itself; the SLAVE
+  chooses its folder while it waits and sees each step with the time.
+- **The ring alone**: LIVE SYNC reduced to its ring in a small window, kept
+  above the others if wanted; filo in the menu bar / notification area on
+  every system (open, sessions and their state, the ring alone, hide, quit).
+- A red **DISCONNECT** button in the LIVE SYNC view; the button for the end
+  of the queue moves to the title bar, as in syncto.
+
+### Changed
+
+- The SYNCTHING queue empties as files arrive, one line per file, saying
+  SEND or RECEIVE and the other computer; the LIVE SYNC copies in the FTP
+  queue say SEND / RECEIVE and S-FTP BACKUP or SERVER.
+- "Import session" shows its buttons only (PASTE, IMPORT CONFIG, FIND,
+  CANCEL; what each does on hover).
+- DISCONNECT means the whole session everywhere, confirmed (the same as the
+  menu); each way of a DUAL SYNC is chosen on its mode badge.
+- Wording: SESSION ID wherever the SLAVE pastes; SYNCTHING (the mode) in
+  capitals; the instructions sent to the other computer no longer name a
+  "MODE ▾" menu; SLAVE badge outlined, MASTER filled; an S-FTP session's tab
+  is violet; REFUSE and NOT NOW say what they do.
+- Buttons and fields aligned on one line (folder fields, dialog buttons,
+  DISCONNECT).
+
+### Fixed
+
+- **A download never writes straight into the file any more**: with
+  "temporary files" off, a cut or a full disk destroyed the local file that
+  was there. Downloads always go to `.filopart` first; the switch now only
+  concerns sending.
+- **LIVE SYNC S-FTP keeps the local file it replaces**: moved to the
+  session's `.filo-trash` first (`name~YYYYMMDD-HHMMSS.ext`), as SYNCTHING
+  does. filo never empties it.
+- **Damaged preferences**: `preferences.json` and `queue.json` are written
+  with fsync and kept as `.bak` at each start; a file that cannot be read is
+  put aside and the `.bak` taken back (it used to be replaced by an empty
+  profile: sites, trusted servers and saved passwords lost).
+- The wait for the MASTER really stops at CANCEL (it went on polling, could
+  create the session after CANCEL, and could answer another window).
+- The SESSION ID no longer stays on "…" until filo restarts.
+- "Session open" only once the MASTER shares the folder; a SYNCTHING ID
+  alone no longer lands on an older session with the same computer; the
+  MASTER logs a second computer pasting the SESSION ID of a linked session.
+- The ring alone is never saved as the window size; a window closed in it
+  starts full size again.
+- SAVE on a DUAL SYNC with SYNCTHING off no longer switches SYNCTHING on.
+- Deleting a session checks its id.
+- A speed under 1 KB/s is rounded (it showed "359.3333333333333 B/s" on a
+  small file).
+
 ## [0.7.1] — 2026-10-13
 
 ### Added

@@ -52,7 +52,7 @@ input,textarea,select,button{font-family:inherit;font-size:inherit;color:inherit
 input,textarea{user-select:text;-webkit-user-select:text;}
 button{cursor:pointer;}
 svg{flex-shrink:0;}
-#app{display:flex;flex-direction:column;height:100vh;}
+#app{display:flex;flex-direction:column;height:100vh;position:relative;}
 
 /* Scrollbars: 13 px, a thumb on nothing (syncto's documented exception). */
 ::-webkit-scrollbar{width:13px;height:13px;}
@@ -107,6 +107,8 @@ body.win #titlebar,body.linux #titlebar{padding-left:16px;}
 .ibtn.ins.lab{width:auto;padding:0 9px 0 8px;gap:6px;font-size:10.5px;font-weight:700;letter-spacing:.08em;}
 .ibtn.ins.lab svg{width:14px;height:14px;}
 #btn-after.set{color:var(--orange);background:var(--orange-d);}
+#titlebar .t-after{width:30px;height:30px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;-webkit-app-region:no-drag;}
+#titlebar .t-after svg{width:15px;height:15px;}
 #wincontrols{display:none;gap:2px;margin-left:4px;}
 body.win #wincontrols,body.linux #wincontrols{display:flex;}
 #wincontrols button{width:36px;height:30px;border:0;background:transparent;color:var(--text3);border-radius:6px;
@@ -355,7 +357,7 @@ body.syncb .p-dif{display:inline-flex !important;}
 .mcard .body{overflow-y:auto;min-height:0;padding-bottom:4px;}
 .m-h1{font-size:18px;font-weight:600;letter-spacing:-.3px;margin-bottom:6px;display:flex;align-items:center;gap:10px;}
 .m-sub{font-size:12.5px;color:var(--text3);line-height:1.55;margin-bottom:16px;}
-.m-btns{display:flex;gap:8px;justify-content:flex-end;padding:16px 0 20px;flex-shrink:0;}
+.m-btns{display:flex;gap:8px;justify-content:flex-end;align-items:center;padding:16px 0 20px;flex-shrink:0;}
 .m-btns .sp{flex:1;}
 .field{display:flex;flex-direction:column;gap:6px;margin-bottom:12px;min-width:0;}
 .field > label{font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--text3);}
@@ -365,7 +367,7 @@ body.syncb .p-dif{display:inline-flex !important;}
 .field .hint{font-size:11.5px;color:var(--text3);line-height:1.45;}
 .frow{display:flex;gap:10px;}
 .frow > .field{flex:1;}
-.inline{display:flex;gap:6px;}
+.inline{display:flex;gap:6px;align-items:center;}
 .inline input{flex:1;}
 .fp{font-family:var(--mono);font-size:12px;background:var(--ins);border-radius:var(--r-field);padding:10px 12px;word-break:break-all;color:var(--text);line-height:1.5;}
 .kv{display:grid;grid-template-columns:110px 1fr;gap:6px 12px;font-size:12.5px;margin:12px 0;}
@@ -375,15 +377,67 @@ body.syncb .p-dif{display:inline-flex !important;}
 /* Site manager */
 #ov-sites .mcard{width:920px;height:640px;padding:0;flex-direction:row;overflow:hidden;}
 #ov-sync .mcard{width:960px;height:680px;padding:0;flex-direction:row;overflow:hidden;}
-/* ── The rail (Noar, 12/10/2026, option C) ─────────────────────────────── */
+/* ── A connection being opened (0.8.0) ─────────────────────────────────── */
+@keyframes cp-b{0%,100%{opacity:1}50%{opacity:.3}}
+@keyframes cp-slide{0%{left:-30%}100%{left:100%}}
+@keyframes cp-spin{to{transform:rotate(360deg)}}
+.conn-pill.busy .dot{background:var(--orange);box-shadow:0 0 0 3px rgba(242,160,61,.18);animation:cp-b 1s ease-in-out infinite;}
+#conn-badges{display:inline-flex;align-items:center;gap:10px;}
+.cp-step{font-size:11.5px;font-weight:600;color:var(--orange);white-space:nowrap;}
+.cp-t{font-family:var(--mono);font-size:11.5px;color:var(--text3);white-space:nowrap;}
+.cp-x{height:20px;padding:0 8px;border:none;border-radius:6px;background:var(--red-d);color:var(--red);font-size:9.5px;font-weight:800;letter-spacing:.1em;}
+.cp-bar{position:absolute;left:0;right:0;top:51px;height:2px;overflow:hidden;z-index:5;pointer-events:none;}
+.cp-bar i{position:absolute;top:0;height:2px;width:30%;border-radius:2px;background:var(--orange);animation:cp-slide 1.3s ease-in-out infinite;}
+.cp-pan{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--card);border-radius:inherit;z-index:4;}
+.cp-pan .ring{width:30px;height:30px;border-radius:50%;border:3px solid rgba(242,160,61,.2);border-top-color:var(--orange);animation:cp-spin 1s linear infinite;}
+.cp-pan .h{font-size:14px;font-weight:700;text-align:center;}
+.cp-pan .m{font-family:var(--mono);font-size:11.5px;color:var(--text3);text-align:center;margin-top:5px;}
+.cp-steps{display:flex;flex-direction:column;gap:7px;margin-top:4px;font-size:12px;color:var(--text3);}
+.cp-steps div{display:flex;align-items:center;gap:9px;}
+.cp-steps .ok{color:var(--green);} .cp-steps .now{color:var(--text);font-weight:700;}
+.cp-steps b{width:14px;display:inline-block;text-align:center;}
+.cp-warn{margin-top:6px;max-width:300px;text-align:center;font-size:12px;line-height:1.5;color:var(--orange);background:var(--orange-d);padding:9px 12px;border-radius:9px;}
+@media (prefers-reduced-motion:reduce){.conn-pill.busy .dot,.cp-bar i,.cp-pan .ring{animation:none;}}
+/* ── The speed test of a bookmark (0.8.0) ──────────────────────────────── */
+.sm-item .sm-spd{flex:none;width:26px;height:26px;color:var(--blue);opacity:0;margin-left:auto;background:transparent;}
+.sm-item .sm-spd.has{opacity:.5;}
+.sm-item:hover .sm-spd,.sm-item.sel .sm-spd{opacity:1;}
+.sm-item .sm-spd:hover{background:var(--blue-d);}
+.spd-ic{display:inline-flex;width:18px;height:18px;color:var(--blue);flex:none;}
+.spd-ic svg{width:18px;height:18px;}
+.spd-site{display:flex;align-items:center;gap:10px;background:var(--ins);border-radius:var(--r-ins);padding:10px 14px;}
+.spd-site .n{font-weight:700;font-size:13px;} .spd-site .a{font-size:11px;color:var(--text3);margin-top:2px;}
+.spd-start{display:flex;align-items:center;justify-content:center;gap:24px;padding:16px 0 4px;}
+.spd-go{width:84px;height:84px;border-radius:50%;border:2px solid rgba(77,144,240,.5);background:var(--blue-d);color:var(--text);font-size:20px;font-weight:800;letter-spacing:.08em;cursor:pointer;}
+.spd-go:hover{background:rgba(77,144,240,.28);}
+.spd-ph{margin-left:12px;font-size:10px;font-weight:800;letter-spacing:.12em;vertical-align:middle;}
+.spd-gs{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+.spd-g{position:relative;height:104px;border-radius:var(--r-ins);background:rgba(14,16,20,.35);border:1px solid rgba(255,255,255,.06);}
+.spd-g svg{position:absolute;left:50%;top:8px;margin-left:-80px;}
+.spd-g .v{position:absolute;left:0;right:0;top:52px;text-align:center;line-height:1;}
+.spd-g .v b{display:block;font-size:22px;font-weight:700;color:var(--text);}
+.spd-g .v i{display:block;font-style:normal;font-size:9.5px;font-weight:800;letter-spacing:.12em;margin-top:6px;}
+.spd-gr{border-radius:var(--r-ins);background:var(--ins);padding:8px 10px 4px;margin-top:10px;}
+.spd-gr svg{width:100%;height:auto;display:block;}
+.spd-k{font-size:10px;font-weight:700;letter-spacing:.12em;color:var(--text3);}
+.spd-v{font-size:12.5px;font-weight:700;margin-top:3px;}
+.spd-info{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:10px;border-radius:var(--r-ins);background:var(--ins);padding:10px 14px;}
+.spd-path{font-size:12px;color:var(--text3);padding:0 2px 8px;word-break:break-all;}
+.spd-list{max-height:260px;overflow:auto;border-radius:var(--r-ins);background:var(--ins);padding:4px;}
+.spd-list button{background:transparent;border:0;font-family:inherit;cursor:pointer;display:flex;align-items:center;gap:10px;width:100%;text-align:left;padding:8px 10px;border-radius:8px;color:var(--text);font-size:13px;}
+.spd-list button:hover{background:var(--raise);}
+.spd-list button svg{width:16px;height:16px;flex:none;color:var(--text3);}
+.spd-sug{display:grid;grid-template-columns:86px 1fr 1fr;gap:8px 10px;align-items:center;margin-top:10px;border-radius:var(--r-ins);background:var(--ins);padding:12px 14px;}
+.spd-n{font-size:14px;font-weight:700;}
+/* ── The tabs of the title bar (Noar, 13/10/2026) ─────────────────────── */
 #shell{flex:1;display:flex;min-height:0;}
-#shell #main{min-width:0;padding-left:0;}
-#rail{width:88px;flex-shrink:0;display:flex;flex-direction:column;align-items:center;gap:6px;padding:0 0 12px;}
-.rail-sp{flex:1;}
-.rail-b{position:relative;width:68px;display:flex;flex-direction:column;align-items:center;gap:6px;padding:11px 0 9px;border:none;border-radius:12px;
-  background:transparent;color:var(--text3);font-size:9px;font-weight:800;letter-spacing:.08em;white-space:nowrap;}
-.rail-b svg{width:21px;height:21px;}
-.rail-b:hover{color:var(--text);background:rgba(255,255,255,.04);}
+#shell #main{min-width:0;}
+#t-tabs{display:flex;gap:4px;margin-left:6px;-webkit-app-region:no-drag;flex:none;}
+.t-tab{position:relative;display:inline-flex;align-items:center;gap:7px;height:30px;padding:0 13px 0 11px;border:none;border-radius:8px;
+  background:transparent;color:var(--text3);font-size:10.5px;font-weight:800;letter-spacing:.1em;white-space:nowrap;}
+.t-tab.ic{padding:0 9px;}
+.t-tab svg{width:15px;height:15px;flex:none;}
+.t-tab:hover{color:var(--text);background:rgba(255,255,255,.04);}
 /* The view shown, in its colour: TRANSFER green (the FTP queue's), LIVE
    SYNC the colour of the session shown (SYNCTHING blue, DUAL SYNC blue to
    violet, S-FTP violet). */
@@ -391,7 +445,7 @@ body.syncb .p-dif{display:inline-flex !important;}
 #btn-sync.cur{color:var(--m-c,var(--blue));background:var(--m-d,var(--blue-d));}
 #btn-sync.cur.hy:not(.err) span:first-of-type{background:linear-gradient(90deg,var(--blue),var(--violet));-webkit-background-clip:text;background-clip:text;color:transparent;}
 /* A live sync is on: a blue dot that breathes; a problem: orange. */
-.rail-dot{display:none;position:absolute;top:9px;right:15px;width:7px;height:7px;border-radius:50%;background:var(--blue);box-shadow:0 0 8px var(--blue);}
+.rail-dot{display:none;position:absolute;top:4px;right:5px;width:7px;height:7px;border-radius:50%;background:var(--blue);box-shadow:0 0 8px var(--blue);}
 #btn-sync.on .rail-dot{display:block;animation:sy-dot 2.4s ease-in-out infinite;}
 #btn-sync.err .rail-dot{display:block;background:var(--orange);box-shadow:0 0 8px var(--orange);}
 @keyframes sy-dot{50%{opacity:.45;}}
@@ -399,7 +453,7 @@ body.syncb .p-dif{display:inline-flex !important;}
 #btn-sync.err{color:var(--orange);}
 #btn-sync.err.cur{background:var(--orange-d);}
 #btn-sync .sy-n:empty{display:none;}
-#btn-sync .sy-n{position:absolute;top:5px;right:9px;font-family:var(--mono);font-size:10px;font-weight:700;letter-spacing:0;padding:1px 5px;border-radius:var(--r-badge);background:var(--raise);color:var(--text);}
+#btn-sync .sy-n{font-family:var(--mono);font-size:10px;font-weight:700;letter-spacing:0;padding:1px 5px;border-radius:var(--r-badge);background:var(--raise);color:var(--text);}
 #btn-sync .rail-dot:has(+ .sy-n:not(:empty)){display:none !important;}
 
 /* ── LIVE SYNC: new session (three kinds), the forms, the folder picker ── */
@@ -462,6 +516,7 @@ body.live-on #quick,body.live-on #panels{display:none;}
 .lv-tabs button{height:32px;background:var(--ins);border:none;color:var(--text2);font:inherit;font-size:12px;font-weight:700;padding:0 11px;border-radius:var(--r-field);cursor:pointer;}
 .lv-tabs button:hover{color:var(--text);}
 .lv-tabs button.on{background:var(--blue-d);color:var(--blue);}
+.lv-tabs button.on.sf{background:var(--violet-d);color:var(--violet);}
 .lv-tabs button.err{color:var(--orange);}
 .lv-name{font-size:14px;font-weight:700;color:var(--text);}
 .lv-head .sp{flex:1;}
@@ -500,6 +555,23 @@ body.live-on .q-progrow{display:none;}
 .lv-id .t{flex:1;min-width:0;}
 .lv-id .b{display:flex;gap:6px;flex-shrink:0;}
 .lv-mid{position:relative;}
+/* The ring alone (Noar, 13/10/2026): a small window, the ring and its bar. */
+.lv-minibar{display:none;}
+/* A clear way out (Noar, 13/10/2026). */
+.lv-disc{background:var(--red-d);color:var(--red);margin-bottom:3px;}
+.lv-disc svg{width:14px;height:14px;}
+.lv-disc.on{background:var(--green-d);color:var(--green);}
+body.mini #titlebar,body.mini #footer,body.mini #queue,body.mini #split-queue,body.mini .lv-head,body.mini #lv-ask,
+body.mini #lv-local,body.mini #lv-remote,body.mini .lv-flow,body.mini #lv-modeb{display:none !important;}
+body.mini #main{padding:0;gap:0;}
+body.mini #live{border-radius:0;padding:0;gap:0;background:var(--page);}
+body.mini .lv-body{display:flex !important;flex:1;min-height:0;padding:0 10px 10px;}
+body.mini .lv-mid{flex:1;background:transparent;padding:4px;-webkit-app-region:drag;}
+body.mini .lv-minibar{display:flex;align-items:center;gap:2px;height:34px;padding:0 6px 0 12px;-webkit-app-region:drag;}
+body.mini .lv-minibar .nm{flex:1;min-width:0;font-size:12px;font-weight:700;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+body.mini .lv-minibar .ibtn{-webkit-app-region:no-drag;width:26px;height:26px;}
+body.mini .lv-minibar .ibtn svg{width:14px;height:14px;}
+#lv-mini-pin.on{color:var(--accent);}
 /* The session at a glance: its kind in its colour, its state as an icon. */
 #lv-modeb{position:absolute;top:14px;left:14px;z-index:2;}
 .lv-modeb{border:none;cursor:pointer;font-family:inherit;}
@@ -520,7 +592,8 @@ body.live-on #conn-pill{display:none;}
 .lv-sw.warn{color:var(--orange);background:var(--orange-d);box-shadow:inset 0 0 0 1px rgba(242,160,61,.35);}
 .lv-sw:hover{filter:brightness(1.15);}
 /* LIVE SYNC is blue (Noar, 11/10/2026): MASTER filled, SLAVE outlined. */
-.sy-role.master,.sy-role.slave{color:var(--blue);background:var(--blue-d);}
+.sy-role.master{color:var(--blue);background:var(--blue-d);}
+.sy-role.slave{color:var(--blue);background:transparent;box-shadow:inset 0 0 0 1px rgba(77,144,240,.55);}
 .lv-host .sy-role{margin-left:auto;}
 /* The SYNCTHING queue: in place of filo's own queue while a SYNCTHING
    session is shown (Noar, 12/10/2026: what moves, what waits, what arrived). */
@@ -530,9 +603,25 @@ body.live-st #queue .q-head,body.live-st #q-blocked,body.live-st #q-tabs,body.li
 .st-head{display:flex;align-items:center;gap:14px;padding:4px 4px 10px;}
 #st-hold.held{color:var(--q-color,var(--blue));}
 .st-stats{font-family:var(--mono);font-size:11px;color:var(--text3);}
-.st-list .qrow{position:relative;left:auto;right:auto;}
-.st-list .qrow .dirc{display:inline-flex;color:var(--text3);flex:none;}
-.st-list .qrow .dirc svg{width:14px;height:14px;}
+/* The SYNCTHING queue, one line per file (Noar, 13/10/2026). */
+.strow{position:relative;display:flex;align-items:center;gap:10px;height:30px;padding:0 10px;border-radius:7px;min-width:0;}
+.strow:hover{background:rgba(255,255,255,.035);}
+.strow + .strow{margin-top:2px;}
+.strow .pc{flex:none;width:44px;font-family:var(--mono);font-size:12px;font-weight:700;color:var(--green);font-variant-numeric:tabular-nums;}
+.qrow .way{flex:none;display:inline-flex;align-items:center;gap:5px;font-size:9.5px;font-weight:800;letter-spacing:.1em;padding:3px 7px;border-radius:var(--r-badge);}
+.qrow .way svg{width:12px;height:12px;} .qrow .way b{font-weight:700;letter-spacing:.04em;}
+.way.sf{color:var(--violet) !important;background:var(--violet-d) !important;}
+.strow .way{flex:none;display:inline-flex;align-items:center;gap:5px;min-width:150px;font-size:9.5px;font-weight:800;letter-spacing:.1em;padding:3px 7px;border-radius:var(--r-badge);}
+.strow .way svg{width:12px;height:12px;}
+.strow .way b{font-weight:700;letter-spacing:.04em;max-width:90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.strow .way.up{color:var(--q-color,var(--blue));background:color-mix(in srgb,var(--q-color,var(--blue)) 14%,transparent);}
+.strow .way.down{color:var(--green);background:var(--green-d);}
+.strow .nm{flex:0 1 auto;min-width:40px;font-size:12.5px;line-height:18px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.strow .fd{flex:1 1 0;min-width:0;font-family:var(--mono);font-size:10.5px;line-height:16px;color:var(--text4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.strow .sz{flex:none;font-family:var(--mono);font-size:10.5px;color:var(--text3);}
+.strow .st{flex:none;display:flex;}
+.strow .bar{position:absolute;left:10px;bottom:2px;height:2px;max-width:calc(100% - 20px);border-radius:1px;background:var(--q-fill,var(--blue));}
+.strow .bar.r{background:var(--red);}
 .st-empty{padding:30px 0;text-align:center;color:var(--text4);font-size:12.5px;}
 .sm-item .a .sy-role{margin-left:7px;}
 .sy-kind .badge{margin-left:2px;}
@@ -675,6 +764,13 @@ body.live-st #queue .q-head,body.live-st #q-blocked,body.live-st #q-tabs,body.li
 .sm-item .ic.sftp{background:var(--green-d);color:var(--green);}
 .sm-item .ic.ftps,.sm-item .ic.ftps-implicit{background:var(--blue-d);color:var(--blue);}
 .sm-item .ic.ftp{background:var(--orange-d);color:var(--orange);}
+/* LIVE SYNC bookmarks (Noar, 13/10/2026): blue SYNCTHING, violet S-FTP, both for DUAL SYNC. */
+.sm-item .ic.ls-st{background:var(--blue-d);color:var(--blue);}
+.sm-item .ic.ls-sf{background:var(--violet-d);color:var(--violet);}
+.sm-item .ic.ls-ds{background:linear-gradient(90deg,rgba(77,144,240,.25),rgba(168,128,255,.25));color:#cfc8ff;}
+.sm-live-dot{width:7px;height:7px;border-radius:50%;background:var(--text3);opacity:.5;flex-shrink:0;margin-left:auto;}
+.sm-live-dot.on{background:var(--green);opacity:1;}
+.sm-livef svg{color:var(--blue);}
 .sm-item .t{min-width:0;flex:1;}
 .sm-item .t .a{font-size:12.5px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .sm-item .t .b{font-size:11px;color:var(--text3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-family:var(--mono);}
@@ -732,6 +828,15 @@ body.live-st #queue .q-head,body.live-st #q-blocked,body.live-st #q-tabs,body.li
 .known .k .a div:first-child{font-size:12.5px;color:var(--text);}
 .known .k .a div:last-child{font-size:10.5px;color:var(--text3);font-family:var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .set-test-res{font-size:12px;}
+/* The SLAVE's wait for its MASTER (Noar, 13/10/2026). */
+.jw{margin-top:14px;display:flex;flex-direction:column;gap:8px;}
+.jw-step{display:flex;align-items:center;gap:10px;font-size:12.5px;color:var(--text4);}
+.jw-step i{width:16px;height:16px;display:inline-flex;align-items:center;justify-content:center;flex:none;}
+.jw-step i svg{width:14px;height:14px;}
+.jw-step.now{color:var(--text);} .jw-step.ok{color:var(--green);}
+.jw-spin{width:12px;height:12px;border:2px solid var(--text4);border-top-color:var(--accent);border-radius:50%;animation:jw-r .8s linear infinite;}
+@keyframes jw-r{to{transform:rotate(360deg);}}
+.jw-time{font-family:var(--mono);font-size:11px;color:var(--text3);margin-top:4px;}
 /* Check against the other side: the lists. */
 .cmp-h{font-size:10px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--text3);margin:12px 0 6px;}
 .cmp-h span{font-family:var(--mono);margin-left:6px;color:var(--text2);}
@@ -808,12 +913,23 @@ body.live-st #queue .q-head,body.live-st #q-blocked,body.live-st #q-tabs,body.li
 <!-- ── Title bar ─────────────────────────────────────────────────────── -->
 <div id="titlebar">
   <div class="t-logo"><span>fil</span><span class="a">o</span></div>
-  <div class="conn-pill" id="conn-pill" data-tip="Not connected">
-    <span class="dot"></span><span class="nm" id="conn-name">Not connected</span><span class="addr" id="conn-addr"></span><span class="proto" id="conn-proto"></span>
-    <span id="conn-badges"></span>
-  </div>
+  <!-- The three places (Noar, 13/10/2026): BOOKMARKS (an icon: the window of
+       saved servers), FTP MODE and LIVE SYNC MODE (the two views). -->
+  <nav id="t-tabs" aria-label="filo">
+    <button class="t-tab ic" id="q-sites" aria-label="Bookmarks" data-tip="BOOKMARKS: your saved servers (⌘S)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/></svg></button>
+    <button class="t-tab" id="mode-client" data-tip="FTP MODE: the two file panels and the queue"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m16 3 4 4-4 4"/><path d="M20 7H4"/><path d="m8 21-4-4 4-4"/><path d="M4 17h16"/></svg><span>FTP MODE</span></button>
+    <button class="t-tab" id="btn-sync" aria-label="LIVE SYNC MODE" data-tip="LIVE SYNC MODE"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg><span>LIVE SYNC MODE</span><i class="rail-dot"></i><span class="sy-n" id="sy-n"></span></button>
+  </nav>
   <div class="t-spacer"></div>
   <div class="t-actions">
+    <div class="conn-pill" id="conn-pill" data-tip="Not connected">
+      <span class="dot"></span><span class="nm" id="conn-name">Not connected</span><span class="addr" id="conn-addr"></span><span class="proto" id="conn-proto"></span>
+      <span id="conn-badges"></span>
+    </div>
+    <button class="ibtn" id="btn-settings" aria-label="Settings" data-tip="Settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1"/></svg></button>
+    <!-- When the queue finishes (Noar, 13/10/2026: the same button as syncto,
+         in the title bar). -->
+    <button class="ibtn t-after" id="btn-after" aria-label="When the queue finishes" data-tip="When the queue finishes: do nothing"></button>
     <div id="wincontrols">
       <button id="win-min" aria-label="Minimize"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M5 12h14"/></svg></button>
       <button id="win-max" aria-label="Maximize"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="4" y="4" width="16" height="16" rx="2"/></svg></button>
@@ -823,15 +939,6 @@ body.live-st #queue .q-head,body.live-st #q-blocked,body.live-st #q-tabs,body.li
 </div>
 
 <div id="shell">
-<!-- ── The rail (Noar, 12/10/2026, option C): the two views, the sites,
-     the settings. Each one an icon and its name. ─────────────────────── -->
-<nav id="rail" aria-label="filo">
-  <button class="rail-b" id="mode-client" data-tip="TRANSFER: the two file panels and the queue"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m16 3 4 4-4 4"/><path d="M20 7H4"/><path d="m8 21-4-4 4-4"/><path d="M4 17h16"/></svg><span>TRANSFER</span></button>
-  <button class="rail-b" id="btn-sync" aria-label="LIVE SYNC" data-tip="LIVE SYNC"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg><span>LIVE SYNC</span><i class="rail-dot"></i><span class="sy-n" id="sy-n"></span></button>
-  <button class="rail-b" id="q-sites" data-tip="SITES: your saved servers (⌘S)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/></svg><span>SITES</span></button>
-  <span class="rail-sp"></span>
-  <button class="rail-b" id="btn-settings" aria-label="Settings" data-tip="Settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1"/></svg><span>SETTINGS</span></button>
-</nav>
 <div id="main">
 
 <!-- ── Quick connect ─────────────────────────────────────────────────── -->
@@ -924,7 +1031,16 @@ body.live-st #queue .q-head,body.live-st #q-blocked,body.live-st #q-tabs,body.li
   <div class="lv-head">
     <div class="lv-tabs" id="lv-tabs"></div>
     <span class="sp"></span>
+    <button class="btn sm lv-disc" id="lv-disc" data-tip="Disconnect this session: nothing more moves until you connect it again. No file is touched."><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m19 5 3-3"/><path d="m2 22 3-3"/><path d="M6.3 20.3a2.4 2.4 0 0 0 3.4 0L12 18l-6-6-2.3 2.3a2.4 2.4 0 0 0 0 3.4Z"/><path d="M7.5 13.5 10 11"/><path d="M10.5 16.5 13 14"/><path d="m12 6 6 6 2.3-2.3a2.4 2.4 0 0 0 0-3.4l-2.6-2.6a2.4 2.4 0 0 0-3.4 0Z"/></svg>DISCONNECT</button>
+    <button class="ibtn ins lv-ib" id="lv-mini" aria-label="The ring alone" data-tip="The ring alone: a small window with LIVE SYNC's ring only"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m14 10 7-7"/><path d="M20 10h-6V4"/><path d="m3 21 7-7"/><path d="M4 14h6v6"/></svg></button>
     <button class="ibtn ins lv-ib" id="lv-settings" aria-label="Session settings" data-tip="Settings of this session"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7h-9"/><path d="M14 17H5"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/></svg></button>
+  </div>
+  <!-- The ring alone (body.mini): its bar, the rest hidden. -->
+  <div class="lv-minibar" id="lv-minibar">
+    <span class="nm" id="lv-mini-name"></span>
+    <button class="ibtn" id="lv-mini-pin" aria-label="Keep on top" data-tip="Keep this window above the others"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/></svg></button>
+    <button class="ibtn" id="lv-mini-tray" aria-label="Hide to the tray" data-tip="Hide to the tray: filo keeps running, its icon brings it back"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg></button>
+    <button class="ibtn" id="lv-mini-back" aria-label="Full window" data-tip="Back to the full window (or double-click the ring)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="m21 3-7 7"/><path d="m3 21 7-7"/><path d="M9 21H3v-6"/></svg></button>
   </div>
   <div class="lv-ask" id="lv-ask"></div>
   <div class="lv-body">
@@ -947,7 +1063,6 @@ body.live-st #queue .q-head,body.live-st #q-blocked,body.live-st #q-tabs,body.li
         <svg viewBox="0 0 24 24" fill="currentColor"><rect x="5.5" y="5.5" width="13" height="13" rx="2"/></svg>
       </button>
       <button class="btn sq" id="q-clear" aria-label="Clear" data-tip="Clear this list"></button>
-      <button class="btn sq" id="btn-after" aria-label="When the queue finishes" data-tip="When the queue finishes: do nothing"></button>
     </div>
     <div class="q-titles">
       <svg class="q-spark" id="q-spark" viewBox="0 0 100 28" preserveAspectRatio="none" aria-hidden="true"><path class="spark-area" d=""></path><path class="spark-line" d=""></path></svg>
@@ -986,7 +1101,7 @@ body.live-st #queue .q-head,body.live-st #q-blocked,body.live-st #q-tabs,body.li
 <div class="ov" id="ov-sites">
   <div class="mcard">
     <div class="sm-left">
-      <div class="hd"><div class="m-h1">Sites</div>
+      <div class="hd"><div class="m-h1">Bookmarks</div>
         <button class="ibtn ins" id="sm-new" aria-label="New site" data-tip="New site"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg></button>
         <button class="ibtn ins" id="sm-new-folder" aria-label="New folder" data-tip="New folder"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 10v6"/><path d="M9 13h6"/><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg></button>
       </div>
@@ -1017,7 +1132,7 @@ body.live-st #queue .q-head,body.live-st #q-blocked,body.live-st #q-tabs,body.li
         <button class="ibtn ins" id="sy-new" aria-label="New session" data-tip="New session"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg></button>
       </div>
       <div class="sm-list" id="sy-list"></div>
-      <div class="ft"><button class="ibtn ins lab" id="sy-import" data-tip="IMPORT SESSION: the config file a MASTER saved for this computer, or its SYNCTHING ID, or another team's S-FTP session (.filosync)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m8 11 4 4 4-4"/><path d="M8 5H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-4"/></svg><span>IMPORT SESSION</span></button>
+      <div class="ft"><button class="ibtn ins lab" id="sy-import" data-tip="IMPORT SESSION: the config file a MASTER saved for this computer, or the SESSION ID it sent, or another team's S-FTP session (.filosync)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m8 11 4 4 4-4"/><path d="M8 5H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-4"/></svg><span>IMPORT SESSION</span></button>
         <button class="ibtn ins lab" id="sy-me" data-tip="THIS COMPUTER: its SYNCTHING ID, and the remote computers it accepted"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="14" x="2" y="3" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/></svg><span>THIS COMPUTER</span></button></div>
     </div>
     <div class="sm-right">
@@ -1068,7 +1183,7 @@ body.live-st #queue .q-head,body.live-st #q-blocked,body.live-st #q-tabs,body.li
           <span class="set-desc">on the copy, when the server allows it</span></div>
         <div class="set-row"><label>Write temporary files when sending</label>
           <label class="switch"><input type="checkbox" id="st-temp"><span class="slider"></span></label>
-          <span class="set-desc">“.filopart”, renamed once verified</span></div>
+          <span class="set-desc">“.filopart”, renamed once verified (downloads always do)</span></div>
         <div class="set-row"><label>Show hidden files</label>
           <label class="switch"><input type="checkbox" id="st-hidden"><span class="slider"></span></label>
           <span class="set-desc" id="st-hidden-desc">names starting with a dot</span></div>

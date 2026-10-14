@@ -124,6 +124,12 @@ function createDirect({ prefs, log, send, home, bin, onStatus, onFailover, onMir
     if (d && !d.name) { prefs.addDirectDevice({ id, name }); changed = true; }
     if (changed) { log('info', `SYNCTHING: ${shortId(id)} is ${name.split(' · ')[0]}`); send('sync-pairs', { pairs: prefs.listSyncPairs() }); apply(); }
   });
+  // A session already linked with another computer, offered by a new one
+  // (its SESSION ID pasted on a second computer): said, never linked.
+  direct.on('foreign', ({ pairId, dev }) => {
+    const p = prefs.getSyncPair(pairId);
+    if (p) log('warn', `SYNCTHING: ${shortId(dev)} pasted the SESSION ID of “${p.name}”, already linked with ${p.peer ? p.peer.name || shortId(p.peer.id) : 'another computer'}. One session links two computers: create another session for it.`);
+  });
   direct.on('ctl', ({ pairId }) => { const p = prefs.getSyncPair(pairId); if (p && p.role === 'slave') readCtl(p); });
 
   // ── MASTER / SLAVE (Noar, 11/10/2026) ─────────────────────────────────
@@ -274,14 +280,61 @@ function createDirect({ prefs, log, send, home, bin, onStatus, onFailover, onMir
   // MASTER accepts it and chooses the session to share (accept → shareTo);
   // the SLAVE accepts the session, in a folder of its own. SYNCTHING only: an
   // ID carries no server, a FAILSAFE session goes by its config file.
+  // The SESSION ID the MASTER copies (Noar, 13/10/2026): its SYNCTHING ID
+  // and the session's folder, "ID/filo-both-xxxx". With it the SLAVE makes
+  // the session at once (in the folder it chooses while it waits) and offers
+  // it back: the MASTER links it by itself, even a computer it accepted
+  // before (with the SYNCTHING ID alone, a computer already known was never
+  // asked again: the invitation never came).
+  function sessionId(pairId) {
+    const p = prefs.getSyncPair(pairId);
+    return p && direct.myId && p.folderId ? `${direct.myId}/${p.folderId}` : '';
+  }
+  const FOLDER_RE = /filo-(?:up|down|both)-[a-z0-9]{12}/;
   function join(text) {
-    const id = parseDeviceId(text);
-    if (!id) return { ok: false, error: 'This is not a SYNCTHING ID (8 groups of 7 letters and digits). Copy it again, whole, from the MASTER: MODE ▾ → Sessions… → THIS COMPUTER, or its LIVE SYNC view.' };
-    if (direct.myId && id === direct.myId) return { ok: false, error: 'This is the SYNCTHING ID of this computer: paste the MASTER\'s.' };
+    const folderM = FOLDER_RE.exec(String(text || ''));
+    const id = parseDeviceId(String(text || '').replace(FOLDER_RE, ''));
+    if (!id) return { ok: false, error: 'This is not a SESSION ID. Copy it again, whole, on the MASTER: LIVE SYNC view, REMOTE COMPUTER, SESSION ID (copy button).' };
+    if (direct.myId && id === direct.myId) return { ok: false, error: 'This is this computer\'s own ID: paste the SESSION ID the MASTER sent.' };
     const known = prefs.listDirectDevices().find(d => d.id === id);
     prefs.addDirectDevice({ id, name: known ? known.name : '' });
     log('info', `SYNCTHING: asking ${known && known.name ? known.name.split(' · ')[0] : 'the MASTER'} (${shortId(id)}) to connect (SYNCTHING ID pasted)`);
-    return apply().then(() => ({ ok: true, id, myId: direct.myId || '' }));
+    return apply().then(() => ({ ok: true, id, folder: folderM ? folderM[0] : '', myId: direct.myId || '' }));
+  }
+  // Where the SLAVE's wait stands: the MASTER reached, its session offered
+  // (SYNCTHING ID alone) or linked (SESSION ID), the session working.
+  function joinState(id, folder) {
+    const link = (direct.links || {})[id] || {};
+    // Without a folder (SYNCTHING ID alone), only the offer counts: a session
+    // already linked with that computer is not the one asked for.
+    const pair = folder ? pairs().find(p => p.peer && p.peer.id === id && p.folderId === folder) : null;
+    const st = pair ? statusOf(pair.id) : null;
+    const offer = pending.folders.find(f => f.deviceId === id && (!folder || f.folderId === folder));
+    return {
+      connected: !!link.connected, via: link.via || null,
+      offer: offer ? { folderId: offer.folderId, deviceId: offer.deviceId, name: offer.name } : null,
+      pairId: pair ? pair.id : null,
+      // Open = the MASTER shares this folder with this computer (not just
+      // accepted it): until then the folder here is empty and "up to date".
+      working: !!(st && st.peer && st.peer.connected && st.peerShares === 'valid' && ['insync', 'syncing', 'scanning'].includes(st.state)),
+      masterName: (prefs.listDirectDevices().find(d => d.id === id) || {}).name || (link.connected ? '' : ''),
+    };
+  }
+  // SESSION ID: the session made here at once, in the folder chosen while
+  // waiting; its name and settings come from the MASTER once linked.
+  function joinSession(req) {
+    try {
+      const id = parseDeviceId(req.id), folder = FOLDER_RE.exec(String(req.folder || ''));
+      if (!id || !folder) return { ok: false, error: 'This is not a filo SESSION ID.' };
+      if (pairs().some(p => p.folderId === folder[0])) return { ok: false, error: 'This session is already here.' };
+      const local = checkLocal(req.local);
+      const dev = prefs.listDirectDevices().find(d => d.id === id) || { id, name: '' };
+      prefs.addDirectDevice(dev);
+      const pair = prefs.saveSyncPair({ via: 'direct', role: 'slave', name: String(req.name || 'Session from the MASTER').slice(0, 120), local, direction: directionOfOffer(folder[0]), folderId: folder[0], peer: { id, name: dev.name || '' }, exclude: DEFAULT_SYNC_EXCLUDE, auto: true });
+      log('info', `SYNCTHING: session ${folder[0]} joined, in ${local}: waiting for the MASTER (${shortId(id)})`);
+      apply();
+      return { ok: true, pair };
+    } catch (e) { return { ok: false, error: e.message }; }
   }
   // The MASTER shares one of its SYNCTHING sessions with a computer it accepted.
   function shareTo(pairId, dev) {
@@ -384,7 +437,7 @@ function createDirect({ prefs, log, send, home, bin, onStatus, onFailover, onMir
   }
 
   return {
-    direct, apply, statusOf, info, accept, refuse, forget, offerAccept, offerDismiss,
+    direct, apply, statusOf, info, accept, refuse, forget, offerAccept, offerDismiss, sessionId, joinState, joinSession,
     prepareSave, shareOf, shareCode, isCode, readCode, importApply, rescan, directFirst, mirrorReady, takeSession, join,
     sessionFile: async p => { const sh = await shareOf(p); return Object.assign(sh, sessionOf(p)); },
     trashInfo: p => trashInfo(p),
