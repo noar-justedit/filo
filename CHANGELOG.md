@@ -4,6 +4,33 @@ All notable changes to filo are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/lang/fr/).
 
+## [0.9.0] — 2026-10-14
+
+### Added
+
+- **Export with passwords, encrypted** (Noar). EXPORT → "With passwords,
+  encrypted…" asks for a passphrase (twice, 10 characters minimum) and writes
+  a filo export whose passwords (and key passphrases) are locked with it
+  (AES-256-GCM, key derived with scrypt). The sites stay readable. At import,
+  filo asks for the passphrase again; a wrong one imports nothing. The block is
+  tied to each site's protocol, host, port and user: a file whose hosts were
+  edited afterwards is refused, so no password can be redirected to another
+  server. filo does not keep the passphrase: lost, the passwords cannot be
+  recovered. Not available on a machine without a usable keychain (no password
+  is stored there to export).
+- **Select several bookmarks, the Finder's way** (Noar). ⌘+click (Ctrl+click on
+  Windows and Linux) adds or removes one, Shift+click selects the range over
+  the rows shown. Right-click or the buttons on the right: DUPLICATE or
+  DELETE. Deleting asks first and says how many sites go ("Delete 12
+  sites?").
+
+### Changed
+
+- **A duplicated bookmark appears right under its source**, not at the end of
+  the list (also for several at once: each copy under its own original).
+- **FileZilla export removed** (Noar): filo imports FileZilla's
+  `sitemanager.xml` but no longer writes it. The filo export (.json) stays.
+
 ## [0.8.2] — 2026-10-14
 
 ### Fixed

@@ -126,8 +126,8 @@ const api = {
   sitesDeleteFolder: (path)   => inv('sites-delete-folder', path),
   sitesDuplicateFolder: (from, to) => inv('sites-duplicate-folder', from, to),
   sitesFromQuick: (q, name)   => inv('sites-from-quick', q, name),
-  sitesImport : (withPasswords) => inv('sites-import', withPasswords),
-  sitesExport : (format, ids) => inv('sites-export', format, ids),
+  sitesImport : (withPasswords, opts) => inv('sites-import', withPasswords, opts),
+  sitesExport : (opts, ids) => inv('sites-export', opts, ids),
 
   on: (channel, cb) => {
     const allowed = ['queue-progress', 'queue-changed', 'queue-state', 'queue-ask', 'queue-ask-closed', 'queue-blocked',

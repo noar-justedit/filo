@@ -192,20 +192,37 @@ SEC('sites', () => {
   eq([list[2].site.protocol, list[2].site.logon], ['ftp', 'ask'], 'insecure FTP + ask');
   eq([list[3].site.logon, list[3].site.keyPath], ['key', '/Users/noar/.ssh/id_ed25519'], 'key file');
   eq([list[4].site.protocol, list[4].site.logon], ['ftps-implicit', 'anonymous'], 'implicit + anonymous');
-  eq(sites.parseFzRemoteDir(sites.fzRemoteDir('/a b/c')), '/a b/c', 'RemoteDir round trip');
+  eq(sites.parseFzRemoteDir('1 0 1 a 3 b c 1 c'), '/a/b c/c', 'RemoteDir read (names with a space)');
 
   // Export → import: nothing lost but the passwords.
   const withSecrets = list.map(x => Object.assign({}, x.site, { passwordEnc: 'BLOB', passphraseEnc: 'BLOB2' }));
-  const fzOut = sites.exportFileZilla(withSecrets);
-  ok(!fzOut.includes('BLOB') && !fzOut.includes('<Pass'), 'FileZilla export carries no password');
-  const again = sites.importFileZilla(fzOut);
-  const key = x => [x.site.name, x.site.host, x.site.port, x.site.protocol, x.site.folder, x.site.remoteDir, x.site.transferMode, x.site.maxConnections];
-  eq(again.map(key).sort(), list.map(key).sort(), 'FileZilla round trip (export groups by folder, so the order changes)');
+  ok(typeof sites.exportFileZilla === 'undefined', 'no FileZilla export any more (import only)');
   const filoOut = sites.exportFilo(withSecrets);
   ok(!filoOut.includes('BLOB'), 'filo export carries no password');
   eq(sites.detectFormat(filoOut), 'filo', 'detect filo');
   eq(sites.importFilo(filoOut).map(x => x.site.name), list.map(x => x.site.name), 'filo round trip');
   ok(sites.importFilo(filoOut).every(x => !x.site.passwordEnc), 'imported filo sites have no password');
+
+  // Export with passwords (0.9.0): encrypted by a passphrase, tied to the hosts.
+  const keep = list.map((x, i) => ({ password: i === 0 ? 'S3cret-pw!' : '', passphrase: i === 3 ? 'key-pass-77' : '' }));
+  const PASS = 'correct horse battery';
+  const encOut = sites.exportFilo(list.map(x => x.site), { secrets: keep, passphrase: PASS });
+  ok(!encOut.includes('S3cret-pw!') && !encOut.includes('key-pass-77'), 'encrypted export: no password in clear in the file');
+  ok(sites.isEncrypted(encOut) && !sites.isEncrypted(filoOut), 'isEncrypted tells them apart');
+  eq(JSON.parse(encOut).sites.map(x => x.host), list.map(x => x.site.host), 'encrypted export: the sites stay readable');
+  const back = sites.importFilo(encOut, PASS);
+  eq([back[0].password, back[1].password, back[3].passphrase], ['S3cret-pw!', '', 'key-pass-77'], 'right passphrase: passwords and key passphrase come back');
+  ok(sites.importFilo(encOut).every(x => !x.password && !x.passphrase), 'no passphrase given: sites only, no password');
+  let code = null; try { sites.importFilo(encOut, 'wrong passphrase!'); } catch (e) { code = e.code; }
+  eq(code, 'BAD_PASSPHRASE', 'wrong passphrase refused');
+  const tampered = JSON.parse(encOut); tampered.sites[0].host = 'evil.example.com';
+  code = null; try { sites.importFilo(JSON.stringify(tampered), PASS); } catch (e) { code = e.code; }
+  eq(code, 'BAD_PASSPHRASE', 'a host edited after the export: refused, no password goes to another server');
+  let short = null; try { sites.exportFilo([list[0].site], { secrets: [{ password: 'x' }], passphrase: 'short' }); } catch (e) { short = e.message; }
+  ok(/at least 10/.test(short || ''), 'passphrase under 10 characters refused');
+  ok(JSON.parse(sites.exportFilo([list[0].site], { secrets: [{ password: '' }], passphrase: PASS })).secrets === undefined, 'nothing to protect: plain export, no secrets block');
+  eq(JSON.parse(encOut).version, 2, 'encrypted export is version 2');
+  eq(sites.importFilo(encOut.replace('"version": 2', '"version": 1')).length, list.length, 'an older filo, which ignores the block, still reads the sites');
 
   const n = sites.normalizeSite({ protocol: 'ftp', logon: 'key', port: 99999, transferMode: 'active' });
   eq([n.logon, n.port, n.transferMode], ['normal', 21, 'active'], 'normalize: key only for SFTP, bad port fixed');
@@ -399,6 +416,14 @@ SEC('site manager order', () => {
   const again = new Prefs(d).load();
   eq(again.listSites().map(s => s.name + '@' + s.folder), ['C@X / Y', 'A@', 'B@X'], 'new order and folders kept; unknown id ignored; a forgotten site stays');
   eq(again.data.siteFolderOrder, ['X', 'X / Y'], 'folder order kept');
+  // A copy goes right under its source (0.9.0).
+  const cp = again.saveSite({ name: 'C copy', host: 'c' });
+  again.placeAfter(cp.id, c.id);
+  eq(again.listSites().map(s => s.name), ['C', 'C copy', 'A', 'B'], 'a duplicate lands right under its source');
+  const cp2 = again.saveSite({ name: 'A copy', host: 'a' });
+  again.placeAfter(cp2.id, a.id);
+  eq(again.listSites().map(s => s.name), ['C', 'C copy', 'A', 'A copy', 'B'], 'and for a second one, under its own source');
+  again.deleteSite(cp.id); again.deleteSite(cp2.id);
   // Recent connections: sites and quick ones; a deleted site leaves; a broken
   // entry on disk is dropped instead of blocking every connection.
   again.pushQuick({ siteId: a.id }); again.pushQuick({ protocol: 'sftp', host: 'h', port: 22, user: 'u' }); again.pushQuick({ siteId: a.id });

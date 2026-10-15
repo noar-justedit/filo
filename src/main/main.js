@@ -1796,12 +1796,20 @@ ipcMain.handle('sites-save', (_, site, password, passphrase) => {
   } catch (e) { return { ok: false, error: e.message }; }
 });
 ipcMain.handle('sites-arrange', (_, list, folderOrder) => ({ sites: prefs.arrangeSites(list, folderOrder), siteFolderOrder: prefs.data.siteFolderOrder }));
-ipcMain.handle('sites-delete', (_, id) => { prefs.deleteSite(id); memSecrets.delete('site:' + id); return prefs.listSites(); });
+// One site or several (a selection, 0.9.0).
+ipcMain.handle('sites-delete', (_, id) => {
+  for (const x of (Array.isArray(id) ? id : [id])) { if (typeof x !== 'string') continue; prefs.deleteSite(x); memSecrets.delete('site:' + x); }
+  return prefs.listSites();
+});
+// One site or several. Each copy goes right under its source (0.9.0).
 ipcMain.handle('sites-duplicate', (_, id) => {
-  const s = prefs.getSite(id);
-  if (!s) return prefs.listSites();
-  const copy = Object.assign({}, s, { id: null, name: s.name + ' (copy)' });
-  prefs.saveSite(copy, { passwordEnc: s.passwordEnc, passphraseEnc: s.passphraseEnc });
+  for (const x of (Array.isArray(id) ? id : [id])) {
+    const s = typeof x === 'string' ? prefs.getSite(x) : null;
+    if (!s) continue;
+    const copy = Object.assign({}, s, { id: null, name: s.name + ' (copy)' });
+    const saved = prefs.saveSite(copy, { passwordEnc: s.passwordEnc, passphraseEnc: s.passphraseEnc });
+    prefs.placeAfter(saved.id, s.id);
+  }
   return prefs.listSites();
 });
 // A folder of the site manager (Noar, 0.6.4). Its path and the ones under it.
@@ -1830,42 +1838,68 @@ ipcMain.handle('sites-from-quick', (_, q, name) => {
   return { site, sites: prefs.listSites() };
 });
 
-ipcMain.handle('sites-import', async (_, withPasswords) => {
-  const res = await dialog.showOpenDialog(win, {
-    title: 'Import sites',
-    filters: [{ name: 'filo or FileZilla sites', extensions: ['json', 'xml'] }],
-    properties: ['openFile'],
-  });
-  if (res.canceled || !res.filePaths.length) return { ok: false, cancelled: true };
+// Import. `withPasswords`: also take the passwords (FileZilla's, or a filo
+// export's encrypted ones). A filo export with encrypted passwords asks for its
+// passphrase: the first answer says so (needsPassphrase) and the window calls
+// again with `opts.passphrase`, on the same file (kept here, never sent back).
+let pendingImport = null;
+ipcMain.handle('sites-import', async (_, withPasswords, opts) => {
+  const o = opts || {};
+  let file = null;
+  if (o.again && pendingImport) file = pendingImport;
+  else {
+    const res = await dialog.showOpenDialog(win, {
+      title: 'Import sites',
+      filters: [{ name: 'filo or FileZilla sites', extensions: ['json', 'xml'] }],
+      properties: ['openFile'],
+    });
+    if (res.canceled || !res.filePaths.length) return { ok: false, cancelled: true };
+    file = res.filePaths[0];
+  }
   try {
-    const text = fs.readFileSync(res.filePaths[0], 'utf8');
+    const text = fs.readFileSync(file, 'utf8');
     const fmt = sites.detectFormat(text);
     if (!fmt) return { ok: false, error: 'This file is neither a filo export nor a FileZilla sitemanager.xml.' };
-    const list = fmt === 'filo' ? sites.importFilo(text) : sites.importFileZilla(text);
+    const locked = fmt === 'filo' && withPasswords && sites.isEncrypted(text);
+    if (locked && !o.passphrase) { pendingImport = file; return { ok: false, needsPassphrase: true, wrong: !!o.again }; }
+    let list;
+    try { list = fmt === 'filo' ? sites.importFilo(text, locked ? o.passphrase : '') : sites.importFileZilla(text); }
+    catch (e) { if (e.code === 'BAD_PASSPHRASE') { pendingImport = file; return { ok: false, needsPassphrase: true, wrong: true }; } throw e; }
+    pendingImport = null;
     let withPw = 0, lockedPw = 0;
-    for (const { site, password, passwordEncrypted } of list) {
+    for (const { site, password, passphrase, passwordEncrypted } of list) {
       const patch = {};
       if (withPasswords && password) { const blob = secrets.encrypt(password); if (blob) { patch.passwordEnc = blob; withPw++; } }
+      if (withPasswords && passphrase) { const blob = secrets.encrypt(passphrase); if (blob) { patch.passphraseEnc = blob; if (!password) withPw++; } }
       if (passwordEncrypted) lockedPw++;
       prefs.saveSite(Object.assign({}, site, { id: null }), patch);
     }
-    log('info', `Imported ${list.length} site(s) from ${path.basename(res.filePaths[0])}`);
+    log('info', `Imported ${list.length} site(s) from ${path.basename(file)}`);
     return { ok: true, count: list.length, withPasswords: withPw, lockedPasswords: lockedPw, format: fmt, sites: prefs.listSites() };
   } catch (e) { return { ok: false, error: 'This file could not be read: ' + e.message }; }
 });
 
-ipcMain.handle('sites-export', async (_, format, ids) => {
-  const fz = format === 'filezilla';
+// Export, filo format only (0.9.0: FileZilla's is gone). `opts.passphrase`:
+// the passwords stored on this machine go in too, encrypted with it.
+ipcMain.handle('sites-export', async (_, opts, ids) => {
+  const o = opts || {};
+  const withPw = typeof o.passphrase === 'string' && o.passphrase.length > 0;
+  if (withPw && o.passphrase.length < sites.PASSPHRASE_MIN) return { ok: false, error: `The passphrase needs at least ${sites.PASSPHRASE_MIN} characters.` };
   const res = await dialog.showSaveDialog(win, {
     title: 'Export sites',
-    defaultPath: fz ? 'filo-sites-filezilla.xml' : 'filo-sites.json',
-    filters: [fz ? { name: 'FileZilla sitemanager', extensions: ['xml'] } : { name: 'filo sites', extensions: ['json'] }],
+    defaultPath: withPw ? 'filo-sites-with-passwords.json' : 'filo-sites.json',
+    filters: [{ name: 'filo sites', extensions: ['json'] }],
   });
   if (res.canceled || !res.filePath) return { ok: false, cancelled: true };
   const list = (ids && ids.length ? prefs.data.sites.filter(s => ids.includes(s.id)) : prefs.data.sites);
   try {
-    fs.writeFileSync(res.filePath, fz ? sites.exportFileZilla(list) : sites.exportFilo(list));
-    return { ok: true, count: list.length, path: res.filePath };
+    let secretsList = null, included = 0;
+    if (withPw) {
+      secretsList = list.map(s => ({ password: secrets.decrypt(s.passwordEnc), passphrase: secrets.decrypt(s.passphraseEnc) }));
+      included = secretsList.filter(x => x.password || x.passphrase).length;
+    }
+    fs.writeFileSync(res.filePath, sites.exportFilo(list, { secrets: secretsList, passphrase: o.passphrase }));
+    return { ok: true, count: list.length, withPasswords: included, path: res.filePath };
   } catch (e) { return { ok: false, error: e.message }; }
 });
 

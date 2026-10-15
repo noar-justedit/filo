@@ -277,6 +277,17 @@ class Prefs {
     this.save();
   }
 
+  // A copy goes right under its source in the list (0.9.0), not at the end.
+  // `sourceId` → `newId`: the new site is moved to just after the source.
+  placeAfter(newId, sourceId) {
+    const from = this.data.sites.findIndex(s => s.id === newId);
+    if (from < 0) return;
+    const [moved] = this.data.sites.splice(from, 1);
+    const at = this.data.sites.findIndex(s => s.id === sourceId);
+    this.data.sites.splice(at < 0 ? this.data.sites.length : at + 1, 0, moved);
+    this.save();
+  }
+
   deleteSite(id) {
     this.data.sites = this.data.sites.filter(s => s.id !== id);
     // A deleted site leaves the recent connections too (it would take a place

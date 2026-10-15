@@ -6,10 +6,11 @@
 
 // Sites: what a saved server looks like, and the import / export formats.
 //
-//   filo JSON         filo's own export. Never contains a password.
-//   FileZilla XML     sitemanager.xml — read (folders, keys, and passwords if
-//                     asked) and written (without passwords). Moving from
-//                     FileZilla is the first thing anyone switching will do.
+//   filo JSON         filo's own export. No password, unless the user gave a
+//                     passphrase: they are then encrypted with it (0.9.0).
+//   FileZilla XML     sitemanager.xml — read only (folders, keys, and passwords
+//                     if asked). Moving from FileZilla is the first thing
+//                     anyone switching will do. filo no longer writes it (0.9.0).
 
 const crypto = require('crypto');
 const { PROTOCOLS, DEFAULT_PORT } = require('../proto');
@@ -98,19 +99,69 @@ function publicSite(s) {
 }
 
 // ── filo JSON ─────────────────────────────────────────────────────────────
-function exportFilo(sites) {
-  return JSON.stringify({
-    format: 'filo-sites',
-    version: 1,
-    exported: new Date().toISOString(),
-    sites: sites.map(s => { const p = publicSite(normalizeSite(s)); delete p.hasPassword; delete p.hasPassphrase; delete p.id; delete p.speed; return p; }),
-  }, null, 2) + '\n';
+// Passwords (0.9.0): never in clear. With a passphrase, they go in one block,
+// "secrets", encrypted with AES-256-GCM under a key derived from the passphrase
+// (scrypt). The sites themselves stay readable. The block is tied to the
+// protocol, host, port and user of each site (GCM's additional data): a file
+// whose hosts were edited afterwards is refused, so nobody can make filo send
+// a password to another server.
+const PASSPHRASE_MIN = 10;
+const SCRYPT = { N: 65536, r: 8, p: 1, maxmem: 256 * 1024 * 1024 };
+const bound = list => Buffer.from(JSON.stringify(list.map(s => [s.protocol, s.host, s.port, s.user])));
+const deriveKey = (pass, salt) => crypto.scryptSync(String(pass).normalize('NFC'), salt, 32, SCRYPT);
+
+function sealSecrets(list, items, passphrase) {
+  const salt = crypto.randomBytes(16), iv = crypto.randomBytes(12);
+  const c = crypto.createCipheriv('aes-256-gcm', deriveKey(passphrase, salt), iv);
+  c.setAAD(bound(list));
+  const data = Buffer.concat([c.update(JSON.stringify(items), 'utf8'), c.final()]);
+  return { kdf: 'scrypt', N: SCRYPT.N, r: SCRYPT.r, p: SCRYPT.p, cipher: 'aes-256-gcm', salt: salt.toString('base64'), iv: iv.toString('base64'), tag: c.getAuthTag().toString('base64'), data: data.toString('base64') };
 }
 
-function importFilo(text) {
+function openSecrets(list, box, passphrase) {
+  const bad = () => Object.assign(new Error('Wrong passphrase, or the file was modified.'), { code: 'BAD_PASSPHRASE' });
+  if (!box || box.kdf !== 'scrypt' || box.N !== SCRYPT.N || box.r !== SCRYPT.r || box.p !== SCRYPT.p || box.cipher !== 'aes-256-gcm') throw new Error('This export uses an encryption filo does not know. Update filo.');
+  try {
+    const d = crypto.createDecipheriv('aes-256-gcm', deriveKey(passphrase, Buffer.from(box.salt, 'base64')), Buffer.from(box.iv, 'base64'));
+    d.setAAD(bound(list));
+    d.setAuthTag(Buffer.from(box.tag, 'base64'));
+    const items = JSON.parse(Buffer.concat([d.update(Buffer.from(box.data, 'base64')), d.final()]).toString('utf8'));
+    if (!Array.isArray(items) || items.length !== list.length) throw bad();
+    return items;
+  } catch (e) { throw bad(); }
+}
+
+// opts.secrets: [{ password, passphrase }] aligned with `sites`, opts.passphrase:
+// the one that locks them. Without both, no password leaves.
+function exportFilo(sites, opts) {
+  const o = opts || {};
+  const list = sites.map(s => { const p = publicSite(normalizeSite(s)); delete p.hasPassword; delete p.hasPassphrase; delete p.id; delete p.speed; return p; });
+  const out = { format: 'filo-sites', version: 1, exported: new Date().toISOString(), sites: list };
+  const items = Array.isArray(o.secrets) ? o.secrets.map(x => ({ password: String((x && x.password) || ''), passphrase: String((x && x.passphrase) || '') })) : null;
+  if (items && items.some(x => x.password || x.passphrase)) {
+    if (String(o.passphrase || '').length < PASSPHRASE_MIN) throw new Error(`The passphrase needs at least ${PASSPHRASE_MIN} characters.`);
+    out.version = 2;
+    out.secrets = sealSecrets(list, items, o.passphrase);
+  }
+  return JSON.stringify(out, null, 2) + '\n';
+}
+
+// A filo export that carries encrypted passwords?
+function isEncrypted(text) {
+  try { const d = JSON.parse(text); return !!(d && d.format === 'filo-sites' && d.secrets); } catch (_) { return false; }
+}
+
+// → [{ site, password, passphrase }]. The passwords come back only with the
+// right passphrase (BAD_PASSPHRASE otherwise); without one, none comes back.
+function importFilo(text, passphrase) {
   const data = JSON.parse(text);
   if (!data || data.format !== 'filo-sites' || !Array.isArray(data.sites)) throw new Error('This is not a filo site export.');
-  return data.sites.map(s => ({ site: normalizeSite(Object.assign({}, s, { id: null, passwordEnc: null, passphraseEnc: null })), password: '' }));
+  const items = data.secrets && passphrase ? openSecrets(data.sites, data.secrets, passphrase) : null;
+  return data.sites.map((s, i) => ({
+    site: normalizeSite(Object.assign({}, s, { id: null, passwordEnc: null, passphraseEnc: null })),
+    password: items && items[i] ? String(items[i].password || '') : '',
+    passphrase: items && items[i] ? String(items[i].passphrase || '') : '',
+  }));
 }
 
 // ── A small XML reader ────────────────────────────────────────────────────
@@ -182,15 +233,8 @@ function parseFzRemoteDir(s) {
   return '/' + parts.join('/');
 }
 
-function fzRemoteDir(p) {
-  const parts = String(p || '').split('/').filter(Boolean);
-  if (!parts.length) return '';
-  return '1 0 ' + parts.map(x => `${x.length} ${x}`).join(' ');
-}
-
 // FileZilla protocol numbers.
 const FZ_PROTOCOL = { 0: 'ftps', 1: 'sftp', 3: 'ftps-implicit', 4: 'ftps', 6: 'ftp' };
-const FZ_TO_NUMBER = { ftp: 6, ftps: 4, 'ftps-implicit': 3, sftp: 1 };
 // FileZilla logon types: 0 anonymous, 1 normal, 2 ask, 3 interactive, 4 account, 5 key, 6 profile.
 const FZ_LOGON = { 0: 'anonymous', 1: 'normal', 2: 'ask', 3: 'ask', 4: 'normal', 5: 'key', 6: 'normal' };
 
@@ -249,54 +293,6 @@ function importFileZilla(text) {
   return out;
 }
 
-function xmlEscape(s) {
-  return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-
-function exportFileZilla(sites) {
-  const lines = ['<?xml version="1.0" encoding="UTF-8"?>', '<FileZilla3 version="filo" platform="*">', '\t<Servers>'];
-  const byFolder = new Map();
-  for (const s of sites.map(normalizeSite)) {
-    const f = s.folder || '';
-    if (!byFolder.has(f)) byFolder.set(f, []);
-    byFolder.get(f).push(s);
-  }
-  const server = (s, ind) => {
-    const logon = s.logon === 'anonymous' ? 0 : s.logon === 'ask' ? 2 : s.logon === 'key' ? 5 : 2;
-    return [
-      `${ind}<Server>`,
-      `${ind}\t<Host>${xmlEscape(s.host)}</Host>`,
-      `${ind}\t<Port>${s.port}</Port>`,
-      `${ind}\t<Protocol>${FZ_TO_NUMBER[s.protocol]}</Protocol>`,
-      `${ind}\t<Type>0</Type>`,
-      `${ind}\t<User>${xmlEscape(s.user)}</User>`,
-      // Passwords are never exported: "ask" makes FileZilla prompt for it.
-      `${ind}\t<Logontype>${logon}</Logontype>`,
-      s.keyPath ? `${ind}\t<Keyfile>${xmlEscape(s.keyPath)}</Keyfile>` : null,
-      `${ind}\t<PasvMode>${s.transferMode === 'active' ? 'MODE_ACTIVE' : 'MODE_DEFAULT'}</PasvMode>`,
-      s.maxConnections ? `${ind}\t<MaximumMultipleConnections>${s.maxConnections}</MaximumMultipleConnections>` : null,
-      `${ind}\t<EncodingType>Auto</EncodingType>`,
-      `${ind}\t<BypassProxy>0</BypassProxy>`,
-      `${ind}\t<Name>${xmlEscape(s.name)}</Name>`,
-      s.comment ? `${ind}\t<Comments>${xmlEscape(s.comment)}</Comments>` : null,
-      s.localDir ? `${ind}\t<LocalDir>${xmlEscape(s.localDir)}</LocalDir>` : null,
-      s.remoteDir ? `${ind}\t<RemoteDir>${xmlEscape(fzRemoteDir(s.remoteDir))}</RemoteDir>` : null,
-      `${ind}\t<SyncBrowsing>0</SyncBrowsing>`,
-      `${ind}\t<DirectoryComparison>0</DirectoryComparison>`,
-      `${ind}</Server>`,
-    ].filter(Boolean);
-  };
-  for (const [folder, list] of byFolder) {
-    if (folder) {
-      lines.push(`\t\t<Folder expanded="1">${xmlEscape(folder)}`);
-      for (const s of list) lines.push(...server(s, '\t\t\t'));
-      lines.push('\t\t</Folder>');
-    } else for (const s of list) lines.push(...server(s, '\t\t'));
-  }
-  lines.push('\t</Servers>', '</FileZilla3>', '');
-  return lines.join('\n');
-}
-
 // Which format is this file?
 function detectFormat(text) {
   const t = String(text || '').trimStart();
@@ -308,6 +304,6 @@ function detectFormat(text) {
 module.exports = {
   normalizeSpeed, learnFromTransfer,
   normalizeSite, publicSite, newSiteId, LOGONS,
-  exportFilo, importFilo, importFileZilla, exportFileZilla, detectFormat,
-  parseXml, parseFzRemoteDir, fzRemoteDir,
+  exportFilo, importFilo, isEncrypted, importFileZilla, detectFormat, PASSPHRASE_MIN,
+  parseXml, parseFzRemoteDir,
 };

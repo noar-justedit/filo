@@ -1570,7 +1570,8 @@ async function saveQuickAsSite() {
 }
 
 // ══ Site manager ═══════════════════════════════════════════════════════════
-const sm = { selId: null, draft: null, pwAction: undefined, ppAction: undefined, search: '' };
+// multi: several sites selected at once (Finder's way, 0.9.0); anchor: where a Shift+click range starts.
+const sm = { selId: null, draft: null, pwAction: undefined, ppAction: undefined, search: '', multi: new Set(), anchor: null };
 
 // Opens as it was left (Noar, 0.6.4): the folders open then, the site
 // selected then, the same scroll. Nothing is unfolded on its own, unless a
@@ -1691,7 +1692,7 @@ function renderSiteList() {
     }
     for (const s of node.sites) {
       const editing = ren && ren.kind === 'site' && ren.key === s.id;
-      html += `<div class="sm-item${s.id === sm.selId ? ' sel' : ''}" data-id="${esc(s.id)}"${q || editing ? '' : ' draggable="true"'} style="padding-left:${9 + pad + (depth ? 8 : 0)}px"><span class="ic ${s.protocol}">${short[s.protocol]}</span><div class="t">${editing ? `<input class="sm-ren" id="sm-ren" value="${esc(s.name)}" aria-label="Site name" spellcheck="false">` : `<div class="a">${esc(s.name)}</div>`}<div class="b">${esc(s.user ? s.user + '@' : '')}${esc(s.host)}</div></div>${editing ? '' : `<button class="ibtn sm-spd${s.speed ? ' has' : ''}" data-spd="${esc(s.id)}" aria-label="Speed test" data-tip="${esc(speedTip(s))}">${I.gauge}</button>`}</div>`;
+      html += `<div class="sm-item${s.id === sm.selId || sm.multi.has(s.id) ? ' sel' : ''}" data-id="${esc(s.id)}"${q || editing ? '' : ' draggable="true"'} style="padding-left:${9 + pad + (depth ? 8 : 0)}px"><span class="ic ${s.protocol}">${short[s.protocol]}</span><div class="t">${editing ? `<input class="sm-ren" id="sm-ren" value="${esc(s.name)}" aria-label="Site name" spellcheck="false">` : `<div class="a">${esc(s.name)}</div>`}<div class="b">${esc(s.user ? s.user + '@' : '')}${esc(s.host)}</div></div>${editing ? '' : `<button class="ibtn sm-spd${s.speed ? ' has' : ''}" data-spd="${esc(s.id)}" aria-label="Speed test" data-tip="${esc(speedTip(s))}">${I.gauge}</button>`}</div>`;
     }
   };
   draw(root, 0);
@@ -1809,6 +1810,44 @@ async function smDuplicateSite(id) {
   state.sites = await API.sitesDuplicate(id);
   renderSiteList(); toast('Duplicated');
 }
+// Several sites selected (0.9.0): each copy goes under its own original.
+async function smDuplicateSelection() {
+  const ids = [...sm.multi].filter(id => state.sites.some(s => s.id === id));
+  if (!ids.length) return;
+  state.sites = await API.sitesDuplicate(ids);
+  renderSiteList(); toast(`Duplicated ${plural(ids.length, 'site')}`);
+}
+async function smDeleteSelection() {
+  const ids = [...sm.multi].filter(id => state.sites.some(s => s.id === id));
+  if (!ids.length) return;
+  const n = ids.length;
+  if (!(await confirmBox(`Delete ${n} sites?`, `${n} sites are deleted, and their remembered passwords too. This cannot be undone.`, `DELETE ${n} SITES`, true))) return;
+  state.sites = await API.sitesDelete(ids);
+  sm.multi.clear(); sm.anchor = null;
+  selectSite(null);
+  toast(`Deleted ${plural(n, 'site')}`);
+}
+// Click with ⌘ / Ctrl: add or remove one site. With Shift: the whole range from
+// the last plain click, over the rows shown (a closed folder's sites are not).
+function smModClick(id, ev) {
+  const rows = [...document.querySelectorAll('#sm-list .sm-item[data-id]')].map(e => e.dataset.id);
+  if (!sm.multi.size && sm.selId) sm.multi.add(sm.selId);
+  if (!sm.anchor || !rows.includes(sm.anchor)) sm.anchor = sm.selId || id;
+  const add = ev.metaKey || ev.ctrlKey;
+  if (ev.shiftKey && rows.includes(sm.anchor)) {
+    const a = rows.indexOf(sm.anchor), b = rows.indexOf(id);
+    if (!add) sm.multi.clear();
+    rows.slice(Math.min(a, b), Math.max(a, b) + 1).forEach(x => sm.multi.add(x));
+  } else {
+    if (sm.multi.has(id)) sm.multi.delete(id); else sm.multi.add(id);
+    sm.anchor = id;
+  }
+  const ids = [...sm.multi];
+  if (ids.length <= 1) { const keep = sm.anchor; selectSite(ids[0] || null); sm.anchor = keep; return; }
+  sm.selId = null; sm.selFolder = null; sm.draft = null; sm.lastClick = null;
+  if (state.ui) state.ui.sitesSel = null;
+  renderSiteList(); renderSiteForm();
+}
 
 // Folders among their siblings: the order the user dragged them into, then the
 // ones never placed, A to Z.
@@ -1917,6 +1956,7 @@ function smFoldAll(openAll) {
 }
 
 function selectSite(id, opts) {
+  sm.multi.clear(); sm.anchor = id || null;
   sm.selId = id;
   if (id) sm.selFolder = null;
   sm.pwAction = undefined; sm.ppAction = undefined;
@@ -1938,6 +1978,7 @@ function selectSite(id, opts) {
 }
 
 function newSite() {
+  sm.multi.clear(); sm.anchor = null;
   sm.selId = null;
   sm.pwAction = undefined; sm.ppAction = undefined;
   sm.draft = { id: null, name: 'New site', folder: '', protocol: 'sftp', host: '', port: 22, user: '', logon: 'normal', keyPath: '', remoteDir: '', localDir: '', comment: '', transferMode: 'passive', maxConnections: 0, hasPassword: false };
@@ -1950,6 +1991,13 @@ function renderSiteForm() {
   const d = sm.draft;
   const f = $('sm-form');
   ['sm-save', 'sm-connect'].forEach(id => { $(id).disabled = !d; });
+  if (!d && sm.multi.size > 1) {
+    const n = sm.multi.size;
+    f.innerHTML = `<div class="sm-empty">${I.server.replace('<svg', '<svg width="40" height="40"')}<div><b>${n} sites selected</b></div><div class="hint">${isMac() ? '⌘' : 'Ctrl'}+click adds or removes one, Shift+click selects a range.</div><div class="inline" style="gap:8px"><button class="btn sm" id="sm-multi-dup">${I.copy} DUPLICATE</button><button class="btn sm stop" id="sm-multi-del">${I.trash} DELETE ${n} SITES</button></div></div>`;
+    $('sm-multi-dup').onclick = () => smDuplicateSelection().catch(e => toast(e.message, true));
+    $('sm-multi-del').onclick = () => smDeleteSelection().catch(e => toast(e.message, true));
+    return;
+  }
   if (!d) { f.innerHTML = `<div class="sm-empty">${I.server.replace('<svg', '<svg width="40" height="40"')}<div>Pick a site on the left, or create one.</div><button class="btn sm go" id="sm-new2">${I.plus} NEW SITE</button></div>`; $('sm-new2').onclick = newSite; return; }
   const isFtp = d.protocol !== 'sftp';
   const logons = isFtp ? [['normal', 'Password'], ['ask', 'Ask each time'], ['anonymous', 'Anonymous']] : [['normal', 'Password'], ['ask', 'Ask each time'], ['key', 'Key file']];
@@ -2039,7 +2087,7 @@ function bindSites() {
   $('sm-list').addEventListener('click', ev => {
     if (ev.target.closest('.sm-ren')) return;
     const f = ev.target.closest('.sm-folder');
-    if (f) { sm.selFolder = f.dataset.path; if (ev.altKey) smFoldAll(!f.classList.contains('open')); else smToggle(f.dataset.path); return; }
+    if (f) { sm.selFolder = f.dataset.path; if (sm.multi.size) { sm.multi.clear(); sm.anchor = null; renderSiteForm(); } if (ev.altKey) smFoldAll(!f.classList.contains('open')); else smToggle(f.dataset.path); return; }
     const sp = ev.target.closest('[data-spd]');
     if (sp) { ev.stopPropagation(); openSpeedTest(sp.dataset.spd); return; }
     const lv = ev.target.closest('.sm-live');
@@ -2053,6 +2101,7 @@ function bindSites() {
     // Double-click = connect. Detected here: the first click redraws the list
     // (selection), so the browser's own dblclick never reaches a site row.
     const id = it.dataset.id, now = Date.now();
+    if (ev.shiftKey || ev.metaKey || ev.ctrlKey) { smModClick(id, ev); return; }
     if (sm.lastClick && sm.lastClick.id === id && now - sm.lastClick.t < 450) {
       sm.lastClick = null;
       closeSites();
@@ -2119,9 +2168,17 @@ function bindSites() {
         { label: 'Delete…', icon: I.trash, danger: true, action: () => smDeleteFolder(path).catch(e => toast(e.message, true)) },
       ]);
     }
+    if (it && sm.multi.size > 1 && sm.multi.has(it.dataset.id)) {
+      const n = sm.multi.size;
+      return showMenu(ev.clientX, ev.clientY, [
+        { label: `Duplicate ${n} sites`, icon: I.copy, action: () => smDuplicateSelection().catch(e => toast(e.message, true)) },
+        'sep',
+        { label: `Delete ${n} sites…`, icon: I.trash, danger: true, action: () => smDeleteSelection().catch(e => toast(e.message, true)) },
+      ]);
+    }
     if (it) {
       const id = it.dataset.id;
-      if (sm.selId !== id) selectSite(id);
+      if (sm.selId !== id || sm.multi.size) selectSite(id);
       return showMenu(ev.clientX, ev.clientY, [
         { label: 'Rename', icon: I.edit, action: () => { sm.renaming = { kind: 'site', key: id }; renderSiteList(); } },
         { label: 'Duplicate', icon: I.copy, action: () => smDuplicateSite(id).catch(e => toast(e.message, true)) },
@@ -2142,13 +2199,42 @@ function bindSites() {
   $('sm-import').onclick = importSites;
   $('sm-export').onclick = () => {
     const r = $('sm-export').getBoundingClientRect();
-    const ids = null;
+    const done = x => { if (x.ok) toast(x.withPasswords ? `Exported ${plural(x.count, 'site')}, ${x.withPasswords} with the password encrypted` : `Exported ${plural(x.count, 'site')}`); else if (!x.cancelled) toast(x.error, true); };
     showMenu(r.left, r.top - 120, [
-      { head: 'Export without passwords' },
-      { label: 'filo sites (.json)', icon: I.file, action: async () => { const x = await API.sitesExport('filo', ids); if (x.ok) toast(`Exported ${plural(x.count, 'site')}`); else if (!x.cancelled) toast(x.error, true); } },
-      { label: 'FileZilla sitemanager (.xml)', icon: I.file, action: async () => { const x = await API.sitesExport('filezilla', ids); if (x.ok) toast(`Exported ${plural(x.count, 'site')}`); else if (!x.cancelled) toast(x.error, true); } },
+      { head: 'Export (filo format)' },
+      { label: 'Without passwords', icon: I.file, action: async () => done(await API.sitesExport({}, null)) },
+      { label: 'With passwords, encrypted…', icon: I.shield, disabled: !state.vault, action: async () => {
+        const pass = await newPassphraseBox();
+        if (pass) done(await API.sitesExport({ passphrase: pass }, null));
+      } },
     ]);
   };
+}
+
+// The passphrase that locks an export's passwords: typed twice, 10 characters
+// minimum. filo never stores it: lost, the passwords cannot be recovered.
+function newPassphraseBox() {
+  return dialog({
+    title: 'Passphrase for the export',
+    sub: 'It encrypts the passwords inside the file. <b>filo does not keep it: without it, the passwords cannot be recovered.</b> You will be asked for it when importing.',
+    html: `<div class="field"><label>Passphrase (10 characters minimum)</label><input id="dlg-p1" type="password" autocomplete="off" spellcheck="false"></div>
+      <div class="field"><label>Again</label><input id="dlg-p2" type="password" autocomplete="off" spellcheck="false"></div>
+      <div class="hint" id="dlg-perr" style="color:var(--orange);min-height:1.2em"></div>`,
+    buttons: [{ label: 'CANCEL', value: null }, { label: 'EXPORT', cls: 'go', value: c => {
+      const a = c.querySelector('#dlg-p1').value, b = c.querySelector('#dlg-p2').value, err = c.querySelector('#dlg-perr');
+      if (a.length < 10) { err.textContent = 'At least 10 characters.'; return undefined; }
+      if (a !== b) { err.textContent = 'The two passphrases differ.'; return undefined; }
+      return a;
+    } }],
+  });
+}
+function askPassphraseBox(wrong) {
+  return dialog({
+    title: 'Passphrase of this export',
+    sub: 'The passwords in this file are encrypted.',
+    html: `<div class="field"><input id="dlg-p1" type="password" autocomplete="off" spellcheck="false"></div>${wrong ? '<div class="hint" style="color:var(--orange)">Wrong passphrase, or the file was modified.</div>' : ''}`,
+    buttons: [{ label: 'CANCEL', value: null }, { label: 'IMPORT', cls: 'go', value: c => c.querySelector('#dlg-p1').value || undefined }],
+  });
 }
 
 async function importSites() {
@@ -2156,12 +2242,18 @@ async function importSites() {
     title: 'Import sites',
     sub: 'From a filo export (.json) or FileZilla\'s <b>sitemanager.xml</b>.<br>' +
       (isMac() ? 'FileZilla keeps it in <code>~/.config/filezilla/</code>.' : 'FileZilla keeps it in <code>%APPDATA%\\FileZilla\\</code>.') +
-      '<br><br>FileZilla stores passwords in clear (unless you set a master password). filo can put them into the system keychain.',
+      '<br><br>FileZilla stores passwords in clear (unless you set a master password). filo can put them into the system keychain.<br>A filo export with encrypted passwords asks for its passphrase.',
     buttons: [{ label: 'CANCEL', value: null }, { spacer: true }, { label: 'WITHOUT PASSWORDS', value: 'no' }, { label: 'WITH PASSWORDS', value: 'yes', cls: 'go' }],
     width: 560,
   });
   if (!choice) return;
-  const r = await API.sitesImport(choice === 'yes');
+  let r = await API.sitesImport(choice === 'yes');
+  // A filo export with encrypted passwords: its passphrase, asked again after a wrong one.
+  while (!r.ok && r.needsPassphrase) {
+    const pass = await askPassphraseBox(r.wrong);
+    if (!pass) return;
+    r = await API.sitesImport(true, { again: true, passphrase: pass });
+  }
   if (!r.ok) { if (!r.cancelled) errorBox('Import failed', r.error); return; }
   state.sites = r.sites;
   renderSiteList();

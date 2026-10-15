@@ -6,6 +6,27 @@
 
 ## 1. État actuel
 
+- **0.9.0 (14/10/2026)** : bookmarks. (1) Une copie s'insère juste sous sa source
+  (`config.js`, `placeAfter`, appelé par IPC `sites-duplicate`). (2) Sélection
+  multiple comme le Finder : `sm.multi` (ensemble d'ids) et `sm.anchor` dans
+  `app.js`, ⌘/Ctrl+clic ajoute ou retire, Maj+clic prend la plage des lignes
+  affichées, panneau de droite « N sites selected » (DUPLICATE, DELETE),
+  confirmation « Delete N sites? ». `sites-delete` et `sites-duplicate`
+  acceptent un id ou une liste. Pas de touche Suppr (non demandée), pas de
+  rectangle de sélection (conflit avec le glisser-déposer). (3) Export filo avec
+  mots de passe : `sites.js`, `exportFilo(list, {secrets, passphrase})`, bloc
+  `secrets` (scrypt N=65536 r=8 p=1 + AES-256-GCM, version 2 du fichier),
+  lié par les données additionnelles GCM aux protocole / hôte / port / utilisateur
+  de chaque site (un hôte modifié après coup fait refuser le fichier). Import :
+  IPC `sites-import` répond `needsPassphrase`, la fenêtre redemande et rappelle
+  avec `{again, passphrase}` (le fichier est gardé côté main, `pendingImport`).
+  Passphrase minimum 10 caractères, jamais conservée. Export FileZilla supprimé,
+  import conservé. Les mots de passe sont lus dans le trousseau de la machine
+  (`secrets.decrypt`) : sans trousseau utilisable, l'entrée « With passwords »
+  est grisée. Tests : voir section 12. Limites : un fichier v2 lu par un filo
+  plus ancien perd les mots de passe sans message ; l'export concerne toujours
+  tous les bookmarks (pas la sélection) ; Windows et la vraie Keychain
+  non essayés (trousseau simulé dans le test d'interface).
 - **0.8.2 (14/10/2026)** : au lancement, plus rien ne se connecte sans action de
   Noar : toutes les sessions LIVE SYNC (`auto` et `fsAuto` remis à faux dans
   `main.js` au démarrage, ligne de LOG « not reconnected at launch ») ;
@@ -944,7 +965,7 @@ d'interface (voir `core/errors.js`).
 | `core/hash.js` | SHA-256 / SHA-1 / MD5 natifs (OpenSSL), xxHash64 / CRC32 (hash-wasm), plages |
 | `core/throttle.js` | limite de vitesse (seau à jetons) |
 | `core/existing.js` | règles « fichier déjà présent » |
-| `core/sites.js` | sites : forme normalisée, import / export filo JSON et FileZilla XML (petit lecteur XML maison) |
+| `core/sites.js` | sites : forme normalisée, import / export filo JSON (mots de passe chiffrés par passphrase depuis la 0.9.0), import seul de FileZilla XML (petit lecteur XML maison) |
 | `core/scan.js` | parcours d'un dossier serveur, suppression récursive, noms sûrs pour Windows |
 | `core/errors.js` | `RemoteError` : `network` (on réessaie), `fatal` (inutile), messages lisibles |
 | `config.js` | `preferences.json` (réglages, sites, serveurs connus, historique, paires de synchro) et `queue.json` |
@@ -1526,6 +1547,7 @@ SmartScreen, débits réels.
 
 | Version | Date | Tests | Contenu principal |
 |---|---|---|---|
+| 0.9.0 | 14/10 | 748 (FTP réels non rejoués, code FTP inchangé) | Bookmarks : copie sous sa source ; sélection multiple (⌘/Ctrl, Maj) avec suppression confirmée ; export avec mots de passe chiffrés (passphrase) ; export FileZilla retiré |
 | 0.8.2 | 14/10 | 736 (+18 FTP réels) | Rien ne se connecte au lancement ; dossier local manquant jamais recréé ; FINISHED plus affiché au lancement |
 | 0.8.1 | 14/10 | 732 (+18 FTP réels) | Speedtest sur NAS : racine du serveur => sélecteur de dossier ; dossier en lecture seule => test en réception seule ou annuler |
 | 0.8.0 | 13/10 | 720 (+18 FTP réels) | Speedtest des bookmarks (profil par réseau, Auto part de là, mise à jour par un vrai transfert plus rapide) ; connexion visible (étapes, chrono, CANCEL, « slow ») ; onglets BOOKMARKS / FTP MODE / LIVE SYNC MODE en haut à la place du rail ; SITES devient BOOKMARKS |
@@ -1566,5 +1588,8 @@ Le détail est dans `CHANGELOG.md`.
 7. `README.md` : la légende de la capture d'écran.
 8. `docs/screenshots/*.png` : les 6 captures, reprises à chaque bump (le numéro
    de version apparaît dans le pied de fenêtre et dans le champ FILO du LIVE SYNC).
-9. `docs/RELEASE-X.Y.Z.md` : à renommer, et les noms de fichiers dedans,
-   tant que la première Release n'est pas publiée.
+9. `docs/RELEASE-X.Y.Z.md` : à partir de la 0.9.0, **un nouveau fichier par
+   version, avec seulement les changements de cette version** (décision de Noar,
+   14/10/2026 : pas de cumul, l'historique est dans `CHANGELOG.md`) ; les noms
+   de fichiers dedans portent le nouveau numéro. `RELEASE-0.8.2.md` garde le
+   cumul depuis la 0.7.1 (la Release publiée la plus récente).
