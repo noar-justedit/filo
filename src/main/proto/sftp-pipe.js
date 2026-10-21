@@ -51,6 +51,8 @@ const { performance } = require('perf_hooks');
 // than acknowledged) is what fills the pipe. The count of outstanding writes is
 // what we throttle on instead.
 class PipelinedWriter extends Writable {
+  // Bytes surely on the server from `start` (acknowledged, no gap).
+  get kept() { return this.contig - this.start; }
   constructor(owner, remotePath, opts) {
     const o = opts || {};
     super({ highWaterMark: Math.max(XFER_CHUNK * 4, (o.chunkSize || 0) * 2) });
@@ -63,6 +65,13 @@ class PipelinedWriter extends Writable {
     this.start = Math.max(0, Number(o.start) || 0);
     this.noTruncate = !!o.noTruncate;
     this.pos = this.start;
+    // 0.9.2: what the server has acknowledged WITHOUT a gap, from `start`.
+    // After a cut, only this is surely in place (the writes still on their
+    // way, or refused, leave holes). Before, the caller guessed it from what
+    // was handed to the writer minus a margin, and a margin smaller than the
+    // writes in flight (64 × 256 KB = 16 MB) left holes in the file.
+    this.contig = this.start;
+    this._acked = new Map();      // offset → length, acknowledged beyond the gap-free part
     this.inflight = 0;
     this.failure = null;
     this._resume = null;      // the cb() we are holding back
@@ -92,6 +101,11 @@ class PipelinedWriter extends Writable {
     this.owner.sftp.write(this.handle, buf, 0, buf.length, at, err => {
       this.inflight--;
       if (err && !this.failure) this.failure = err;
+      if (!err) {
+        this._acked.set(at, buf.length);
+        let n;
+        while ((n = this._acked.get(this.contig)) !== undefined) { this._acked.delete(this.contig); this.contig += n; }
+      }
       // Whoever is waiting for room, or for the last write to land.
       if (this._resume && (this.inflight < this.limit || this.failure)) {
         const go = this._resume; this._resume = null; go(this.failure);

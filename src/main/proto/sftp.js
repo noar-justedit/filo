@@ -461,7 +461,8 @@ class SftpRemote {
     return new Promise((resolve, reject) => {
       let ws;
       try { ws = this.createWriteStream(p, start, { noTruncate: true }); } catch (e) { return reject(RemoteError.from(e, 'sftp')); }
-      pipeline(source, ws, err => (err ? reject(RemoteError.from(err, 'sftp')) : resolve()));
+      // On failure, `kept`: what the server surely holds from `start` (0.9.2).
+      pipeline(source, ws, err => (err ? reject(Object.assign(RemoteError.from(err, 'sftp'), { kept: ws.kept })) : resolve()));
     });
   }
 

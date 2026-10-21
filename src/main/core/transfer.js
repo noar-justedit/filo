@@ -692,9 +692,9 @@ async function prepareSegments(item, ctx, src, t) {
 // everything and the progress fell back to 0 %.
 // What is "known in place" is reported to the queue when the segment stops
 // ('segkeep'): for a download, exactly what the local file received (the
-// writes are in order); for an upload, what was sent minus a margin for the
-// writes still on their way, which a server may complete in any order.
-const UPLOAD_SEG_MARGIN = 6 * 1024 * 1024;
+// writes are in order); for an upload, what the server acknowledged without
+// a gap (0.9.2: exact, from the writer; before, what was sent minus 6 MB,
+// less than the 16 MB a connection can have in flight: holes in the file).
 async function runSegment(item, idx, ctx) {
   const { remote } = ctx;
   const seg = item.seg;
@@ -784,7 +784,10 @@ async function runSegment(item, idx, ctx) {
     ctx.token.onAbort = () => { rs.destroy(); tap.destroy(Object.assign(new Error('Stopped.'), { aborted: true })); };
     try { await remote.uploadRange(tap, seg.writePath, start); }
     catch (e) {
-      ctx.onBytes(got + Math.max(0, tap.bytes - UPLOAD_SEG_MARGIN), 'segkeep');
+      // 0.9.2: what the server acknowledged without a gap (exact), when the
+      // backend says it; otherwise what was sent minus a margin, which is
+      // only safe when it covers every write that can be in flight.
+      ctx.onBytes(got + (Number.isFinite(e && e.kept) ? Math.max(0, e.kept) : 0), 'segkeep');
       throw e;
     }
     ctx.token.onAbort = null;

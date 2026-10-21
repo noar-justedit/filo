@@ -4,6 +4,25 @@ All notable changes to filo are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/lang/fr/).
 
+## [0.9.2] — 2026-10-21
+
+### Fixed
+
+- **A segmented upload cut half-way could leave holes in the server's file**
+  (Noar: "le fichier final est corrompu"). Built-in engine only (the Rust
+  engine was already exact): a segment cut half-way kept "what was sent
+  minus 6 MB", but a connection can have up to 16 MB of writes on their way
+  (64 requests of 256 KB). Resumed from too far, the segment left a gap that
+  only CHECKSUM would catch. The writer now counts what the server
+  acknowledged without a gap, and only that is kept.
+
+### Tests
+
+- Upload resume, whole and in segments, with checks OFF (so nothing hides a
+  bad file): stop then retry, pause then start, restart, the file added
+  again, two cuts in a row, and a network cut; with the Rust engine and with
+  the built-in one.
+
 ## [0.9.1] — 2026-10-21
 
 ### Added

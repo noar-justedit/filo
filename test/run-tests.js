@@ -861,6 +861,76 @@ SEC('queue: resuming after a stop, a pause, a restart, or adding the file again'
   await srv.close();
 });
 
+SEC('queue: resuming an UPLOAD (whole and segments), checks off', async () => {
+  // 0.9.2 (Noar): an upload stopped then started again landed corrupted on
+  // the server. Checks are OFF here on purpose: they would redo a bad file
+  // and hide the bug. What lands must be identical without them.
+  const { srv, ep, root } = await server({ latencyMs: 4 });
+  SRV = srv; EP = ep; SRV_ROOT = () => root;
+  const SZ = 16 * 1024 * 1024;
+  const d0 = scratch();
+  const f = randomFile(path.join(d0, 'big.mov'), SZ);
+  let n = 0;
+  for (const segments of [false, true]) for (const how of (process.env.FILO_HOWS ? process.env.FILO_HOWS.split(',') : ['stop-retry', 'pause-start', 'restart-app', 'add-again', 'twice', 'net-cut'])) {
+    const dir = `/up${n++}`;
+    const memStore = { data: null, load() { return this.data; }, save(a) { this.data = JSON.parse(JSON.stringify(a)); } };
+    const settings = Object.assign({}, SETTINGS, { segments, concurrency: 2, limitUp: 4, verify: false });
+    const spec = () => [{ dir: 'up', type: 'file', local: f, remote: dir + '/big.mov', size: SZ, endpointId: 'e', endpointLabel: 't' }];
+    let q = makeQueue(ep, settings, 'worker', { store: memStore });
+    q.add(spec());
+    const id = q.order[0];
+    const cut = async (qq, at) => {
+      qq.start();
+      for (let i = 0; i < 600 && !(qq.items.get(id).done > at); i++) await sleep(25);
+      if (how === 'net-cut') { srv.cutAll(); return; }
+      if (how === 'crash') { qq._save(); memStore.snap = JSON.parse(JSON.stringify(memStore.data)); return; }       // filo killed: only what was saved while it ran
+      if (how === 'stop-retry' || how === 'add-again') qq.stopItems([id]); else qq.pause();
+      for (let i = 0; i < 200 && qq._unitsOf(qq.items.get(id)).length; i++) await sleep(25);
+      qq._save();
+    };
+    await cut(q, 5 * 1024 * 1024);
+    if (how === 'twice') { await cut(q, 10 * 1024 * 1024); }
+    settings.limitUp = 0;
+    let s;
+    if (how === 'stop-retry') { q.retry([id]); s = await runQueue(q); q.closeAll(); }
+    else if (how === 'pause-start' || how === 'twice') { s = await runQueue(q); q.closeAll(); }
+    else if (how === 'net-cut') { s = await new Promise(res => q.once('finished', res)); q.closeAll(); }
+    else if (how === 'restart-app') { q.closeAll(); const q2 = makeQueue(ep, settings, 'worker', { store: memStore }); s = await runQueue(q2); q2.closeAll(); }
+    else { const r = q.add(spec()); q.retry(r.revived.map(x => x.id), 'resume'); s = await runQueue(q); q.closeAll(); }
+    eq([s.done, s.failed], [1, 0], `up segments=${segments} ${how}: done`);
+    ok(how === 'net-cut' ? s.bytes < SZ * 1.2 : s.bytes < SZ, `up segments=${segments} ${how}: resumed (${(s.bytes / 1048576).toFixed(1)} MB of 16 sent${how === 'net-cut' ? ', the part before the cut included' : ''})`);
+    eq(sha(path.join(root, dir.slice(1), 'big.mov')), sha(f), `up segments=${segments} ${how}: identical on the server`);
+  }
+  await srv.close();
+});
+
+SEC('sftp writer: what is kept after a cut is what the server acknowledged without a gap', async () => {
+  // 0.9.2: a segment cut half-way used to keep "sent minus 6 MB", and with
+  // 16 MB of writes in flight that left holes in the server's file.
+  const { PipelinedWriter } = require('../src/main/proto/sftp-pipe');
+  const { Readable, pipeline } = require('stream');
+  const run = (order, failAt) => new Promise(res => {
+    const pending = [];
+    const sftp = {
+      open: (p, f, cb) => cb(null, 'h'),
+      close: (h, cb) => cb && cb(),
+      write: (h, buf, o, len, at, cb) => { pending.push({ at, cb }); if (pending.length === 8) flush(); },
+    };
+    const flush = () => {
+      const list = pending.splice(0);
+      for (const i of order(list.length)) { const w = list[i]; w.cb(w.at === failAt ? new Error('cut') : null); }
+    };
+    const w = new PipelinedWriter({ sftp }, '/x', { start: 1000, chunkSize: 100, concurrency: 8 });
+    const src = Readable.from([Buffer.alloc(800)]);
+    pipeline(src, w, err => res({ err, kept: w.kept }));
+  });
+  // Acknowledged in reverse, the write at 1300 refused: only 1000..1300 is surely there.
+  let r = await run(n => [...Array(n).keys()].reverse(), 1300);
+  eq([!!r.err, r.kept], [true, 300], 'out of order, one refused: kept stops at the hole');
+  r = await run(n => [...Array(n).keys()], -1);
+  eq([!!r.err, r.kept], [false, 800], 'all acknowledged: everything kept');
+});
+
 SEC('queue: file already there', async () => {
   const { srv, ep, root } = await server();
   SRV = srv; EP = ep; SRV_ROOT = () => root;

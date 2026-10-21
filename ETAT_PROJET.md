@@ -6,6 +6,22 @@
 
 ## 1. État actuel
 
+- **0.9.2 (21/10/2026)** : resume d'un envoi en segments par le moteur
+  intégré (sans moteur Rust) : un segment coupé gardait « envoyé moins 6 Mo »
+  alors que 16 Mo d'écritures peuvent être en route, d'où des trous dans le
+  fichier du serveur (visibles seulement CHECKSUM coupé). `PipelinedWriter`
+  (`sftp-pipe.js`) compte maintenant ce que le serveur a acquitté sans trou
+  (`kept`), `uploadRange` le renvoie dans l'erreur, `runSegment` ne garde que
+  ça. Test « resuming an UPLOAD » (stop, pause, redémarrage, ajout à nouveau,
+  deux coupures, coupure réseau ; entier et segments ; moteur Rust et intégré ;
+  checks coupés) et test unitaire du writer ; le serveur de test a `cutAll()`.
+  Tests : **789** verts. Non reproduit : filo tué net en plein envoi (fichier
+  entier : repart de zéro, car `resume` n'est connu du thread principal qu'à
+  la fin de l'essai). Analyse vitesse upload vers Synology sans checksum
+  serveur : la relecture de chaque segment (CHECKSUM) alterne avec l'envoi
+  sur une connexion, d'où ×2 ; pistes proposées à Noar, non faites
+  (relire pendant l'envoi du segment suivant, Auto qui compte la relecture,
+  checksum côté NAS, graphe).
 - **0.9.1 (21/10/2026)** : cloche ntfy dans la barre de titre (`#btn-ntfy`,
   `renderNtfyBtn` dans `app.js`, même réglage que Settings, sans topic le clic
   ouvre les réglages). Graphe du ring LIVE SYNC qui sortait du cercle : le
@@ -1566,6 +1582,7 @@ SmartScreen, débits réels.
 
 | Version | Date | Tests | Contenu principal |
 |---|---|---|---|
+| 0.9.2 | 21/10 | 789 | Resume d'un envoi en segments (moteur intégré) : plus de trous dans le fichier du serveur |
 | 0.9.1 | 21/10 | 751 | Cloche ntfy ; graphe du ring dans le cercle ; corrections de la revue (courses de connexion LIVE SYNC, port Syncthing, mémoire et vitesse de la file) |
 | 0.9.0 | 14/10 | 748 (FTP réels non rejoués, code FTP inchangé) | Bookmarks : copie sous sa source ; sélection multiple (⌘/Ctrl, Maj) avec suppression confirmée ; export avec mots de passe chiffrés (passphrase) ; export FileZilla retiré |
 | 0.8.2 | 14/10 | 736 (+18 FTP réels) | Rien ne se connecte au lancement ; dossier local manquant jamais recréé ; FINISHED plus affiché au lancement |

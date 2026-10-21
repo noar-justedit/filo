@@ -230,6 +230,10 @@ function startSftpServer(opts) {
       client.on('error', () => {});
     });
 
+    // Every TCP connection, so a test can cut them all at once (a network
+    // that drops, a Wi-Fi that goes away).
+    const socks = new Set();
+    srv.on('connection', sk => { socks.add(sk); sk.on('close', () => socks.delete(sk)); });
     srv.on('error', reject);
     srv.listen(0, '127.0.0.1', () => {
       resolve_({
@@ -239,6 +243,7 @@ function startSftpServer(opts) {
         password: pass,
         latencyMs,
         close: () => new Promise(r => { try { srv.close(r); } catch (_) { r(); } }),
+        cutAll: () => { for (const sk of socks) { try { sk.destroy(); } catch (_) {} } },
       });
     });
   });
