@@ -6,6 +6,25 @@
 
 ## 1. État actuel
 
+- **0.9.1 (21/10/2026)** : cloche ntfy dans la barre de titre (`#btn-ntfy`,
+  `renderNtfyBtn` dans `app.js`, même réglage que Settings, sans topic le clic
+  ouvre les réglages). Graphe du ring LIVE SYNC qui sortait du cercle : le
+  `clipPath` s'appelait `lv-disc` comme le bouton DISCONNECT, renommé
+  `lv-ring-clip` + test « ids ». Corrections d'une revue de code : `syncer.js`
+  (une synchro attend le relais `relayBusy`, la fermeture d'inactivité ne coupe
+  plus un relais, une session supprimée ferme sa connexion `dropAfter`, état
+  écrit en asynchrone `saveState`, moniteur de dossier mort signalé au LOG) ;
+  `queue.js` (`_compactOrder` au lieu d'un filtre par élément, terminés
+  au-delà de `KEEP_FINISHED` retirés de la mémoire) ; `direct.js` (la clé API
+  n'est envoyée qu'après la ligne « GUI and API listening » sur le port choisi,
+  3 essais si le port est pris, `_starting`) ; `sftp.js` (sonde des checksums
+  partagée `_hashProbe`) ; `sites.js` (scrypt asynchrone, `exportFilo` et
+  `importFilo` deviennent async) ; `main.js` (`pickIdle` après le listing,
+  `sharedFiles` pour Show in folder / Share) ; minuteur de la file coupé sur
+  l'onglet LOG ; plus d'info-bulle « Not connected ». Tests : **751** verts.
+  Limites : pas de test dédié aux courses de connexion LIVE SYNC (couvertes
+  par les tests existants seulement) ; rien essayé sur le NAS ni sous Windows ;
+  une synchro peut démarrer quelques secondes plus tard (elle attend le relais).
 - **0.9.0 (14/10/2026)** : bookmarks. (1) Une copie s'insère juste sous sa source
   (`config.js`, `placeAfter`, appelé par IPC `sites-duplicate`). (2) Sélection
   multiple comme le Finder : `sm.multi` (ensemble d'ids) et `sm.anchor` dans
@@ -1547,6 +1566,7 @@ SmartScreen, débits réels.
 
 | Version | Date | Tests | Contenu principal |
 |---|---|---|---|
+| 0.9.1 | 21/10 | 751 | Cloche ntfy ; graphe du ring dans le cercle ; corrections de la revue (courses de connexion LIVE SYNC, port Syncthing, mémoire et vitesse de la file) |
 | 0.9.0 | 14/10 | 748 (FTP réels non rejoués, code FTP inchangé) | Bookmarks : copie sous sa source ; sélection multiple (⌘/Ctrl, Maj) avec suppression confirmée ; export avec mots de passe chiffrés (passphrase) ; export FileZilla retiré |
 | 0.8.2 | 14/10 | 736 (+18 FTP réels) | Rien ne se connecte au lancement ; dossier local manquant jamais recréé ; FINISHED plus affiché au lancement |
 | 0.8.1 | 14/10 | 732 (+18 FTP réels) | Speedtest sur NAS : racine du serveur => sélecteur de dossier ; dossier en lecture seule => test en réception seule ou annuler |

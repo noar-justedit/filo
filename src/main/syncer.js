@@ -89,13 +89,24 @@ class Syncer extends EventEmitter {
     } catch (_) {}
     return { files: {} };
   }
+  // Compressed and written off the main thread (0.9.1: a pair of 100 000
+  // files froze the window at each run). One write at a time per pair.
   saveState(pair, files) {
-    try {
-      fs.mkdirSync(this.o.dir, { recursive: true });
-      const tmp = this.stateFile(pair.id) + '.tmp';
-      fs.writeFileSync(tmp, zlib.gzipSync(JSON.stringify({ v: 1, local: pair.local, remote: pair.remote, siteId: pair.siteId, files })), { mode: 0o600 });
-      fs.renameSync(tmp, this.stateFile(pair.id));
-    } catch (e) { this.log('error', `LIVE SYNC: could not save what was synchronised (${e.message})`); }
+    const json = JSON.stringify({ v: 1, local: pair.local, remote: pair.remote, siteId: pair.siteId, files });
+    const file = this.stateFile(pair.id), tmp = file + '.tmp';
+    this._saving = this._saving || new Map();
+    const prev = this._saving.get(pair.id) || Promise.resolve();
+    const next = prev.then(async () => {
+      try {
+        await fs.promises.mkdir(this.o.dir, { recursive: true });
+        const buf = await new Promise((res, rej) => zlib.gzip(json, (e, b) => (e ? rej(e) : res(b))));
+        await fs.promises.writeFile(tmp, buf, { mode: 0o600 });
+        await fs.promises.rename(tmp, file);
+      } catch (e) { this.log('error', `LIVE SYNC: could not save what was synchronised (${e.message})`); }
+    });
+    this._saving.set(pair.id, next);
+    next.then(() => { if (this._saving.get(pair.id) === next) this._saving.delete(pair.id); });
+    return next;
   }
   forgetState(id) { try { fs.unlinkSync(this.stateFile(id)); } catch (_) {} }
 
@@ -123,7 +134,16 @@ class Syncer extends EventEmitter {
   applyAll() {
     const pairs = this.o.prefs.listSyncPairs();
     const ids = new Set(pairs.map(p => p.id));
-    for (const id of [...this.runs.keys()]) if (!ids.has(id)) { this.unschedule(id); this.runs.delete(id); }
+    for (const id of [...this.runs.keys()]) {
+      if (ids.has(id)) continue;
+      const r = this.runs.get(id);
+      this.unschedule(id);
+      // 0.9.1: a deleted session no longer keeps its connection open.
+      if (r.closeT) { clearTimeout(r.closeT); r.closeT = null; }
+      if (r.conn && !r.busy && !r.relayBusy) { try { r.conn.close(); } catch (_) {} r.conn = null; }
+      else if (r.conn) r.dropAfter = true;
+      this.runs.delete(id);
+    }
     for (const p of pairs) this.apply(p);
   }
   apply(pair, opts) {
@@ -165,7 +185,7 @@ class Syncer extends EventEmitter {
         if (r.debounce) clearTimeout(r.debounce);
         r.debounce = setTimeout(() => { r.debounce = null; this.run(pair.id, 'change'); }, WATCH_DEBOUNCE_MS);
       });
-      r.watcher.on('error', () => { try { r.watcher.close(); } catch (_) {} r.watcher = null; });
+      r.watcher.on('error', e => { try { r.watcher.close(); } catch (_) {} r.watcher = null; this.log('warn', `LIVE SYNC “${pair.name}”: the local folder is no longer watched (${(e && (e.code || e.message)) || 'error'}); it is checked every ${pair.interval} min`); });
     } catch (e) {
       r.watcher = null;
       this.log('info', `LIVE SYNC “${pair.name}”: the local folder cannot be watched (${e.code || e.message}); it is checked every ${pair.interval} min`);
@@ -201,6 +221,9 @@ class Syncer extends EventEmitter {
         return { ok: true, copies: 0, conflicts: [], waiting: 0, standby: true, ids: [] };
       }
     }
+    // 0.9.1: the relay poller uses the same connection; a run waits for it.
+    while (r.relayBusy && !this.stopped) await new Promise(res => setTimeout(res, 100));
+    if (this.stopped) return { ok: false, error: 'filo is closing.' };
     // Busy: this request is served by the run that follows the current one.
     if (r.busy) { r.again = true; return new Promise(res => (r.waiters || (r.waiters = [])).push(res)); }
     r.busy = true;
@@ -214,12 +237,13 @@ class Syncer extends EventEmitter {
       if (r.conn) { try { r.conn.close(); } catch (_) {} r.conn = null; }
     } finally {
       r.busy = false;
+      if (r.dropAfter && r.conn) { try { r.conn.close(); } catch (_) {} r.conn = null; }
     }
     if (r.again) {
       r.again = false;
       const waiters = r.waiters || [];
       r.waiters = [];
-      setTimeout(() => { this.run(id, 'again').then(x => waiters.forEach(w => w(x))); }, 300);
+      setTimeout(() => { if (this.stopped) { waiters.forEach(w => w({ ok: false, error: 'filo is closing.' })); return; } this.run(id, 'again').then(x => waiters.forEach(w => w(x))); }, 300);
     }
     return res;
   }
@@ -273,7 +297,7 @@ class Syncer extends EventEmitter {
         this.idleClose(r);
       } catch (_) {
         if (r.conn) { try { r.conn.close(); } catch (_) {} r.conn = null; }
-      } finally { r.relayBusy = false; }
+      } finally { r.relayBusy = false; if (r.dropAfter && r.conn) { try { r.conn.close(); } catch (_) {} r.conn = null; } }
     }, this.o.relayPollMs || RELAY_POLL_MS);
     if (r.relayT.unref) r.relayT.unref();
   }
@@ -319,7 +343,7 @@ class Syncer extends EventEmitter {
   }
   idleClose(r) {
     if (r.closeT) clearTimeout(r.closeT);
-    r.closeT = setTimeout(() => { if (!r.busy && r.conn) { try { r.conn.close(); } catch (_) {} r.conn = null; } }, IDLE_CLOSE_MS);
+    r.closeT = setTimeout(() => { if (r.busy || r.relayBusy) { this.idleClose(r); return; } if (r.conn) { try { r.conn.close(); } catch (_) {} r.conn = null; } }, IDLE_CLOSE_MS);
     if (r.closeT.unref) r.closeT.unref();
   }
 
@@ -446,7 +470,7 @@ class Syncer extends EventEmitter {
     // otherwise the ones held earlier go on (never one the user paused).
     if (this.mirrorOn(pair)) { this.releaseHeld(pair.id); if (q.state === 'stopped' && r.mirrorIds.length) q.start(); }
     else this.holdMirror(pair.id, true);
-    this.saveState(pair, out.files);
+    await this.saveState(pair, out.files);
     this.idleClose(r);
     if (out.uploads.length) this.log('info', `LIVE SYNC “${pair.name}”: ${out.uploads.length} file${out.uploads.length === 1 ? '' : 's'} to copy to the S-FTP BACKUP`);
     if (out.downloads.length) this.log('info', `LIVE SYNC “${pair.name}”: ${out.downloads.length} file${out.downloads.length === 1 ? '' : 's'} put on the S-FTP BACKUP to bring here`);
@@ -609,7 +633,7 @@ class Syncer extends EventEmitter {
       }
       if (q.state === 'stopped' && queued) q.start();
     }
-    this.saveState(pair, out.files);
+    await this.saveState(pair, out.files);
 
     // Relayed files: taken segment by segment, while they are still arriving.
     if (pair.relay && pair.direction !== 'up' && r.conn && r.conn.canSegment) {

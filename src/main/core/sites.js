@@ -108,21 +108,22 @@ function publicSite(s) {
 const PASSPHRASE_MIN = 10;
 const SCRYPT = { N: 65536, r: 8, p: 1, maxmem: 256 * 1024 * 1024 };
 const bound = list => Buffer.from(JSON.stringify(list.map(s => [s.protocol, s.host, s.port, s.user])));
-const deriveKey = (pass, salt) => crypto.scryptSync(String(pass).normalize('NFC'), salt, 32, SCRYPT);
+// Async (0.9.1): the derivation takes a fraction of a second and must not freeze the window.
+const deriveKey = (pass, salt) => new Promise((res, rej) => crypto.scrypt(String(pass).normalize('NFC'), salt, 32, SCRYPT, (e, k) => (e ? rej(e) : res(k))));
 
-function sealSecrets(list, items, passphrase) {
+async function sealSecrets(list, items, passphrase) {
   const salt = crypto.randomBytes(16), iv = crypto.randomBytes(12);
-  const c = crypto.createCipheriv('aes-256-gcm', deriveKey(passphrase, salt), iv);
+  const c = crypto.createCipheriv('aes-256-gcm', await deriveKey(passphrase, salt), iv);
   c.setAAD(bound(list));
   const data = Buffer.concat([c.update(JSON.stringify(items), 'utf8'), c.final()]);
   return { kdf: 'scrypt', N: SCRYPT.N, r: SCRYPT.r, p: SCRYPT.p, cipher: 'aes-256-gcm', salt: salt.toString('base64'), iv: iv.toString('base64'), tag: c.getAuthTag().toString('base64'), data: data.toString('base64') };
 }
 
-function openSecrets(list, box, passphrase) {
+async function openSecrets(list, box, passphrase) {
   const bad = () => Object.assign(new Error('Wrong passphrase, or the file was modified.'), { code: 'BAD_PASSPHRASE' });
   if (!box || box.kdf !== 'scrypt' || box.N !== SCRYPT.N || box.r !== SCRYPT.r || box.p !== SCRYPT.p || box.cipher !== 'aes-256-gcm') throw new Error('This export uses an encryption filo does not know. Update filo.');
   try {
-    const d = crypto.createDecipheriv('aes-256-gcm', deriveKey(passphrase, Buffer.from(box.salt, 'base64')), Buffer.from(box.iv, 'base64'));
+    const d = crypto.createDecipheriv('aes-256-gcm', await deriveKey(passphrase, Buffer.from(box.salt, 'base64')), Buffer.from(box.iv, 'base64'));
     d.setAAD(bound(list));
     d.setAuthTag(Buffer.from(box.tag, 'base64'));
     const items = JSON.parse(Buffer.concat([d.update(Buffer.from(box.data, 'base64')), d.final()]).toString('utf8'));
@@ -133,7 +134,7 @@ function openSecrets(list, box, passphrase) {
 
 // opts.secrets: [{ password, passphrase }] aligned with `sites`, opts.passphrase:
 // the one that locks them. Without both, no password leaves.
-function exportFilo(sites, opts) {
+async function exportFilo(sites, opts) {
   const o = opts || {};
   const list = sites.map(s => { const p = publicSite(normalizeSite(s)); delete p.hasPassword; delete p.hasPassphrase; delete p.id; delete p.speed; return p; });
   const out = { format: 'filo-sites', version: 1, exported: new Date().toISOString(), sites: list };
@@ -141,7 +142,7 @@ function exportFilo(sites, opts) {
   if (items && items.some(x => x.password || x.passphrase)) {
     if (String(o.passphrase || '').length < PASSPHRASE_MIN) throw new Error(`The passphrase needs at least ${PASSPHRASE_MIN} characters.`);
     out.version = 2;
-    out.secrets = sealSecrets(list, items, o.passphrase);
+    out.secrets = await sealSecrets(list, items, o.passphrase);
   }
   return JSON.stringify(out, null, 2) + '\n';
 }
@@ -153,10 +154,10 @@ function isEncrypted(text) {
 
 // → [{ site, password, passphrase }]. The passwords come back only with the
 // right passphrase (BAD_PASSPHRASE otherwise); without one, none comes back.
-function importFilo(text, passphrase) {
+async function importFilo(text, passphrase) {
   const data = JSON.parse(text);
   if (!data || data.format !== 'filo-sites' || !Array.isArray(data.sites)) throw new Error('This is not a filo site export.');
-  const items = data.secrets && passphrase ? openSecrets(data.sites, data.secrets, passphrase) : null;
+  const items = data.secrets && passphrase ? await openSecrets(data.sites, data.secrets, passphrase) : null;
   return data.sites.map((s, i) => ({
     site: normalizeSite(Object.assign({}, s, { id: null, passwordEnc: null, passphraseEnc: null })),
     password: items && items[i] ? String(items[i].password || '') : '',

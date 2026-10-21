@@ -526,7 +526,12 @@ class SftpRemote {
   }
 
   async hashAlgos() {
+    // 0.9.1: two calls during the probe wait for the same probe (the second
+    // one used to get "none" and the file was reported unchecked).
+    if (this._hashProbe) await this._hashProbe;
     if (this._hashCmd === undefined) {
+      let release; this._hashProbe = new Promise(r => { release = r; });
+      try {
       this._hashCmd = null;
       for (const h of HASH_COMMANDS) {
         try {
@@ -537,6 +542,7 @@ class SftpRemote {
         } catch (_) { /* next */ }
       }
       this.log('info', this._hashCmd ? `Server checksums: ${this._hashCmd.algo} (${this._hashCmd.cmd('').split(' ')[0]})` : 'Server checksums: not available on this account');
+      } finally { this._hashProbe = null; release(); }
     }
     return this._hashCmd ? [this._hashCmd.algo] : [];
   }

@@ -1485,7 +1485,7 @@ function renderConnPill() {
   const verifyOn = state.settings.verify !== false, useServer = state.settings.serverHash !== false;
   if (can && verifyOn && useServer) b.push(`<span class="badge g">Server checksums</span>`);
   $('conn-badges').innerHTML = b.join(' ');
-  pill.dataset.tip = !c ? 'Not connected' :
+  pill.dataset.tip = !c ? '' :
     `${c.url || c.label} — click to copy\n${c.label} — ${PROTO_LABEL[c.protocol]}${c.protocol === 'ftp' ? ': password and files travel in clear' : ', encrypted'}.\n` +
     (!verifyOn ? 'CHECKSUM is off: only sizes are checked.'
       : can && useServer ? `The server computes checksums (${c.serverHash.join(', ').toUpperCase()}): files are verified without a second transfer.`
@@ -2510,7 +2510,8 @@ function subOf(it, from) {
 }
 
 function renderQueue() {
-  if (state.qtab === 'log') return;
+  // 0.9.1: on the LOG tab the countdown timer has nothing to redraw.
+  if (state.qtab === 'log') { if (q.waitTimer) { clearInterval(q.waitTimer); q.waitTimer = null; } return; }
   const list = $('q-list'), spacer = $('q-spacer');
   spacer.style.height = q.total * QROW + 'px';
   const top = list.scrollTop, h = list.clientHeight || 200;
@@ -3117,6 +3118,12 @@ function renderLog(full) {
 }
 
 // ══ Settings ═══════════════════════════════════════════════════════════════
+function renderNtfyBtn() {
+  const b = $('btn-ntfy'); if (!b) return;
+  const n = state.ntfy || {}, has = !!String(n.topic || '').trim(), on = has && !!n.enabled;
+  b.classList.toggle('on', on); b.classList.toggle('off', !on);
+  b.dataset.tip = !has ? 'Phone notifications (ntfy): no topic set yet. Click to set one in Settings.' : on ? `Phone notifications ON (topic ${n.topic}). Click to turn off.` : 'Phone notifications OFF. Click to turn on.';
+}
 async function openSettings() {
   const s = state.settings;
   $('st-conc').value = String(s.concurrency);
@@ -3233,6 +3240,15 @@ async function saveSettings(patch) {
 }
 function bindSettings() {
   $('btn-settings').onclick = openSettings;
+  // Phone notifications on / off in one click. Without a topic there is
+  // nothing to send to: the click opens the settings instead.
+  $('btn-ntfy').onclick = async () => {
+    if (!String(state.ntfy.topic || '').trim()) { toast('Set an ntfy topic first (Settings → Notifications).', true); await openSettings(); const el = $('st-ntfy-topic'); if (el) { el.scrollIntoView({ block: 'center' }); el.focus(); } return; }
+    state.ntfy = await API.ntfySave({ enabled: !state.ntfy.enabled });
+    renderNtfyBtn();
+    if ($('st-ntfy-en')) $('st-ntfy-en').checked = state.ntfy.enabled;
+    toast(state.ntfy.enabled ? 'Phone notifications on' : 'Phone notifications off');
+  };
   $('set-close').onclick = () => $('ov-settings').classList.remove('open');
   $('st-conc').onchange = () => { const v = $('st-conc').value; $('row-automax').style.display = v === 'auto' ? '' : 'none'; $('st-conc-desc').style.display = v === 'auto' ? 'none' : ''; saveSettings({ concurrency: v === 'auto' ? 'auto' : Number(v) }); };
   $('st-automax').onchange = () => saveSettings({ autoMax: Number($('st-automax').value) });
@@ -3257,7 +3273,7 @@ function bindSettings() {
     el.textContent = r.ok ? 'It ran and ended without error.' : `Did not work: ${r.error}`;
   };
   const ntfyPatch = () => ({ enabled: $('st-ntfy-en').checked, server: $('st-ntfy-server').value.trim(), topic: $('st-ntfy-topic').value.trim(), syncAlert: $('st-ntfy-sync').checked, syncAlertMin: $('st-ntfy-min').value });
-  for (const id of ['st-ntfy-en', 'st-ntfy-server', 'st-ntfy-topic', 'st-ntfy-sync', 'st-ntfy-min']) $(id).addEventListener('change', async () => { state.ntfy = await API.ntfySave(ntfyPatch()); $('st-ntfy-min').value = String(state.ntfy.syncAlertMin || 10); });
+  for (const id of ['st-ntfy-en', 'st-ntfy-server', 'st-ntfy-topic', 'st-ntfy-sync', 'st-ntfy-min']) $(id).addEventListener('change', async () => { state.ntfy = await API.ntfySave(ntfyPatch()); renderNtfyBtn(); $('st-ntfy-min').value = String(state.ntfy.syncAlertMin || 10); });
   $('st-ntfy-test').onclick = async () => {
     const r = await API.ntfyTest(ntfyPatch());
     const el = $('st-ntfy-res');
@@ -4469,7 +4485,7 @@ function renderMid(p) {
   if (!ring) {
     const chev = '<svg viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg>';
     const flow = side => `<div class="lv-flow ${side}" aria-hidden="true">${chev.repeat(3)}</div>`;
-    box.insertAdjacentHTML('beforeend', `<div class="lv-ring">${flow('l')}${flow('r')}<svg class="ring" viewBox="0 0 200 200"><defs><clipPath id="lv-disc"><circle cx="100" cy="100" r="79"/></clipPath><linearGradient id="lv-hy" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#4d90f0"/><stop offset="1" stop-color="#a880ff"/></linearGradient></defs><g clip-path="url(#lv-disc)" class="bars"></g><circle class="ring-bg" cx="100" cy="100" r="86"/><circle class="ring-fg" cx="100" cy="100" r="86" transform="rotate(-90 100 100)" stroke-dasharray="${m.C}"/></svg><div class="ring-center"></div></div>`);
+    box.insertAdjacentHTML('beforeend', `<div class="lv-ring">${flow('l')}${flow('r')}<svg class="ring" viewBox="0 0 200 200"><defs><clipPath id="lv-ring-clip"><circle cx="100" cy="100" r="79"/></clipPath><linearGradient id="lv-hy" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#4d90f0"/><stop offset="1" stop-color="#a880ff"/></linearGradient></defs><g clip-path="url(#lv-ring-clip)" class="bars"></g><circle class="ring-bg" cx="100" cy="100" r="86"/><circle class="ring-fg" cx="100" cy="100" r="86" transform="rotate(-90 100 100)" stroke-dasharray="${m.C}"/></svg><div class="ring-center"></div></div>`);
     ring = box.querySelector('.lv-ring');
   }
   if (ring.getAttribute('class') !== m.cls) ring.setAttribute('class', m.cls);
@@ -4763,7 +4779,7 @@ async function init() {
   panels = { local: new Panel('local'), remote: new Panel('remote') };
   setProto(state.ui.lastProto || 'sftp');
   bindTooltips(); bindSplitters(); bindSites(); bindQueue(); bindSettings(); bindSync();
-  renderConnPill(); renderAfterBtn(); renderQueueHead(); renderVerifySwitch(); renderSync(); renderSparkVisibility();
+  renderConnPill(); renderAfterBtn(); renderNtfyBtn(); renderQueueHead(); renderVerifySwitch(); renderSync(); renderSparkVisibility();
   panels.remote.render();
   panels.local.load(d.lastLocalDir || d.home);
   setQTab('queue');

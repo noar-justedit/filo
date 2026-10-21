@@ -417,7 +417,7 @@ class TransferQueue extends EventEmitter {
     if (it.removed) {
       if (this.items.has(it.id)) {
         this.items.delete(it.id);
-        this.order = this.order.filter(x => x !== it.id);
+        this._compactOrder();
         if (it.type === 'file' && it.status !== 'done' && it.status !== 'skipped') dropPart(it, null);
       }
       return;
@@ -754,7 +754,7 @@ class TransferQueue extends EventEmitter {
       if (!this._unitsOf(it).filter(x => x !== u).length) {
         it.phase = '';
         if (it.removed) {
-          this.items.delete(it.id); this.order = this.order.filter(x => x !== it.id);
+          this.items.delete(it.id); this._compactOrder();
           if (it.type === 'file') dropPart(it, null);
           return;
         }
@@ -958,6 +958,15 @@ class TransferQueue extends EventEmitter {
     this._save();
   }
 
+  // 0.9.1: removing thousands of running items rebuilt the order once per
+  // item (n²). Now the ids just leave the map; the order is compacted once,
+  // after the current burst. Every reader of the order skips missing ids.
+  _compactOrder() {
+    if (this._compactQ) return;
+    this._compactQ = true;
+    queueMicrotask(() => { this._compactQ = false; this.order = this.order.filter(id => this.items.has(id)); });
+  }
+
   _save() {
     this._lastSave = Date.now();
     if (!this.opts.store) return;
@@ -970,6 +979,10 @@ class TransferQueue extends EventEmitter {
     if (finished.length > KEEP_FINISHED) {
       const drop = new Set(finished.slice(0, finished.length - KEEP_FINISHED).map(i => i.id));
       list = list.filter(i => !drop.has(i.id));
+      // 0.9.1: also out of memory, as after a restart (a long session kept
+      // every finished file and every progress tick scanned them all).
+      for (const id of drop) this.items.delete(id);
+      this._compactOrder();
     }
     const out = list.map(it => {
       const o = {};

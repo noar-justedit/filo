@@ -254,7 +254,31 @@ class Direct extends EventEmitter {
     try { fs.writeFileSync(path.join(this.home, 'filo-run.json'), JSON.stringify({ pid: child.pid, gui: this.guiPort }), { mode: 0o600 }); } catch (_) {}
 
     // Up within 30 s, or a clear error.
+    // 0.9.1: the API key is only sent once Syncthing itself says it listens
+    // on the port filo chose. Between filo choosing a free port and Syncthing
+    // taking it, another program could take it: filo must not hand that
+    // program the key. If Syncthing could not take the port, it stops, and
+    // filo starts it again on another port (at most 3 tries).
     const t0 = Date.now();
+    this._starting = true;
+    const portLine = new RegExp('GUI and API listening[^\\n]*127\\.0\\.0\\.1:' + this.guiPort + '\\b');
+    for (;;) {
+      if (portLine.test(tail)) break;
+      const r = await Promise.race([sleep(200).then(() => 'wait'), exited.then(() => 'exit')]);
+      if (r === 'exit') {
+        if (/address already in use|bind:/i.test(tail) && (this._portTries || 0) < 2) {
+          this._portTries = (this._portTries || 0) + 1;
+          this.log('info', 'SYNCTHING: its port was taken by another program, trying another one');
+          this.child = null;
+          return this._start();
+        }
+        this._starting = false;
+        throw new Error('SYNCTHING: Syncthing stopped at once' + (tail ? `: ${tail.trim().split('\n').pop().slice(0, 200)}` : '.'));
+      }
+      if (Date.now() - t0 > 30000) { this._starting = false; throw new Error('SYNCTHING: Syncthing did not answer within 30 seconds.'); }
+    }
+    this._starting = false;
+    this._portTries = 0;
     for (;;) {
       const r = await Promise.race([this.req('GET', '/rest/system/ping', null, 2000).then(() => 'ok', () => 'no'), exited.then(() => 'exit')]);
       if (r === 'ok') break;
@@ -349,6 +373,8 @@ class Direct extends EventEmitter {
 
   _exited(child, code, sig, tail) {
     if (this.child !== child) return;
+    // Stopped while starting: _start() handles it (new port, or a clear error).
+    if (this._starting) { this.child = null; return; }
     this.child = null;
     this.myId = null;
     this.ready = null;

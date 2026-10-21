@@ -702,8 +702,10 @@ ipcMain.handle('trash-open', guard(async (_, id) => {
 ipcMain.handle('sync-remote-session', async (_, siteId, dir) => {
   try {
     const list = await pickConnection(siteId);
+    if (pickConn.t) { clearTimeout(pickConn.t); pickConn.t = null; }
     const { readSmall } = require('./core/transfer');
     const text = await readSmall(list, posix.join(dir || '/', SYNC.SESSION_FILE), 200000).catch(() => null);
+    pickIdle();
     if (!text) return { ok: false, error: 'No filo session in this folder: the MASTER writes it at its first S-FTP check.' };
     return await readImportText(text);
   } catch (e) { return { ok: false, error: e.message }; }
@@ -723,6 +725,12 @@ ipcMain.handle('live-info', () => {
 const pickConn = { siteId: null, conn: null, t: null, busy: Promise.resolve() };
 // One request at a time (two quick clicks never open two connections), and
 // the idle timer restarts at each request.
+// 0.9.1: the minute of rest counts from the end of the listing, not from its
+// start (a slow NAS listing a huge folder was closed under it).
+function pickIdle() {
+  if (pickConn.t) clearTimeout(pickConn.t);
+  pickConn.t = setTimeout(() => { pickConn.t = null; try { if (pickConn.conn) pickConn.conn.close(); } catch (_) {} pickConn.conn = null; }, 60000);
+}
 function pickConnection(siteId) {
   const job = pickConn.busy.then(async () => {
     if (pickConn.t) { clearTimeout(pickConn.t); pickConn.t = null; }
@@ -733,7 +741,7 @@ function pickConnection(siteId) {
       await c.connect();
       pickConn.conn = c; pickConn.siteId = siteId;
     }
-    pickConn.t = setTimeout(() => { try { if (pickConn.conn) pickConn.conn.close(); } catch (_) {} pickConn.conn = null; }, 60000);
+    pickIdle();
     return pickConn.conn;
   });
   pickConn.busy = job.catch(() => {});
@@ -742,9 +750,11 @@ function pickConnection(siteId) {
 ipcMain.handle('sync-remote-list', async (_, siteId, dir) => {
   try {
     const c = await pickConnection(siteId);
+    if (pickConn.t) { clearTimeout(pickConn.t); pickConn.t = null; }
     let where = dir;
     if (!where) where = (await c.home().catch(() => '/')) || '/';
     const list = await c.list(where);
+    pickIdle();
     const dirs = list.filter(e => e.type === 'folder' || (e.type === 'symlink' && e.linkTo === 'folder')).map(e => e.name).sort((a, b) => a.localeCompare(b));
     return { ok: true, dir: where, dirs };
   } catch (e) {
@@ -867,14 +877,18 @@ ipcMain.handle('sync-share-save', async (_, id) => {
     const res = await dialog.showSaveDialog(win, { title: 'Save the sync to share', defaultPath: path.join(app.getPath('desktop'), safe + '.filosync'), filters: [{ name: 'filo sync', extensions: ['filosync'] }] });
     if (res.canceled || !res.filePath) return { ok: false, cancelled: true };
     fs.writeFileSync(res.filePath, JSON.stringify(Object.assign({ _about: sh.filo === 'direct' ? 'A filo SYNCTHING live sync to import in filo on the other computer (right-click LIVE SYNC in the side bar → Import session as SLAVE → IMPORT CONFIG).' : 'A filo LIVE SYNC to import in filo (right-click LIVE SYNC in the side bar → Import session as SLAVE → IMPORT CONFIG). No password inside.' }, sh), null, 2));
+    sharedFiles.add(path.resolve(res.filePath));
     return { ok: true, path: res.filePath };
   } catch (e) { return { ok: false, error: e.message }; }
 });
-ipcMain.handle('sync-share-reveal', (_, p) => { try { shell.showItemInFolder(absLocal(p)); return true; } catch (_) { return false; } });
+// 0.9.1: only a file filo itself just saved can be shown or shared from here.
+const sharedFiles = new Set();
+const sharedOk = p => typeof p === 'string' && sharedFiles.has(path.resolve(absLocal(p)));
+ipcMain.handle('sync-share-reveal', (_, p) => { try { if (!sharedOk(p)) return false; shell.showItemInFolder(absLocal(p)); return true; } catch (_) { return false; } });
 // macOS: the system's Share menu (Mail, Messages, AirDrop, WhatsApp…).
 ipcMain.handle('sync-share-native', (_, p) => {
   try {
-    if (!IS_MAC) return false;
+    if (!IS_MAC || !sharedOk(p)) return false;
     const { ShareMenu } = require('electron');
     new ShareMenu({ filePaths: [absLocal(p)] }).popup({ window: win });
     return true;
@@ -1863,7 +1877,7 @@ ipcMain.handle('sites-import', async (_, withPasswords, opts) => {
     const locked = fmt === 'filo' && withPasswords && sites.isEncrypted(text);
     if (locked && !o.passphrase) { pendingImport = file; return { ok: false, needsPassphrase: true, wrong: !!o.again }; }
     let list;
-    try { list = fmt === 'filo' ? sites.importFilo(text, locked ? o.passphrase : '') : sites.importFileZilla(text); }
+    try { list = fmt === 'filo' ? await sites.importFilo(text, locked ? o.passphrase : '') : sites.importFileZilla(text); }
     catch (e) { if (e.code === 'BAD_PASSPHRASE') { pendingImport = file; return { ok: false, needsPassphrase: true, wrong: true }; } throw e; }
     pendingImport = null;
     let withPw = 0, lockedPw = 0;
@@ -1898,7 +1912,7 @@ ipcMain.handle('sites-export', async (_, opts, ids) => {
       secretsList = list.map(s => ({ password: secrets.decrypt(s.passwordEnc), passphrase: secrets.decrypt(s.passphraseEnc) }));
       included = secretsList.filter(x => x.password || x.passphrase).length;
     }
-    fs.writeFileSync(res.filePath, sites.exportFilo(list, { secrets: secretsList, passphrase: o.passphrase }));
+    fs.writeFileSync(res.filePath, await sites.exportFilo(list, { secrets: secretsList, passphrase: o.passphrase }));
     return { ok: true, count: list.length, withPasswords: included, path: res.filePath };
   } catch (e) { return { ok: false, error: e.message }; }
 });

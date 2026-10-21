@@ -4,6 +4,54 @@ All notable changes to filo are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/lang/fr/).
 
+## [0.9.1] — 2026-10-21
+
+### Added
+
+- **Phone notifications on / off in the title bar** (Noar): a bell left of
+  the settings. Green: on; crossed out: off. One click switches it, saved at
+  once (same setting as Settings → Notifications). With no ntfy topic set,
+  the click opens the settings at the topic field.
+
+### Fixed
+
+- **The speed graph came out of the LIVE SYNC ring** (Noar). The graph is
+  clipped to the ring's inner circle, but that clip had the same identifier
+  as the DISCONNECT button, so the browser never applied it. Renamed; the
+  graph now stays inside, in the main view and in the small ring window. A
+  test now fails if an SVG definition ever shares an id with another element.
+- **S-FTP / DUAL SYNC: two jobs on one connection** (code review). The relay
+  of a large file and a sync run could use the session's connection at the
+  same time, and a failure in one closed it under the other. A run now waits
+  for the relay. The one-minute idle close no longer cuts a relay in progress.
+- **A deleted LIVE SYNC session kept its server connection open** until filo
+  quit. It is closed now.
+- **The local folder stops being watched without a word**: the LOG now says
+  so (the session then checks the folder every N minutes).
+- **SYNCTHING could hand its API key to another program**: between filo
+  choosing a free port and Syncthing taking it, another program could take
+  it. filo now waits for Syncthing to say it listens on that port before
+  sending anything, and tries another port if it was taken.
+- **Server checksums: two files checked at the same moment** at the start of
+  a connection: the second one was reported "unchecked". It now waits for
+  the same check of the server.
+- **Folder picker of a LIVE SYNC session**: its connection could be closed in
+  the middle of a long listing (the minute of rest started too early).
+- **The LOG tab kept a timer redrawing the hidden queue every second.**
+- **Show in folder / Share** of a saved session file only accept the file
+  filo has just saved.
+- The connection pill no longer shows a tooltip "Not connected" that repeats
+  its own text.
+
+### Changed
+
+- **Faster with very large queues and sessions** (code review). Removing
+  thousands of files from a running queue no longer slows down with the
+  square of their number. Finished files beyond the last 5,000 leave memory
+  too (they already left the saved queue). The state of a LIVE SYNC session
+  is compressed and written without freezing the window. The encrypted
+  export / import no longer freezes the window while it derives the key.
+
 ## [0.9.0] — 2026-10-14
 
 ### Added

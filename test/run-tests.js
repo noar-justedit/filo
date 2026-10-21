@@ -152,7 +152,21 @@ SEC('existing', async () => {
   eq(await existing.freeName('README', async () => false), 'README (1)', 'no extension');
 });
 
-SEC('sites', () => {
+SEC('ids: an SVG definition never shares its id with an element', () => {
+  // 0.9.1: the ring's clipPath was called lv-disc, like the DISCONNECT button;
+  // url(#lv-disc) found the button, the clip did nothing and the speed graph
+  // came out of the ring.
+  const rd = f => fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', f), 'utf8');
+  const html = rd('index.html'), js = rd('app.js');
+  const defs = [...js.matchAll(/<(?:clipPath|linearGradient|radialGradient|mask|filter|pattern)\s+id="([^"]+)"/g)].map(m => m[1]);
+  ok(defs.length > 0, 'the SVG definitions are found');
+  for (const id of defs) {
+    const others = (html.match(new RegExp('\\bid="' + id + '"', 'g')) || []).length + (js.match(new RegExp('<(?!clipPath|linearGradient|radialGradient|mask|filter|pattern)[a-zA-Z]+[^>]*\\bid="' + id + '"', 'g')) || []).length;
+    eq(others, 0, `the id "${id}" is used by nothing else`);
+  }
+});
+
+SEC('sites', async () => {
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <FileZilla3 version="3.71.1" platform="mac">
   <Servers>
@@ -197,32 +211,32 @@ SEC('sites', () => {
   // Export → import: nothing lost but the passwords.
   const withSecrets = list.map(x => Object.assign({}, x.site, { passwordEnc: 'BLOB', passphraseEnc: 'BLOB2' }));
   ok(typeof sites.exportFileZilla === 'undefined', 'no FileZilla export any more (import only)');
-  const filoOut = sites.exportFilo(withSecrets);
+  const filoOut = await sites.exportFilo(withSecrets);
   ok(!filoOut.includes('BLOB'), 'filo export carries no password');
   eq(sites.detectFormat(filoOut), 'filo', 'detect filo');
-  eq(sites.importFilo(filoOut).map(x => x.site.name), list.map(x => x.site.name), 'filo round trip');
-  ok(sites.importFilo(filoOut).every(x => !x.site.passwordEnc), 'imported filo sites have no password');
+  eq((await sites.importFilo(filoOut)).map(x => x.site.name), list.map(x => x.site.name), 'filo round trip');
+  ok((await sites.importFilo(filoOut)).every(x => !x.site.passwordEnc), 'imported filo sites have no password');
 
   // Export with passwords (0.9.0): encrypted by a passphrase, tied to the hosts.
   const keep = list.map((x, i) => ({ password: i === 0 ? 'S3cret-pw!' : '', passphrase: i === 3 ? 'key-pass-77' : '' }));
   const PASS = 'correct horse battery';
-  const encOut = sites.exportFilo(list.map(x => x.site), { secrets: keep, passphrase: PASS });
+  const encOut = await sites.exportFilo(list.map(x => x.site), { secrets: keep, passphrase: PASS });
   ok(!encOut.includes('S3cret-pw!') && !encOut.includes('key-pass-77'), 'encrypted export: no password in clear in the file');
   ok(sites.isEncrypted(encOut) && !sites.isEncrypted(filoOut), 'isEncrypted tells them apart');
   eq(JSON.parse(encOut).sites.map(x => x.host), list.map(x => x.site.host), 'encrypted export: the sites stay readable');
-  const back = sites.importFilo(encOut, PASS);
+  const back = await sites.importFilo(encOut, PASS);
   eq([back[0].password, back[1].password, back[3].passphrase], ['S3cret-pw!', '', 'key-pass-77'], 'right passphrase: passwords and key passphrase come back');
-  ok(sites.importFilo(encOut).every(x => !x.password && !x.passphrase), 'no passphrase given: sites only, no password');
-  let code = null; try { sites.importFilo(encOut, 'wrong passphrase!'); } catch (e) { code = e.code; }
+  ok((await sites.importFilo(encOut)).every(x => !x.password && !x.passphrase), 'no passphrase given: sites only, no password');
+  let code = null; try { await sites.importFilo(encOut, 'wrong passphrase!'); } catch (e) { code = e.code; }
   eq(code, 'BAD_PASSPHRASE', 'wrong passphrase refused');
   const tampered = JSON.parse(encOut); tampered.sites[0].host = 'evil.example.com';
-  code = null; try { sites.importFilo(JSON.stringify(tampered), PASS); } catch (e) { code = e.code; }
+  code = null; try { await sites.importFilo(JSON.stringify(tampered), PASS); } catch (e) { code = e.code; }
   eq(code, 'BAD_PASSPHRASE', 'a host edited after the export: refused, no password goes to another server');
-  let short = null; try { sites.exportFilo([list[0].site], { secrets: [{ password: 'x' }], passphrase: 'short' }); } catch (e) { short = e.message; }
+  let short = null; try { await sites.exportFilo([list[0].site], { secrets: [{ password: 'x' }], passphrase: 'short' }); } catch (e) { short = e.message; }
   ok(/at least 10/.test(short || ''), 'passphrase under 10 characters refused');
-  ok(JSON.parse(sites.exportFilo([list[0].site], { secrets: [{ password: '' }], passphrase: PASS })).secrets === undefined, 'nothing to protect: plain export, no secrets block');
+  ok(JSON.parse(await sites.exportFilo([list[0].site], { secrets: [{ password: '' }], passphrase: PASS })).secrets === undefined, 'nothing to protect: plain export, no secrets block');
   eq(JSON.parse(encOut).version, 2, 'encrypted export is version 2');
-  eq(sites.importFilo(encOut.replace('"version": 2', '"version": 1')).length, list.length, 'an older filo, which ignores the block, still reads the sites');
+  eq((await sites.importFilo(encOut.replace('"version": 2', '"version": 1'))).length, list.length, 'an older filo, which ignores the block, still reads the sites');
 
   const n = sites.normalizeSite({ protocol: 'ftp', logon: 'key', port: 99999, transferMode: 'active' });
   eq([n.logon, n.port, n.transferMode], ['normal', 21, 'active'], 'normalize: key only for SFTP, bad port fixed');
@@ -1746,7 +1760,7 @@ SEC('speed test (0.8.0)', async () => {
   const sp = sites.normalizeSpeed({ at: 5, net: 'abc', out: { conn: 99, seg: true, mbps: 12.34 }, in: { conn: 3, seg: 'x', mbps: -1 }, maxOpen: 50 });
   eq([sp.out.conn, sp.out.seg, sp.out.mbps, sp.in, sp.maxOpen], [10, true, 12.3, null, 10], 'clamped, a bad direction dropped');
   const withSpeed = sites.normalizeSite({ id: 'a1b2c3d4e5f60718', name: 'x', host: 'h', speed: sp });
-  ok(JSON.parse(sites.exportFilo([withSpeed])).sites[0].speed === undefined, 'the filo export never carries a speed profile');
+  ok(JSON.parse(await sites.exportFilo([withSpeed])).sites[0].speed === undefined, 'the filo export never carries a speed profile');
   {
     const { Prefs } = require('../src/main/config');
     const d = scratch();
