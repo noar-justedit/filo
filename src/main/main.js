@@ -1987,7 +1987,9 @@ ipcMain.handle('win-to-tray', () => { hideToTray(); return true; });
 let tray = null, trayText = '';
 function trayIcon() {
   const dir = path.join(__dirname, 'tray');
-  const img = nativeImage.createFromPath(path.join(dir, IS_MAC ? 'trayTemplate.png' : process.platform === 'linux' ? 'tray-64.png' : 'tray.png'));
+  // Windows (0.9.3, Noar): the filo logo, as a multi-size .ico (16 to 64 px)
+  // so it stays sharp at 125 % / 150 %; the Mac keeps the ring in the menu bar.
+  const img = nativeImage.createFromPath(path.join(dir, IS_MAC ? 'trayTemplate.png' : process.platform === 'linux' ? 'tray-64.png' : 'tray-win.ico'));
   if (IS_MAC) img.setTemplateImage(true);
   return img;
 }

@@ -40,9 +40,9 @@ or a stop that does not work will pass unnoticed.
   are uppercase (CONNECT, REMOVE).
 - **Three systems.** macOS, Windows and Linux. Say in the pull request on
   which ones you tried it.
-- **Small, explained changes.** Say why, not only what. `ETAT_PROJET.md`
-  (in French) records the decisions taken and the traps already met; read
-  section 9 before touching the queue.
+- **Small, explained changes.** Say why, not only what. The comments in
+  `src/main/core/queue.js` and `transfer.js` explain the traps already met;
+  read them before touching the queue.
 
 ## Reporting a bug
 

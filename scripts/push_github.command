@@ -115,6 +115,12 @@ done
 # Secrets and signing material never leave this Mac, whatever .gitignore says.
 find "$TMP/repo" -path "$TMP/repo/.git" -prune -o -type f \( -name '.env' -o -name '.env.*' -o -name '*.p12' -o -name '*.pfx' -o -name '*.cer' -o -name '*.provisionprofile' -o -name '*.keychain-db' -o -name 'id_rsa*' -o -name 'id_ed25519*' \) -print -exec rm -f {} + | sed 's/^/  left out (secret): /'
 find "$TMP/repo" -path "$TMP/repo/.git" -prune -o -name .DS_Store -type f -exec rm -f {} +
+# The maintainer's own files (Noar, 22/10/2026): rules for the AIs, the
+# project's internal state, the texts pasted into the Releases. They stay in
+# the ZIP (any AI resumes from it) but never go to GitHub; already there, they
+# are removed by this push.
+rm -f "$TMP/repo/CLAUDE.md" "$TMP/repo/AGENTS.md" "$TMP/repo/ETAT_PROJET.md"
+rm -f "$TMP/repo"/docs/RELEASE-*.md
 # Scripts stay executable on GitHub, whatever the unzip tool did to them here.
 find . -path ./.git -prune -o -type f \( -name '*.command' -o -name '*.sh' \) -exec chmod +x {} +
 

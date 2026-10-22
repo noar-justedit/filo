@@ -122,6 +122,11 @@ try {
     ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $Repo -Recurse -Force }
   Get-ChildItem -LiteralPath $Repo -Recurse -Force -Filter '.DS_Store' -File -ErrorAction SilentlyContinue |
     Where-Object { $_.FullName -notlike (Join-Path $Repo '.git') + '*' } | Remove-Item -Force
+  # The maintainer's own files (Noar, 22/10/2026): rules for the AIs, the
+  # project's internal state, the texts pasted into the Releases. They stay in
+  # the ZIP but never go to GitHub; already there, they are removed by this push.
+  foreach ($f in @('CLAUDE.md', 'AGENTS.md', 'ETAT_PROJET.md')) { Remove-Item -LiteralPath (Join-Path $Repo $f) -Force -ErrorAction SilentlyContinue }
+  Get-ChildItem -LiteralPath (Join-Path $Repo 'docs') -Filter 'RELEASE-*.md' -File -ErrorAction SilentlyContinue | Remove-Item -Force
 
   Set-Location -LiteralPath $Repo
 

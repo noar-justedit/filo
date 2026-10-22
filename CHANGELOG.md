@@ -4,6 +4,18 @@ All notable changes to filo are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/lang/fr/).
 
+## [0.9.3] — 2026-10-22
+
+### Changed
+
+- **Windows: the filo logo next to the clock** (Noar), instead of the
+  turquoise ring. A multi-size icon (16 to 64 px), sharp at 125 % and 150 %.
+  The Mac keeps the ring in the menu bar; Linux is unchanged.
+- **Publishing**: `scripts/push_github.command` / `.ps1` no longer send the
+  maintainer's own notes (`CLAUDE.md`, `AGENTS.md`, `ETAT_PROJET.md`,
+  `docs/RELEASE-*.md`) to GitHub, and remove them from it if they are there.
+  They stay in the release ZIP.
+
 ## [0.9.2] — 2026-10-21
 
 ### Fixed

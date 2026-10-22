@@ -13,7 +13,7 @@ Licensed under the **GNU General Public License v3.0** (see [`LICENSE`](./LICENS
 
 ## Screenshots
 
-![filo 0.9.2 — connected to a site, three downloads, the first ones in segments](docs/screenshots/screenshot.png)
+![filo 0.9.3 — connected to a site, three downloads, the first ones in segments](docs/screenshots/screenshot.png)
 
 | Bookmarks | Settings |
 |---|---|
@@ -170,9 +170,9 @@ Real FTP / FTPS servers can be added to the tests with environment variables
 
 Unzip the release ZIP, then double-click `scripts/push_github.command` (macOS)
 or `scripts/push_github.bat` (Windows, needs Git for Windows) in the folder:
-GitHub becomes exactly that folder. See `AGENTS.md`, rule 7. Then
-create the Release for the tag `v<version>` and attach the builds; the text for
-it is in `docs/RELEASE-<version>.md`. Run `push_github.command` once more
+GitHub becomes exactly that folder, except the maintainer's own notes (they
+stay in the ZIP). Then create the Release for the tag `v<version>` and attach
+the builds; the text for it comes with the ZIP. Run `push_github.command` once more
 afterwards: it sends `version.json` last, so nobody is told about an update
 before its files can be downloaded.
 
