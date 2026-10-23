@@ -391,6 +391,17 @@ class FtpRemote {
     return this._q(() => this.client.downloadTo(destination, normalize(p), Math.max(0, Number(start) || 0)));
   }
 
+  // The end of a file, from `start` (0.9.7: checking a partial before an
+  // upload resumes it). Read to the end: no transfer is cut half-way.
+  async readTail(p, start) {
+    const { Writable } = require('stream');
+    const parts = [];
+    let n = 0;
+    const sink = new Writable({ write(c, _e, cb) { n += c.length; if (n <= 4 * 1024 * 1024) parts.push(c); cb(); } });
+    await this.download(p, sink, start);
+    return Buffer.concat(parts);
+  }
+
   upload(source, p, start) {
     // APPE adds to the end of what is already there; STOR replaces it.
     return this._q(() => (start > 0 ? this.client.appendFrom(source, normalize(p)) : this.client.uploadFrom(source, normalize(p))));

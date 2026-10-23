@@ -1487,7 +1487,7 @@ function renderConnPill() {
   $('conn-badges').innerHTML = b.join(' ');
   pill.dataset.tip = !c ? '' :
     `${c.url || c.label} — click to copy\n${c.label} — ${PROTO_LABEL[c.protocol]}${c.protocol === 'ftp' ? ': password and files travel in clear' : ', encrypted'}.\n` +
-    (!verifyOn ? 'CHECKSUM is off: only sizes are checked.'
+    (!verifyOn ? 'SAFE COPY is off: only sizes are checked.'
       : can && useServer ? `The server computes checksums (${c.serverHash.join(', ').toUpperCase()}): files are verified without a second transfer.`
       : can ? 'Settings ask to read files back: each file is transferred a second time to verify it.'
       : 'The server does not compute checksums: verification reads files back.');
@@ -2728,7 +2728,8 @@ function renderQueueHead() {
   } else state.qFinAt = 0;
   const idle = title === 'IDLE';
   $('q-title').textContent = title;
-  const runBytes = p && p.run ? p.run.bytes : 0;
+  // What this run moved, plus what was already in place when it started (a resume).
+  const runBytes = p && p.run ? p.run.bytes + (p.run.kept || 0) : 0;
   const left = c.bytesLeft || 0;
   const pct = running || pending || paused ? (runBytes + left > 0 ? (runBytes / (runBytes + left)) * 100 : 0) : (c.done && !idle ? 100 : 0);
   $('q-prog').style.width = (running || pending || paused || (c.done && !idle) ? Math.min(100, pct) : 0).toFixed(2) + '%';
@@ -2933,13 +2934,21 @@ function connMenu() {
 // The checksum switch, in the queue: on or off at any moment. A file already
 // on its way keeps the choice it started with; every file that starts after
 // the click follows the new one.
+function safeCopyBox() {
+  return dialog({
+    title: 'Turn on SAFE COPY?',
+    sub: 'Every file is checked after its transfer with a checksum (xxHash64, or MD5 / SHA-256 computed by the server when it can) and sent again if it differs.<br><br><b style="color:var(--orange)">Transfer might be slower.</b>',
+    buttons: [{ label: 'CANCEL', value: false }, { spacer: true }, { label: 'TURN ON', value: true, cls: 'go' }],
+    width: 480,
+  });
+}
 function renderVerifySwitch() {
   const on = state.settings.verify !== false;
   $('q-verify').checked = on;
   $('q-check').classList.toggle('off', !on);
   $('q-check').dataset.tip = on
-    ? 'Checksum ON: every file is verified after its transfer (by the server when it can, otherwise by reading it back — see Settings). Files already on their way keep their mode.'
-    : 'Checksum OFF: only the size is checked. Faster, but a corrupted copy would go unnoticed. Applies to the files that start from now.';
+    ? 'SAFE COPY ON: every file is verified after its transfer (by the server when it can, otherwise by reading it back — see Settings). Files already on their way keep their mode.'
+    : 'SAFE COPY OFF: only the size is checked. Faster, but a corrupted copy would go unnoticed. Applies to the files that start from now.';
 }
 
 function queueMenu(ev) {
@@ -3009,9 +3018,11 @@ function bindQueue() {
   $('q-conn').onclick = connMenu;
   $('q-sync').onclick = syncToggle;
   $('q-verify').addEventListener('change', async () => {
+    // Turning SAFE COPY on says what it does and what it costs first (0.9.6).
+    if ($('q-verify').checked && !(await safeCopyBox())) { $('q-verify').checked = false; renderVerifySwitch(); return; }
     await saveSettings({ verify: $('q-verify').checked });
     renderVerifySwitch();
-    toast($('q-verify').checked ? 'Checksum on — for every file that starts from now' : 'Checksum off — size only, for every file that starts from now', !$('q-verify').checked);
+    toast($('q-verify').checked ? 'SAFE COPY on — for every file that starts from now' : 'SAFE COPY off — size only, for every file that starts from now', !$('q-verify').checked);
   });
   $('q-retry').onclick = () => retryItems([]);
   if (!$('q-clear').innerHTML) $('q-clear').innerHTML = BROOM;
@@ -4449,7 +4460,7 @@ function livePct(p, st, mode) {
     return total ? Math.max(0, Math.min(100, 100 - (left / total) * 100)) : 100;
   }
   const c = state.qcounts || {}, pr = state.progress;
-  const run = pr && pr.run ? pr.run.bytes : 0, left = c.bytesLeft || 0;
+  const run = pr && pr.run ? pr.run.bytes + (pr.run.kept || 0) : 0, left = c.bytesLeft || 0;  // what was in place at Start counts (a resume)
   if (state.qstate === 'running' && run + left > 0) return (run / (run + left)) * 100;
   const sv = p.via === 'hybrid' ? st.server || {} : st;
   return sv.state === 'error' ? null : sv.lastRun ? 100 : null;
@@ -4583,7 +4594,7 @@ function ringBytes(p, st, mode) {
     return total ? `${fmtSize(Math.max(0, total - left))} / ${fmtSize(total)}` : '';
   }
   const c = state.qcounts || {}, pr = state.progress;
-  const run = pr && pr.run ? pr.run.bytes : 0, left = c.bytesLeft || 0;
+  const run = pr && pr.run ? pr.run.bytes + (pr.run.kept || 0) : 0, left = c.bytesLeft || 0;  // what was in place at Start counts (a resume)
   if (state.qstate === 'running' && run + left > 0) return `${fmtSize(run)} / ${fmtSize(run + left)}`;
   const sv = p.via === 'hybrid' ? st.server || {} : st;
   return sv.lastRun ? `checked ${fmtTime(sv.lastRun)}` : '';

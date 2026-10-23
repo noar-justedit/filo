@@ -53,6 +53,7 @@ class InProcessLane {
       limiter: this.limiter,
       log: (lv, m) => hooks.log(lv, m),
       onBytes: (n, ph) => hooks.onBytes(n, ph),
+      onMeta: m => { if (hooks.onMeta) hooks.onMeta(m); },
       ask: (_item, src, dst) => hooks.ask(src, dst),
     };
     try { return await runUnit(this.remote, Object.assign({}, unit, { item: JSON.parse(JSON.stringify(unit.item)) }), ctx); }
@@ -118,6 +119,7 @@ class WorkerLane {
       case 'log': this.log(m.level, m.msg); return;
       case 'remember': if (this._remember) this._remember(m.kind, m.host, m.port, m.fp); return;
       case 'bytes': if (p && p.hooks) for (const [ph, n] of m.batch) p.hooks.onBytes(n, ph); return;
+      case 'meta': if (p && p.hooks && p.hooks.onMeta) p.hooks.onMeta(m.meta); return;
       case 'ask':
         if (!p || !p.hooks) return;
         Promise.resolve(p.hooks.ask(m.src, m.dst)).then(

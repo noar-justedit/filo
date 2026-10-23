@@ -357,7 +357,11 @@ class TransferQueue extends EventEmitter {
     const s = this.settings();
     if (!this.tuner || this.tuner.max !== this._maxLanes()) this.tuner = new AutoTuner({ max: this._maxLanes(), start: 2 });
     else this.tuner.newRun();
-    this.run = { startedAt: Date.now(), done: 0, failed: 0, skipped: 0, bytes: 0, verified: 0 };
+    this.run = { startedAt: Date.now(), done: 0, failed: 0, skipped: 0, bytes: 0, verified: 0, kept: 0 };
+    // 0.9.6 (Noar, asked before): what is already in place at this Start
+    // (files stopped or paused half-way) counts in the progress of the run, so
+    // a resume at 25 % shows 25 %, not 0 %.
+    for (const it of this.items.values()) if (PENDING.has(it.status) || ACTIVE.has(it.status) || HELD.has(it.status)) this.run.kept += Math.max(0, it.done || 0);
     this.sessionRules = {};
     this._startProgress();
     this.emit('state', this.state);
@@ -678,6 +682,14 @@ class TransferQueue extends EventEmitter {
       const unit = { kind: u.kind, idx: u.idx, settings: setg, item: plainItem(it) };
       const hooks = {
         onBytes: (n, ph) => this._onBytes(it, u, n, ph),
+        // What the attempt decided (0.9.7): known now, saved with the queue,
+        // so a crash before its end still resumes.
+        onMeta: m => {
+          if (!m || it.removed) return;
+          for (const k of ['resume', 'restartFromZero', 'ownTarget', 'remote', 'local']) if (m[k] !== undefined) it[k] = m[k];
+          if (m.seg === null && u.kind === 'item') it.seg = null;
+          this._changed();
+        },
         ask: (src, dst) => this._ask(it, u, src, dst),
         log: (lv, m) => this.log(lv, m),
       };
@@ -745,8 +757,10 @@ class TransferQueue extends EventEmitter {
       // A segment that failed before it could say what it holds (during its
       // connection, say) keeps what was known to be in place before.
       const before = Number(own.got) || 0;
-      const kept = err.mismatch ? 0 : u.keep == null ? before : Math.max(before, Math.min(own.e - own.s, u.keep));
+      const known = Math.max(u.keep == null ? 0 : u.keep, own.live || 0);
+      const kept = err.mismatch ? 0 : Math.max(before, Math.min(own.e - own.s, known));
       own.got = kept;
+      own.live = 0;
       it.done = Math.max(0, (it.done || 0) - u.bytes + (kept - before));
     }
     if (u.kind === 'final') it._finalizing = false;
@@ -853,8 +867,14 @@ class TransferQueue extends EventEmitter {
   }
 
   _onBytes(it, u, n, phase) {
-    if (phase === 'resume') { it.done = n; return; }
+    if (phase === 'resume') {
+      // Where the transfer really starts (a partial found, or none: from zero).
+      if (this.run) this.run.kept += n - (it.done || 0);
+      it.done = n; return;
+    }
     if (phase === 'segkeep') { u.keep = n; return; }
+    // As a segment runs: what is surely in place, saved with the queue (0.9.7).
+    if (phase === 'segprog') { const own = u.kind === 'seg' ? this._ownSeg(u) : null; if (own && own.st !== 'd') own.live = Math.max(own.live || 0, Math.min(own.e - own.s, n)); return; }
     if (phase === 'transfer') {
       it.done = (it.done || 0) + n;
       u.bytes += n;
@@ -962,7 +982,7 @@ class TransferQueue extends EventEmitter {
       counts: c,
       speed: sp,
       eta: sp > 0 ? c.bytesLeft / sp : 0,
-      run: this.run ? { bytes: this.run.bytes, done: this.run.done, failed: this.run.failed, startedAt: this.run.startedAt } : null,
+      run: this.run ? { bytes: this.run.bytes, kept: Math.max(0, this.run.kept || 0), done: this.run.done, failed: this.run.failed, startedAt: this.run.startedAt } : null,
       auto: this.settings().concurrency === 'auto' && this.tuner ? { level: this.tuner.limit(), note: this.tuner.note } : null,
       lanes: this.lanes.filter(l => !l.dead).length,
       units: this.units.size,
@@ -1013,7 +1033,9 @@ class TransferQueue extends EventEmitter {
     const out = list.map(it => {
       const o = {};
       for (const k of keep) if (it[k] !== undefined && it[k] !== null) o[k] = it[k];
-      if (o.seg) o.seg = Object.assign({}, o.seg, { chunks: o.seg.chunks.map(c => Object.assign(c.st === 'd' ? { s: c.s, e: c.e, st: 'd' } : { s: c.s, e: c.e, st: c.st === 'w' ? 'w' : 'p', got: c.got || 0 }, c.hash ? { hash: c.hash } : {})) });
+      // A segment on its way is saved with what it has surely put in place
+      // so far (`live`, 0.9.7): a crash keeps it; it is checked on resume.
+      if (o.seg) o.seg = Object.assign({}, o.seg, { chunks: o.seg.chunks.map(c => Object.assign(c.st === 'd' ? { s: c.s, e: c.e, st: 'd' } : { s: c.s, e: c.e, st: c.st === 'w' ? 'w' : 'p', got: Math.max(c.got || 0, c.live || 0) }, c.hash ? { hash: c.hash } : {})) });
       if (ACTIVE.has(o.status) || o.status === 'waiting') o.status = 'queued';
       return o;
     });

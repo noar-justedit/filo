@@ -145,11 +145,11 @@ async function ensureLocalDir(dir) {
 // and followed when it changes during the transfer.
 // `phase` is what the progress counts (a read-back is 'verify', and is not
 // held back by the speed limit, as on the built-in path).
-async function engineMove(ctx, job, phase) {
+async function engineMove(ctx, job, phase, onKept) {
   const r = ctx.remote;
   if (!r || typeof r.engineJob !== 'function') return null;
   const p = phase || 'transfer';
-  return r.engineJob(job, n => ctx.onBytes(n, p), ctx.token, p === 'transfer' ? ctx.limiter : null);
+  return r.engineJob(job, n => ctx.onBytes(n, p), ctx.token, p === 'transfer' ? ctx.limiter : null, onKept);
 }
 
 // ctx: { remote, settings, token, onBytes(n, phase), ask(item, src, dst), log }
@@ -190,6 +190,77 @@ async function decide(item, ctx, src, dst) {
   return { action: existing.resolve(rule, src, dst) };
 }
 
+
+// ── A partial is checked before it is trusted (0.9.7) ────────────────────
+// Resuming builds on what is already in place. If that is not the source's
+// bytes (a hole left by a cut, a partial replaced by another file, a disk
+// error), the delivered file is wrong, and with SAFE COPY off nothing would
+// say so. So before resuming, a few small windows of what is in place (its
+// start, its middle, its end; for segments, each segment's) are compared
+// with the source, byte for byte. A region that differs is sent again.
+// Cheap: 32 KB windows, read on one handle in one round trip (SFTP). It
+// catches what a resume gets wrong (ends of cut writes, a wrong partial); a
+// random error in the middle of a large region is SAFE COPY's job.
+const PROBE_W = 32 * 1024;
+const { Transform } = require('stream');
+class Overlap extends Transform {
+  constructor(mine) { super(); this.mine = mine; this.seen = 0; }
+  _transform(chunk, _e, cb) {
+    if (this.seen >= this.mine.length) return cb(null, chunk);
+    const take = Math.min(chunk.length, this.mine.length - this.seen);
+    if (!chunk.subarray(0, take).equals(this.mine.subarray(this.seen, this.seen + take))) {
+      return cb(new MismatchError('After resuming: the partial file here is not this file\'s beginning.', { mismatch: true, network: true, resumed: true }));
+    }
+    this.seen += take;
+    cb(null, take < chunk.length ? chunk.subarray(take) : null);
+  }
+}
+function probeWindows(a, b) {
+  if (b - a <= 3 * PROBE_W) return b > a ? [[a, b]] : [];
+  const m = a + Math.floor((b - a - PROBE_W) / 2 / 4096) * 4096;
+  return [[a, a + PROBE_W], [m, m + PROBE_W], [b - PROBE_W, b]];
+}
+async function readLocalRanges(file, ranges) {
+  const fsp = require('fs').promises;
+  const fh = await fsp.open(file, 'r');
+  try {
+    const out = [];
+    for (const [a, b] of ranges) { const buf = Buffer.alloc(b - a); const { bytesRead } = await fh.read(buf, 0, b - a, a); out.push(buf.subarray(0, bytesRead)); }
+    return out;
+  } finally { await fh.close(); }
+}
+// regions: [[a, b)] kept, in the file at `localPath` (the source when
+// sending, the partial when receiving) and at `remotePath` (the partial when
+// sending, the source when receiving). → array of true / false per region,
+// or null when this server cannot be read in pieces (then the old rule holds).
+async function regionsMatch(remote, localPath, remotePath, regions) {
+  if (!regions.length) return [];
+  if (typeof remote.readRanges !== 'function') return null;
+  const wins = [], owner = [];
+  regions.forEach(([a, b], i) => { for (const w of probeWindows(a, b)) { wins.push(w); owner.push(i); } });
+  const [far, near] = await Promise.all([remote.readRanges(remotePath, wins), readLocalRanges(localPath, wins)]);
+  const ok = regions.map(() => true);
+  wins.forEach(([a, b], k) => {
+    const x = far[k], y = near[k];
+    if (!x || !y || x.length !== b - a || y.length !== b - a || !x.equals(y)) ok[owner[k]] = false;
+  });
+  return ok;
+}
+// One resumed whole file: is [0, offset) the source's? FTP has no reads in
+// pieces: sending, the partial's last window is read to its end; receiving,
+// the transfer itself starts a window early and compares (see download()).
+async function prefixMatches(remote, localPath, remotePath, offset, up) {
+  const r = await regionsMatch(remote, localPath, remotePath, [[0, offset]]);
+  if (r) return r[0];
+  if (up && typeof remote.readTail === 'function') {
+    const a = Math.max(0, offset - PROBE_W);
+    const far = await remote.readTail(remotePath, a);
+    const [near] = await readLocalRanges(localPath, [[a, offset]]);
+    return far.length === offset - a && far.equals(near);
+  }
+  return null;
+}
+
 // ── Upload ────────────────────────────────────────────────────────────────
 async function upload(item, ctx) {
   const { remote, settings } = ctx;
@@ -228,7 +299,14 @@ async function upload(item, ctx) {
   item.seg = null;
   item.resume = { srcSize: src.size, srcMtime: src.mtime };
   item.restartFromZero = false;
+  // Known by the queue at once (0.9.7), not only when this attempt ends: a
+  // crash in the middle then still resumes instead of starting over.
+  if (ctx.onMeta) ctx.onMeta({ resume: item.resume, restartFromZero: false, ownTarget: !!item.ownTarget, remote: item.remote, seg: null });
   if (offset > 0 && remote.resumeMargin) offset = Math.max(0, offset - remote.resumeMargin);
+  if (offset > 0 && (await prefixMatches(remote, item.local, writePath, offset, true)) === false) {
+    ctx.log('warn', `${posix.basename(finalPath)}: the partial file on the server is not this file's beginning; sent again from the start`);
+    offset = 0;
+  }
   item.offset = offset;
   ctx.onBytes(offset, 'resume');
   if (offset) ctx.log('info', `Resuming ${posix.basename(finalPath)} at ${offset} bytes`);
@@ -466,6 +544,15 @@ async function download(item, ctx) {
   item.seg = null;
   item.resume = { srcSize: src.size, srcMtime: src.mtime };
   item.restartFromZero = false;
+  if (ctx.onMeta) ctx.onMeta({ resume: item.resume, restartFromZero: false, ownTarget: !!item.ownTarget, local: item.local, seg: null });
+  // Checked before it is trusted. FTP cannot read in pieces: there the
+  // download starts a window early and compares it (overlap, below).
+  let overlap = 0;
+  if (offset > 0) {
+    const m = await prefixMatches(remote, writePath, item.remote, offset, false);
+    if (m === false) { ctx.log('warn', `${path.basename(finalPath)}: the partial file here is not this file's beginning; received again from the start`); offset = 0; }
+    else if (m === null) overlap = Math.min(offset, PROBE_W);
+  }
   item.offset = offset;
   ctx.onBytes(offset, 'resume');
   if (offset) ctx.log('info', `Resuming ${path.basename(finalPath)} at ${offset} bytes`);
@@ -482,9 +569,17 @@ async function download(item, ctx) {
     tap.pipe(sink);
     const sinkDone = finished(sink);
     sinkDone.catch(() => {});
-    ctx.token.onAbort = () => { tap.destroy(Object.assign(new Error('Stopped.'), { aborted: true })); sink.destroy(); };
+    // The overlap: the first bytes received are the end of what is already
+    // here; they must be identical, and are not written again.
+    let head = null;
+    if (overlap) {
+      const [mine] = await readLocalRanges(writePath, [[offset - overlap, offset]]);
+      head = new Overlap(mine);
+      head.pipe(tap);
+    }
+    ctx.token.onAbort = () => { (head || tap).destroy(Object.assign(new Error('Stopped.'), { aborted: true })); tap.destroy(Object.assign(new Error('Stopped.'), { aborted: true })); sink.destroy(); };
     try {
-      if (offset < src.size || offset === 0) await remote.download(item.remote, tap, offset);
+      if (offset < src.size || offset === 0) await remote.download(item.remote, head || tap, offset - overlap);
       else tap.end();
       await sinkDone;
     } catch (e) { sink.destroy(); throw e; }       // the local file is closed, even on a network error
@@ -653,10 +748,11 @@ async function prepareSegments(item, ctx, src, t) {
   const { remote, settings } = ctx;
   const up = item.dir === 'up';
   const prev = item.seg;
-  let keep = false;
+  let keep = false, partSize = 0;
   if (prev && !item.restartFromZero && prev.writePath === t.writePath && sameSource(item, src) && prev.size === src.size) {
     const part = up ? await remote.stat(t.writePath) : await local.stat(t.writePath);
     keep = !!(part && part.type === 'file');
+    partSize = keep ? part.size : 0;
   }
   let verify = 'size', algo = null;
   if (settings.verify) {
@@ -670,6 +766,19 @@ async function prepareSegments(item, ctx, src, t) {
     else { const fd = await require('fs').promises.open(t.writePath, 'w'); await fd.close(); }
   }
   const chunks = keep ? prev.chunks.map(c => (c.st === 'd' ? { s: c.s, e: c.e, st: 'd' } : { s: c.s, e: c.e, st: 'p', got: Math.max(0, Math.min(c.e - c.s, Number(c.got) || 0)) })) : makeChunks(src.size, segmentSizeFor(src.size));
+  // What each segment says it has is checked against the source first
+  // (0.9.7): past the end of the partial, it is not there; otherwise a few
+  // windows of it are compared. A segment that does not match is sent again.
+  if (keep) {
+    const regs = [];
+    chunks.forEach((c, i) => { const end = c.st === 'd' ? c.e : c.s + (c.got || 0); if (end > c.s) regs.push([i, c.s, end]); });
+    const redo = new Set(regs.filter(r => r[2] > partSize).map(r => r[0]));
+    const inside = regs.filter(r => !redo.has(r[0]));
+    const m = await regionsMatch(remote, up ? item.local : t.writePath, up ? t.writePath : item.remote, inside.map(r => [r[1], r[2]]));
+    if (m) m.forEach((good, k) => { if (!good) redo.add(inside[k][0]); });
+    for (const i of redo) chunks[i] = { s: chunks[i].s, e: chunks[i].e, st: 'p', got: 0 };
+    if (redo.size) ctx.log('warn', `${up ? posix.basename(t.finalPath) : path.basename(t.finalPath)}: ${redo.size} segment${redo.size > 1 ? 's' : ''} already in place did not match the source; sent again`);
+  }
   let relay = null;
   if (up && item.relayOut) {
     try { relay = await startRelay(item, ctx, src, keep, chunks, t.writePath, t.finalPath); }
@@ -716,12 +825,15 @@ async function runSegment(item, idx, ctx) {
     if (ctx.token.cancelled) throw Object.assign(new RemoteError('Stopped.'), { aborted: true });
     return { status: 'segment-done' };
   }
+  // As the segment runs, what is surely in place is reported (0.9.7) and
+  // saved with the queue: a crash (filo killed, a power cut) then keeps it.
+  const live = k => ctx.onBytes(got + Math.max(0, k), 'segprog');
   let eng = null;
   if (len > 0) {
     try {
       eng = item.dir === 'down'
-        ? await engineMove(ctx, { op: 'get', remote: from, local: seg.writePath, start, end: c.e, segment: true, hash: check })
-        : await engineMove(ctx, { op: 'put', local: item.local, remote: seg.writePath, start, end: c.e, segment: true, hash: check || !!seg.relay });
+        ? await engineMove(ctx, { op: 'get', remote: from, local: seg.writePath, start, end: c.e, segment: true, hash: check }, null, live)
+        : await engineMove(ctx, { op: 'put', local: item.local, remote: seg.writePath, start, end: c.e, segment: true, hash: check || !!seg.relay }, null, live);
     } catch (e) {
       // What is surely in place: written in order (download), or acknowledged
       // without a gap by the server (upload).
@@ -755,6 +867,8 @@ async function runSegment(item, idx, ctx) {
     tap.pipe(sink);
     const sinkDone = finished(sink);
     sinkDone.catch(() => {});
+    const liveT = setInterval(() => live(Math.max(0, sink.pos - start)), 500);
+    sinkDone.then(() => clearInterval(liveT), () => clearInterval(liveT));
     ctx.token.onAbort = () => { tap.destroy(Object.assign(new Error('Stopped.'), { aborted: true })); sink.destroy(); };
     try {
       await remote.downloadRange(from, tap, start, c.e);
@@ -782,7 +896,7 @@ async function runSegment(item, idx, ctx) {
     rs.on('error', e => tap.destroy(e));
     rs.pipe(tap);
     ctx.token.onAbort = () => { rs.destroy(); tap.destroy(Object.assign(new Error('Stopped.'), { aborted: true })); };
-    try { await remote.uploadRange(tap, seg.writePath, start); }
+    try { await remote.uploadRange(tap, seg.writePath, start, live); }
     catch (e) {
       // 0.9.2: what the server acknowledged without a gap (exact), when the
       // backend says it; otherwise what was sent minus a margin, which is

@@ -285,7 +285,7 @@ class SftpRemote {
   // path. Resolves { bytes, hash } (hash: xxHash64 of the bytes, in order,
   // when asked), or null when the engine is not usable for this connection:
   // the caller then moves the bytes itself, as before.
-  async engineJob(job, onBytes, token, limiter) {
+  async engineJob(job, onBytes, token, limiter, onKept) {
     if (this.engineOff) return null;
     if (!enginePath() || !this.hostFingerprint) {
       // Said once per connection, so a build without the engine is visible.
@@ -310,7 +310,7 @@ class SftpRemote {
         await this._engine.start();
         this.log('info', `Rust engine: ${this.opts.host}:${this.port} (${this._engine.cipher})`);
       }
-      return await this._engine.run(job, onBytes, token, limiter);
+      return await this._engine.run(job, onBytes, token, limiter, onKept);
     } catch (e) {
       if (!e.engineRefused) throw e;
       // It could not start, log in, or saw another identity: this connection
@@ -447,6 +447,28 @@ class SftpRemote {
   // 16 MB with OpenSSH's 254 KB, sent again).
   get resumeMargin() { return XFER_CONCURRENCY * Math.max(XFER_CHUNK, this._chunk('write')); }
 
+  // Several small pieces of a file at once, on one handle (0.9.7: checking a
+  // partial before resuming it, a few windows per segment, in one round trip).
+  // A piece that cannot be read comes back null (past the end, say).
+  readRanges(p, ranges) {
+    return this._q(`read ${p}`, () => new Promise((resolve, reject) => {
+      this.sftp.open(normalize(p), 'r', (err, h) => {
+        if (err) return reject(RemoteError.from(err, 'sftp'));
+        const out = new Array(ranges.length).fill(null);
+        let left = ranges.length;
+        const end = () => this.sftp.close(h, () => resolve(out));
+        if (!left) return end();
+        ranges.forEach(([a, b], i) => {
+          const buf = Buffer.alloc(Math.max(0, b - a));
+          this.sftp.read(h, buf, 0, buf.length, a, (e, n) => {
+            out[i] = e ? null : buf.subarray(0, n || 0);
+            if (--left === 0) end();
+          });
+        });
+      });
+    }));
+  }
+
   downloadRange(p, destination, start, end) {
     const { pipeline } = require('stream');
     return new Promise((resolve, reject) => {
@@ -456,11 +478,13 @@ class SftpRemote {
     });
   }
 
-  uploadRange(source, p, start) {
+  uploadRange(source, p, start, onKept) {
     const { pipeline } = require('stream');
     return new Promise((resolve, reject) => {
       let ws;
       try { ws = this.createWriteStream(p, start, { noTruncate: true }); } catch (e) { return reject(RemoteError.from(e, 'sftp')); }
+      // What the server acknowledged so far, every half second (0.9.7).
+      if (onKept) { const t = setInterval(() => { try { onKept(ws.kept); } catch (_) {} }, 500); ws.once('close', () => clearInterval(t)); ws.once('finish', () => clearInterval(t)); ws.once('error', () => clearInterval(t)); }
       // On failure, `kept`: what the server surely holds from `start` (0.9.2).
       pipeline(source, ws, err => (err ? reject(Object.assign(RemoteError.from(err, 'sftp'), { kept: ws.kept })) : resolve()));
     });

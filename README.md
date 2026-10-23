@@ -13,7 +13,7 @@ Licensed under the **GNU General Public License v3.0** (see [`LICENSE`](./LICENS
 
 ## Screenshots
 
-![filo 0.9.5 — connected to a site, three downloads, the first ones in segments](docs/screenshots/screenshot.png)
+![filo 0.9.7 — connected to a site, three downloads, the first ones in segments](docs/screenshots/screenshot.png)
 
 | My servers | Settings |
 |---|---|
@@ -44,7 +44,7 @@ Licensed under the **GNU General Public License v3.0** (see [`LICENSE`](./LICENS
 | **Segments** | a large file goes over several SFTP connections at once — the way past the per-connection limit on long-distance links |
 | **Rust engine** | over SFTP, the bytes go straight between the disk and the network through a small program written in Rust (`engine/`), outside Node: in a speed test with a Synology DS920+, a 20 GB file came in in 1'41" on 4 connections (FileZilla: 2'40"). filo falls back to its built-in engine when that program is missing or refused |
 | **Resume** | a cut transfer starts again where it stopped; a segmented file keeps its finished segments |
-| **Checksums** | every file verified after its transfer — by the server (SHA-256, MD5…) when it can compute one, otherwise by reading the file back (xxHash64). On or off from the main window. A delivery already on both sides can be checked again without transferring anything (right-click → Check against the other side) |
+| **SAFE COPY** | every file verified after its transfer — by the server (SHA-256, MD5…) when it can compute one, otherwise by reading the file back (xxHash64). Off by default (it can make transfers slower), one switch in the queue to turn it on. A delivery already on both sides can be checked again without transferring anything (right-click → Check against the other side) |
 | **Safe names** | written as `name.filopart`, renamed only once complete and verified |
 | **File already there** | ask, overwrite, overwrite if newer, if the size differs, resume, keep both, skip |
 | **My servers** | your servers in folders (a tree that folds), notes, per-site connection limit; select several at once (⌘/Ctrl+click, Shift+click) to duplicate or delete; import FileZilla's `sitemanager.xml`; export to a filo file, with the passwords encrypted by a passphrase if you want them |

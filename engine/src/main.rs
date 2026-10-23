@@ -23,7 +23,8 @@
 //             -> {"ev":"ready","cipher"} | {"ev":"fatal","error","kind"}
 //         {"op":"get","id","remote","local","start","end"?,"segment","hash"}
 //         {"op":"put","id","local","remote","start","end","segment","hash"}
-//             -> {"ev":"bytes","id","n"} (every 100 ms, bytes since the last one)
+//             -> {"ev":"bytes","id","n","kept"} (every 100 ms: bytes since the last one,
+//                and what is surely in place from `start`)
 //             -> {"ev":"done","id","bytes","hash"} | {"ev":"error","id","error","kind","kept",...}
 //         {"op":"abort","id"}      stops that job as soon as possible
 //         {"op":"rate","id","bps"} changes its speed limit (also "rate" in get/put)
@@ -437,9 +438,8 @@ fn read_at(f: &std::fs::File, mut buf: &mut [u8], mut off: u64) -> std::io::Resu
 }
 
 // ── Download ──────────────────────────────────────────────────────────────
-async fn get(s: &mut Sftp, j: &Job, done: &AtomicU64, stop: &Stop) -> Result<Outcome, JobFail> {
-    let written = Arc::new(AtomicU64::new(0));
-    let r = get_inner(s, j, done, stop, &written).await;
+async fn get(s: &mut Sftp, j: &Job, done: &AtomicU64, stop: &Stop, written: &Arc<AtomicU64>) -> Result<Outcome, JobFail> {
+    let r = get_inner(s, j, done, stop, written).await;
     r.map_err(|err| JobFail { err, kept: written.load(Ordering::SeqCst) })
 }
 
@@ -558,9 +558,8 @@ async fn get_inner(s: &mut Sftp, j: &Job, done: &AtomicU64, stop: &Stop, written
 }
 
 // ── Upload ────────────────────────────────────────────────────────────────
-async fn put(s: &mut Sftp, j: &Job, done: &AtomicU64, stop: &Stop) -> Result<Outcome, JobFail> {
-    let kept = Arc::new(AtomicU64::new(0));
-    let r = put_inner(s, j, done, stop, &kept).await;
+async fn put(s: &mut Sftp, j: &Job, done: &AtomicU64, stop: &Stop, kept: &Arc<AtomicU64>) -> Result<Outcome, JobFail> {
+    let r = put_inner(s, j, done, stop, kept).await;
     r.map_err(|err| JobFail { err, kept: kept.load(Ordering::SeqCst) })
 }
 
@@ -738,18 +737,22 @@ async fn serve() -> Result<()> {
                 }
                 let s = conn.as_mut().unwrap();
                 let done = Arc::new(AtomicU64::new(0));
+                // What is surely in place so far (written in order / acknowledged
+                // without a gap), sent with the progress (filo 0.9.7): saved by
+                // filo while it runs, so a crash keeps the progress of a segment.
+                let kept = Arc::new(AtomicU64::new(0));
                 let ticker = {
-                    let (done, id) = (done.clone(), id.clone());
+                    let (done, kept, id) = (done.clone(), kept.clone(), id.clone());
                     tokio::spawn(async move {
                         let mut last = 0;
                         loop {
                             tokio::time::sleep(Duration::from_millis(100)).await;
                             let n = done.load(Ordering::Relaxed);
-                            if n > last { emit(json!({ "ev": "bytes", "id": id, "n": n - last })); last = n; }
+                            if n > last { emit(json!({ "ev": "bytes", "id": id, "n": n - last, "kept": kept.load(Ordering::SeqCst) })); last = n; }
                         }
                     })
                 };
-                let r = if op == "get" { get(s, &job, &done, &stop).await } else { put(s, &job, &done, &stop).await };
+                let r = if op == "get" { get(s, &job, &done, &stop, &kept).await } else { put(s, &job, &done, &stop, &kept).await };
                 ticker.abort();
                 let _ = ticker.await;
                 // Whatever the ticker did not report yet.
@@ -822,7 +825,8 @@ async fn cli() -> Result<()> {
         tasks.push(tokio::spawn(async move {
             let mut s = match reuse { Some(s) => s, None => connect(&creds).await?.0 };
             let stop = Stop::new();
-            let r = if cmd == "get" { get(&mut s, &part, &done, &stop).await } else { put(&mut s, &part, &done, &stop).await };
+            let kept = Arc::new(AtomicU64::new(0));
+            let r = if cmd == "get" { get(&mut s, &part, &done, &stop, &kept).await } else { put(&mut s, &part, &done, &stop, &kept).await };
             s.bye().await;
             r.map_err(|f| f.err)
         }));

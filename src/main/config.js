@@ -24,7 +24,7 @@ const DEFAULT_SETTINGS = {
   limitDown: 0,
   existingUp: 'ask',
   existingDown: 'ask',
-  verify: true,             // check every file after the transfer
+  verify: false,            // SAFE COPY: check every file after the transfer (off by default since 0.9.6, Noar: slower)
   serverHash: true,         // ask the server for a checksum when it can
   readBack: true,           // otherwise, read the file back to check it
   tempNames: true,          // write to .filopart, rename once verified

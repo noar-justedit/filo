@@ -87,8 +87,11 @@ parentPort.on('message', async m => {
       onBytes: (n, phase) => {
         // Markers (resume, verify-start) keep their order: flush around them.
         if (phase === 'resume' || phase === 'verify-start' || phase === 'segkeep') { flush(); parentPort.postMessage({ type: 'bytes', id, batch: [[phase, n]] }); return; }
+        // A position, not a count: the latest one is what matters.
+        if (phase === 'segprog') { batch.set(phase, n); return; }
         batch.set(phase, (batch.get(phase) || 0) + n);
       },
+      onMeta: meta => { flush(); parentPort.postMessage({ type: 'meta', id, meta }); },
       ask: (_item, src, dst) => new Promise((resolve, reject) => {
         flush();
         asks.set(id, { resolve, reject });

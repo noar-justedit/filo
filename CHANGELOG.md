@@ -4,6 +4,51 @@ All notable changes to filo are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/lang/fr/).
 
+## [0.9.7] — 2026-10-23
+
+### Changed
+
+- **Resume, made robust** (Noar: "une des fonctions les plus importantes").
+  - **A partial is checked before filo builds on it.** Before resuming, a few
+    small windows of what is already in place (its start, middle and end; for
+    a file in segments, each segment's) are compared byte for byte with the
+    source. A region that differs (a hole left by a cut, a partial replaced
+    by another file, a disk error at the end of a write) is sent again
+    instead of being delivered wrong. This works with SAFE COPY off. SFTP
+    reads the windows in one round trip; FTP checks the end of the partial
+    (sending) or starts the transfer a little early and compares (receiving).
+  - **A crash or a power cut keeps the progress.** The queue now saves, while
+    a transfer runs, what is surely in place: a whole file resumes instead of
+    starting over (its resume record used to be known only at the end of an
+    attempt), and a segment resumes inside itself instead of from its start.
+    The Rust engine reports this every 100 ms (engine changed: rebuilt with
+    the app as usual).
+
+### Tests
+
+- Resume with checks OFF (nothing to hide a bad file): the partial damaged
+  (end of each region zeroed), truncated or replaced by another file; the
+  source changed between two attempts; filo killed with SIGKILL and started
+  again from its saved queue. SFTP (Rust and built-in engines), whole files
+  and segments, sending and receiving; FTP and FTPS on a real server.
+
+## [0.9.6] — 2026-10-23
+
+### Changed
+
+- **CHECKSUM is now SAFE COPY, and off by default** (Noar): the name says what
+  it gives. Turning it on shows a short notice first: every file is checked
+  with a checksum (xxHash64, or MD5 / SHA-256 computed by the server) and
+  sent again if it differs; transfers might be slower. Turning it off needs
+  no confirmation. A copy of filo already installed keeps its own setting.
+
+### Fixed
+
+- **A resume started the queue's progress bar at 0 %** (Noar, asked
+  before): what was already in place when Start is pressed now counts, so a
+  resume at 25 % shows 25 %. The same on the LIVE SYNC ring of an S-FTP or
+  DUAL SYNC session (its percentage and its bytes).
+
 ## [0.9.5] — 2026-10-23
 
 ### Fixed

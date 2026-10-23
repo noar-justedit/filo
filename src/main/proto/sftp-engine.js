@@ -100,7 +100,7 @@ class Engine {
         }
         const j = this.job;
         if (!j || ev.id !== j.id) return;
-        if (ev.ev === 'bytes') { const n = Number(ev.n) || 0; j.reported += n; try { j.onBytes(n); } catch (_) {} }
+        if (ev.ev === 'bytes') { const n = Number(ev.n) || 0; j.reported += n; try { j.onBytes(n); } catch (_) {} if (j.onKept && ev.kept != null) { try { j.onKept(Number(ev.kept) || 0); } catch (_) {} } }
         else if (ev.ev === 'done') {
           this.job = null;
           // The last bytes, moved after the last progress event.
@@ -128,7 +128,8 @@ class Engine {
   }
 
   // job: { op: 'get'|'put', remote, local, start, end, segment, hash }
-  async run(job, onBytes, token, limiter) {
+  // onKept(n): what is surely in place from job.start, as the job runs (0.9.7).
+  async run(job, onBytes, token, limiter, onKept) {
     await this.start();
     if (this.job) throw new Error('the transfer engine is already busy');
     // Stopped while the engine was starting: the stop must not be lost (the
@@ -137,7 +138,7 @@ class Engine {
     const id = this.nextId++;
     let unwatch = null;
     return new Promise((resolve, reject) => {
-      this.job = { id, resolve, reject, onBytes, reported: 0 };
+      this.job = { id, resolve, reject, onBytes, onKept, reported: 0 };
       if (token) token.onAbort = () => this.abort();
       // The speed limit, now and whenever it changes.
       if (limiter) unwatch = limiter.watch(bps => this._send({ op: 'rate', id, bps }));
