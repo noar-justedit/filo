@@ -71,7 +71,11 @@ function startSftpServer(opts) {
       // A server that allows only so many connections per account: the one
       // over the limit is cut right after it logs in, as many hosts do.
       let counted = false;
-      client.on('close', () => { if (counted) sessions--; });
+      client.on('close', () => {
+        if (counted) sessions--;
+        // A connection that goes closes its files, as a real server does.
+        for (const [k, e] of handles) if (e.owner === client) { try { fs.closeSync(e.fd); } catch (_) {} handles.delete(k); }
+      });
       client.on('authentication', ctx => {
         if (maxSessions && ctx.method === 'password' && ctx.username === user && ctx.password === pass && sessions >= maxSessions) {
           ctx.accept();
@@ -166,6 +170,11 @@ function startSftpServer(opts) {
                 // segments); create the file if it does not exist.
                 else mode = fs.existsSync(file) ? 'r+' : 'w';
               }
+              // A server that refuses to open a file twice for writing (Windows
+              // ones, IIS / Serv-U style): "File is already exclusively open".
+              if (opts.exclusive && (flags & OPEN_MODE.WRITE) && [...handles.values()].some(x => x.file === file && x.write)) {
+                return sftp.status(id, STATUS_CODE.FAILURE, 'File is already exclusively open.');
+              }
               let fd;
               try { fd = fs.openSync(file, mode); }
               catch (err) {
@@ -173,7 +182,7 @@ function startSftpServer(opts) {
                   : err.code === 'ENOENT' ? STATUS_CODE.NO_SUCH_FILE : STATUS_CODE.FAILURE);
               }
               const h = Buffer.from('f' + (nextHandle++));
-              handles.set(String(h), { fd, file });
+              handles.set(String(h), { fd, file, write: !!(flags & OPEN_MODE.WRITE), owner: client });
               sftp.handle(id, h);
             }));
 

@@ -4,6 +4,33 @@ All notable changes to filo are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/lang/fr/).
 
+## [0.9.5] — 2026-10-23
+
+### Fixed
+
+- **Uploads to a server that will not open one file twice all failed**
+  (Noar, sftp.ldlcarena.com: "File is already exclusively open"). A large
+  file is sent in segments, several connections writing into the same file,
+  and some servers (Windows-based ones mostly) refuse that. filo now notices
+  it at the first refusal, says so once in the LOG, and sends that server's
+  files whole (one connection per file, several files at once still), the
+  file concerned starting again from zero. The same refusal on a whole file
+  (a handle the server still holds after a cut) is tried again later instead
+  of failing at once.
+- A segment that failed could undo the queue's decision to restart its file
+  from zero; the file would then have resumed a partial full of holes.
+
+## [0.9.4] — 2026-10-23
+
+### Changed
+
+- **A new title bar** (Noar), left to right: **MY SERVERS** (the bookmarks,
+  now a button with its name and a new icon: two servers and a star), the
+  connection's address, then the two modes in the very middle of the window,
+  **SFTP** and **LIVE SYNC** (formerly FTP MODE and LIVE SYNC MODE), and the
+  actions on the right as before. The bookmarks window, its menu entry and the
+  messages that mention it now say MY SERVERS.
+
 ## [0.9.3] — 2026-10-22
 
 ### Changed

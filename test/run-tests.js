@@ -931,6 +931,24 @@ SEC('sftp writer: what is kept after a cut is what the server acknowledged witho
   eq([!!r.err, r.kept], [false, 800], 'all acknowledged: everything kept');
 });
 
+SEC('a server that will not open one file twice (exclusive open)', async () => {
+  // 0.9.5 (Noar, sftp.ldlcarena.com): every file sent in segments failed with
+  // "File is already exclusively open". Now the server's files go whole.
+  const { srv, ep, root } = await server({ exclusive: true, latencyMs: 2 });
+  SRV = srv; EP = ep; SRV_ROOT = () => root;
+  const d = scratch();
+  const files = [0, 1, 2].map(i => randomFile(path.join(d, `f${i}.mov`), 12 * 1024 * 1024));
+  const q = makeQueue(ep, Object.assign({}, SETTINGS, { segments: true, concurrency: 3 }), 'worker');
+  q.add(files.map((f, i) => ({ dir: 'up', type: 'file', local: f, remote: `/ex/f${i}.mov`, size: 12 * 1024 * 1024, endpointId: 'e', endpointLabel: 't' })));
+  const s = await runQueue(q, 90000); q.closeAll();
+  if (s.failed) console.log('\n' + q.logs.join('\n'));
+  eq([s.done, s.failed], [3, 0], 'every file arrives');
+  for (let i = 0; i < 3; i++) eq(sha(path.join(root, 'ex', `f${i}.mov`)), sha(files[i]), `f${i} identical on the server`);
+  ok(q.logs.some(l => /does not let one file be written by several connections/.test(l)), 'said once in the log');
+  eq(q.logs.filter(l => /does not let one file/.test(l)).length, 1, 'only once');
+  await srv.close();
+});
+
 SEC('queue: file already there', async () => {
   const { srv, ep, root } = await server();
   SRV = srv; EP = ep; SRV_ROOT = () => root;

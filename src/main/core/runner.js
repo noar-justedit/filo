@@ -27,7 +27,10 @@ function patchOf(kind, item) {
   for (const k of PATCH_KEYS) if (item[k] !== undefined) p[k] = item[k];
   // A segment never sends the segment list back: several of them run at once
   // and the queue alone keeps the list.
-  if (kind === 'seg') delete p.seg;
+  // Nor what the item decides as a whole (0.9.5: a segment refused by the
+  // server came back with restartFromZero = false after the queue had set it,
+  // and the file then "resumed" a partial full of holes).
+  if (kind === 'seg') { delete p.seg; delete p.restartFromZero; delete p.resume; delete p.offset; }
   return p;
 }
 

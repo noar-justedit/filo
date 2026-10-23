@@ -69,7 +69,7 @@ svg{flex-shrink:0;}
 #titlebar{height:52px;flex-shrink:0;display:flex;align-items:center;gap:14px;padding:0 14px 0 88px;
   -webkit-app-region:drag;}
 body.win #titlebar,body.linux #titlebar{padding-left:16px;}
-.t-logo{font-family:var(--font-logo);font-size:23px;font-weight:700;letter-spacing:.02em;display:flex;}
+.t-logo{font-family:var(--font-logo);font-size:23px;font-weight:700;letter-spacing:.02em;display:flex;flex:none;}
 .t-logo .a{color:var(--accent);}
 .conn-pill{display:flex;align-items:center;gap:8px;height:30px;padding:0 12px 0 10px;border-radius:9px;
   background:var(--card);font-size:12.5px;font-weight:600;color:var(--text2);-webkit-app-region:no-drag;max-width:min(680px,52vw);min-width:0;}
@@ -77,7 +77,7 @@ body.win #titlebar,body.linux #titlebar{padding-left:16px;}
 .conn-pill.on:hover{background:var(--raise);}
 .conn-pill .addr{font-family:var(--mono);font-size:11.5px;font-weight:400;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;}
 .conn-pill .addr:empty{display:none;}
-.conn-pill .dot{width:8px;height:8px;border-radius:50%;background:var(--text4);}
+.conn-pill .dot{width:8px;height:8px;border-radius:50%;background:var(--text4);flex:none;}
 .conn-pill.on .dot{background:var(--green);box-shadow:0 0 0 3px rgba(53,201,139,.18);}
 .conn-pill .nm{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--text);flex-shrink:0;max-width:240px;}
 .conn-pill .nm.mono{font-family:var(--mono);font-size:12px;font-weight:500;flex-shrink:1;max-width:none;}
@@ -95,8 +95,16 @@ body.win #titlebar,body.linux #titlebar{padding-left:16px;}
 .badge.g{color:var(--green);background:var(--green-d);} .badge.o{color:var(--orange);background:var(--orange-d);}
 .badge.b{color:var(--blue);background:var(--blue-d);}   .badge.r{color:var(--red);background:var(--red-d);}
 .badge.n{color:var(--text2);background:rgba(255,255,255,.06);}
-.t-spacer{flex:1;}
-.t-actions{display:flex;gap:8px;align-items:center;-webkit-app-region:no-drag;}
+/* The two modes in the very middle of the window (the Mac's traffic lights
+   make the left padding wider than the right one: flex alone would push them
+   right). The left part stops before them; the connection pill shortens. */
+#titlebar{position:relative;}
+.t-left{flex:1 1 auto;min-width:0;max-width:calc(50% - 175px);display:flex;align-items:center;gap:14px;}
+.t-left > :not(.t-logo){-webkit-app-region:no-drag;}
+.t-left .conn-pill{min-width:0;flex:0 1 auto;}
+.t-left .conn-pill .nm{min-width:56px;}
+#t-tabs{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);}
+.t-actions{margin-left:auto;flex:none;display:flex;gap:8px;align-items:center;-webkit-app-region:no-drag;}
 #btn-ntfy .nt-off{display:none;}
 #btn-ntfy.off{opacity:.55;}
 #btn-ntfy.off .nt-off{display:inline;}
@@ -436,7 +444,7 @@ body.syncb .p-dif{display:inline-flex !important;}
 /* ── The tabs of the title bar (Noar, 13/10/2026) ─────────────────────── */
 #shell{flex:1;display:flex;min-height:0;}
 #shell #main{min-width:0;}
-#t-tabs{display:flex;gap:4px;margin-left:6px;-webkit-app-region:no-drag;flex:none;}
+#t-tabs{display:flex;gap:4px;-webkit-app-region:no-drag;flex:none;}
 .t-tab{position:relative;display:inline-flex;align-items:center;gap:7px;height:30px;padding:0 13px 0 11px;border:none;border-radius:8px;
   background:transparent;color:var(--text3);font-size:10.5px;font-weight:800;letter-spacing:.1em;white-space:nowrap;}
 .t-tab.ic{padding:0 9px;}
@@ -916,20 +924,22 @@ body.live-st #queue .q-head,body.live-st #q-blocked,body.live-st #q-tabs,body.li
 
 <!-- ── Title bar ─────────────────────────────────────────────────────── -->
 <div id="titlebar">
-  <div class="t-logo"><span>fil</span><span class="a">o</span></div>
-  <!-- The three places (Noar, 13/10/2026): BOOKMARKS (an icon: the window of
-       saved servers), FTP MODE and LIVE SYNC MODE (the two views). -->
-  <nav id="t-tabs" aria-label="filo">
-    <button class="t-tab ic" id="q-sites" aria-label="Bookmarks" data-tip="BOOKMARKS: your saved servers (⌘S)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/></svg></button>
-    <button class="t-tab" id="mode-client" data-tip="FTP MODE: the two file panels and the queue"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m16 3 4 4-4 4"/><path d="M20 7H4"/><path d="m8 21-4-4 4-4"/><path d="M4 17h16"/></svg><span>FTP MODE</span></button>
-    <button class="t-tab" id="btn-sync" aria-label="LIVE SYNC MODE" data-tip="LIVE SYNC MODE"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg><span>LIVE SYNC MODE</span><i class="rail-dot"></i><span class="sy-n" id="sy-n"></span></button>
-  </nav>
-  <div class="t-spacer"></div>
-  <div class="t-actions">
+  <!-- The title bar (Noar, 23/10/2026), left to right: MY SERVERS and the
+       connection (its address), the two modes in the centre (SFTP: the file
+       panels and the queue; LIVE SYNC), the actions on the right. -->
+  <div class="t-left">
+    <div class="t-logo"><span>fil</span><span class="a">o</span></div>
+    <button class="t-tab" id="q-sites" data-tip="MY SERVERS: your saved servers and the LIVE SYNC sessions (⌘S)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="7" x="2" y="2" rx="2"/><rect width="11" height="7" x="2" y="13" rx="2"/><path d="M6 5.5h.01"/><path d="M6 16.5h.01"/><path d="m18.5 12.5 1.3 2.6 2.7.4-2 1.9.5 2.8-2.5-1.3-2.5 1.3.5-2.8-2-1.9 2.7-.4z"/></svg><span>MY SERVERS</span></button>
     <div class="conn-pill" id="conn-pill">
       <span class="dot"></span><span class="nm" id="conn-name">Not connected</span><span class="addr" id="conn-addr"></span><span class="proto" id="conn-proto"></span>
       <span id="conn-badges"></span>
     </div>
+  </div>
+  <nav id="t-tabs" aria-label="filo">
+    <button class="t-tab" id="mode-client" data-tip="SFTP: the two file panels and the queue (FTP, FTPS and SFTP)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m16 3 4 4-4 4"/><path d="M20 7H4"/><path d="m8 21-4-4 4-4"/><path d="M4 17h16"/></svg><span>SFTP</span></button>
+    <button class="t-tab" id="btn-sync" aria-label="LIVE SYNC" data-tip="LIVE SYNC"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg><span>LIVE SYNC</span><i class="rail-dot"></i><span class="sy-n" id="sy-n"></span></button>
+  </nav>
+  <div class="t-actions">
     <!-- Phone notifications (ntfy) on / off at once (Noar, 0.9.1). -->
     <button class="ibtn t-ntfy" id="btn-ntfy" aria-label="Phone notifications" data-tip="Phone notifications"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/><path class="nt-off" d="M3 3l18 18"/></svg></button>
     <button class="ibtn" id="btn-settings" aria-label="Settings" data-tip="Settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1"/></svg></button>
@@ -1107,7 +1117,7 @@ body.live-st #queue .q-head,body.live-st #q-blocked,body.live-st #q-tabs,body.li
 <div class="ov" id="ov-sites">
   <div class="mcard">
     <div class="sm-left">
-      <div class="hd"><div class="m-h1">Bookmarks</div>
+      <div class="hd"><div class="m-h1">My servers</div>
         <button class="ibtn ins" id="sm-new" aria-label="New site" data-tip="New site"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg></button>
         <button class="ibtn ins" id="sm-new-folder" aria-label="New folder" data-tip="New folder"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 10v6"/><path d="M9 13h6"/><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg></button>
       </div>

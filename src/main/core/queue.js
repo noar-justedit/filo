@@ -39,6 +39,8 @@ const { createLane } = require('./lane');
 const RETRY_DELAYS_S = [5, 15, 30, 60, 120];
 const IDLE_CLOSE_MS = 20000;
 const PROGRESS_MS = 300;
+// A server that will not open one file twice at once (see _unitFailed).
+const EXCLUSIVE_RE = /exclusively open|being used by another process|sharing violation|file is locked|locked by another/i;
 const KEEP_FINISHED = 5000;
 
 const ACTIVE = new Set(['running', 'asking']);
@@ -671,7 +673,8 @@ class TransferQueue extends EventEmitter {
       if (u.kind === 'item') it.phase = 'transfer';
       // A site whose speed test found no gain from segments: this file goes whole.
       const prof = this._profile(it);
-      const setg = prof && prof.seg === false ? Object.assign({}, this.settings(), { segments: false }) : this.settings();
+      const noSeg = (prof && prof.seg === false) || (this.noSegments && this.noSegments.has(it.endpointId + '|' + it.dir));
+      const setg = noSeg ? Object.assign({}, this.settings(), { segments: false }) : this.settings();
       const unit = { kind: u.kind, idx: u.idx, settings: setg, item: plainItem(it) };
       const hooks = {
         onBytes: (n, ph) => this._onBytes(it, u, n, ph),
@@ -777,6 +780,26 @@ class TransferQueue extends EventEmitter {
       return;
     }
 
+    // 0.9.5 (Noar, sftp.ldlcarena.com): a server that refuses to open a file
+    // a second time while it is open ("File is already exclusively open",
+    // Windows "being used by another process" / "sharing violation"). Segments
+    // cannot work there: from now on this server's files go whole, in this
+    // direction, and this file starts again, whole, once its segments let go.
+    if (u.kind === 'seg' && EXCLUSIVE_RE.test(String(err.message || ''))) {
+      if (!this.noSegments) this.noSegments = new Set();
+      const key = it.endpointId + '|' + it.dir;
+      if (!this.noSegments.has(key)) this.log('warn', `${it.endpointLabel} does not let one file be written by several connections at once: its files now go whole, one connection each.`);
+      this.noSegments.add(key);
+      this._abortItem(it);
+      it.seg = null;
+      it.restartFromZero = true;
+      it.status = 'waiting';
+      it.retryAt = Date.now() + 3000;
+      it.phase = '';
+      it.error = '';
+      return;
+    }
+
     if (err.serverLimit) {
       if (u.kind === 'item') { it.status = 'queued'; it.phase = ''; }
       if (this.tuner) this.tuner.serverRefused(err.serverLimit);
@@ -786,7 +809,10 @@ class TransferQueue extends EventEmitter {
       return;
     }
 
-    const retryable = !err.fatal && (err.network || err.mismatch);
+    // The same refusal on a whole file: the server may still hold a handle
+    // from a connection that just went (a cut, another filo): tried again later.
+    const busyFile = u.kind !== 'seg' && EXCLUSIVE_RE.test(String(err.message || ''));
+    const retryable = busyFile || (!err.fatal && (err.network || err.mismatch));
 
     // One segment failed: that segment waits and goes again; the file goes on.
     if (u.kind === 'seg' && retryable) {

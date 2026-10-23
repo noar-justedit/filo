@@ -389,7 +389,7 @@ function buildMenu() {
       { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' }, { type: 'separator' }, { role: 'quit' },
     ] }] : []),
     { label: 'File', submenu: [
-      { label: 'Site Manager…', accelerator: 'CmdOrCtrl+S', click: m('sites') },
+      { label: 'My Servers…', accelerator: 'CmdOrCtrl+S', click: m('sites') },
       { label: 'Quick Connect', accelerator: 'CmdOrCtrl+K', click: m('quick') },
       { label: 'Disconnect', accelerator: 'CmdOrCtrl+D', click: m('disconnect') },
       { type: 'separator' },

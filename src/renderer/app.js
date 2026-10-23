@@ -499,7 +499,7 @@ class Panel {
     });
     if (!enabled) {
       this.empty.style.display = '';
-      this.empty.innerHTML = `${I.server}<b>Not connected</b><span>Use the bar above for a quick connection,<br>or open your bookmarks.</span><button class="btn" id="empty-sites">${I.server} BOOKMARKS</button>`;
+      this.empty.innerHTML = `${I.server}<b>Not connected</b><span>Use the bar above for a quick connection,<br>or open MY SERVERS.</span><button class="btn" id="empty-sites">${I.server} BOOKMARKS</button>`;
       this.empty.querySelector('#empty-sites').onclick = () => openSites();
       this.cancelRename();
       this.spacer.style.height = '0px'; this.spacer.innerHTML = '';
@@ -3720,7 +3720,7 @@ function bookmarkField(d) {
   const askEach = site && (site.logon === 'ask' || (site.logon === 'normal' && !site.hasPassword));
   return `<div class="field"><label>Bookmark (server)</label><select id="sy-site"><option value="">Choose…</option>${state.sites.map(s => `<option value="${esc(s.id)}"${s.id === d.siteId ? ' selected' : ''}>${esc(s.name)} · ${esc(PROTO_INFO[s.protocol] ? PROTO_INFO[s.protocol][0] : s.protocol)}</option>`).join('')}</select>
     ${askEach ? '<div class="hint" style="color:var(--orange)">This bookmark asks for its password each time: the session cannot run on its own. Save its password in the bookmark, or use a key.</div>' : ''}
-    ${!state.sites.length ? '<div class="hint">No bookmark yet: add the server in the BOOKMARKS window first.</div>' : ''}</div>`;
+    ${!state.sites.length ? '<div class="hint">No bookmark yet: add the server in MY SERVERS first.</div>' : ''}</div>`;
 }
 function watchField(d) {
   const custom = d.customEvery || !SY_INTERVALS.includes(Number(d.interval));
@@ -3990,7 +3990,7 @@ async function waitForMaster(id, folder) {
 }
 // FAILSAFE: the bookmark and the S-FTP folder where the MASTER left its session.
 async function findOnServer() {
-  if (!state.sites.length) { errorBox('No bookmark', 'Add the server in the BOOKMARKS window first, with its password or key.'); return null; }
+  if (!state.sites.length) { errorBox('No bookmark', 'Add the server in MY SERVERS first, with its password or key.'); return null; }
   let cur = null;
   return dialog({
     title: 'Find the session on a server',
