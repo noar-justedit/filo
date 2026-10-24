@@ -562,9 +562,16 @@ class TransferQueue extends EventEmitter {
     this._waitTimer = setTimeout(() => { this._waitTimer = null; this._pump(); }, Math.max(200, soonest - Date.now()));
   }
 
+  // A folder is still being listed and queued while the queue runs (0.9.9: the
+  // transfers start with the first files found): the run is not finished
+  // when the queue happens to be empty for a moment.
+  scanBegin() { this.scans = (this.scans || 0) + 1; }
+  scanEnd() { this.scans = Math.max(0, (this.scans || 0) - 1); if (!this.scans) { this._pump(); this._checkFinished(); } }
+
   _checkFinished() {
     if (this.state !== 'running') return;
     if (this.units.size > 0) return;
+    if (this.scans > 0) return;
     for (const it of this.items.values()) if (PENDING.has(it.status) || ACTIVE.has(it.status)) return;
     this.state = 'stopped';
     this._stopProgress();

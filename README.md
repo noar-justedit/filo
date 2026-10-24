@@ -13,7 +13,7 @@ Licensed under the **GNU General Public License v3.0** (see [`LICENSE`](./LICENS
 
 ## Screenshots
 
-![filo 0.9.8 — connected to a site, three downloads, the first ones in segments](docs/screenshots/screenshot.png)
+![filo 0.9.9 — connected to a site, three downloads, the first ones in segments](docs/screenshots/screenshot.png)
 
 | My servers | Settings |
 |---|---|

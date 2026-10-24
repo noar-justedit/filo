@@ -29,7 +29,7 @@ const { setHostKeyPolicy } = require('../src/main/proto/sftp');
 const { setCertPolicy, parseListDate, parseFtpTimestamp, formatFtpTimestamp } = require('../src/main/proto/ftp');
 const existing = require('../src/main/core/existing');
 const sites = require('../src/main/core/sites');
-const { safeLocalName } = require('../src/main/core/scan');
+const { safeLocalName, walkRemote, walkRemoteParallel } = require('../src/main/core/scan');
 const { AutoTuner, better } = require('../src/main/core/autotune');
 const { Limiter } = require('../src/main/core/throttle');
 const hash = require('../src/main/core/hash');
@@ -1015,6 +1015,69 @@ SEC('0.9.8: the queue saves without blocking, and the last save wins', async () 
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
+SEC('0.9.9: a folder is walked with several listings at once', async () => {
+  // Deep tree: 4 folders, 4 in each, 3 in each of those, 3 files in every folder.
+  const { srv, ep, root } = await server({ latencyMs: 12 });
+  let nf = 0;
+  const mk = (dir, depth) => {
+    fs.mkdirSync(dir, { recursive: true });
+    for (let i = 0; i < 3; i++) { fs.writeFileSync(path.join(dir, `f${i}.txt`), 'x'); nf++; }
+    if (depth < 3) for (let i = 0; i < (depth === 0 ? 4 : depth === 1 ? 4 : 3); i++) mk(path.join(dir, `d${i}`), depth + 1);
+  };
+  mk(path.join(root, 'tree'), 0);
+  const r = await connectTrusting(ep);
+  const keyOf = e => `${e.type}:${e.rel}`;
+  const serial = [], par = [];
+  let t = Date.now();
+  await walkRemote(r, '/tree', e => serial.push(keyOf(e)));
+  const tSerial = Date.now() - t;
+  t = Date.now();
+  await walkRemoteParallel(r, '/tree', e => par.push(keyOf(e)), null, { slots: 8 });
+  const tPar = Date.now() - t;
+  eq(par.slice().sort(), serial.slice().sort(), `the same ${serial.length} items, serial or parallel`);
+  ok(tPar < tSerial * 0.5, `faster: ${tSerial} ms in series, ${tPar} ms with 8 listings at once`);
+  const seen = new Set(['']);
+  let order = true;
+  for (const k of par) { const rel = k.slice(k.indexOf(':') + 1); const parent = rel.includes('/') ? rel.slice(0, rel.lastIndexOf('/')) : ''; if (!seen.has(parent)) order = false; if (k.startsWith('folder:')) seen.add(rel); }
+  ok(order, 'a folder always comes before what is inside it');
+  // Cancelling stops the walk.
+  const token = { cancelled: false }; let n = 0;
+  await walkRemoteParallel(r, '/tree', () => { if (++n === 10) token.cancelled = true; }, token, { slots: 8 });
+  ok(n < serial.length, `cancelled after ${n} of ${serial.length}`);
+  // An error is thrown, not lost.
+  const bad = await walkRemoteParallel(r, '/nope', () => {}, null, { slots: 8 }).then(() => null, e => e);
+  ok(bad, 'a folder that does not exist: the error comes out');
+  // The sync walk of a link to a folder is still not followed.
+  await r.close();
+  await srv.close();
+});
+
+SEC('0.9.9: FTP-style walk, one listing per connection (fake servers)', async () => {
+  const tree = { '/': ['a', 'b', 'c', 'd', 'f0'], '/a': ['a1', 'a2', 'x.txt'], '/b': ['b1', 'y.txt'], '/c': ['z.txt'], '/d': ['d1', 'd2'], '/a/a1': ['q'], '/a/a2': ['r'], '/b/b1': ['s'], '/d/d1': ['t'], '/d/d2': ['u'] };
+  const isDir = p => tree[p] !== undefined;
+  const mkRemote = (opts) => { const o = opts || {}; const x = { listed: 0, closed: false, canListParallel: false, async list(d) { await new Promise(r => setTimeout(r, 15)); x.listed++; if (o.failAfter && x.listed > o.failAfter) throw Object.assign(new Error('connection lost'), { network: true }); return (tree[d] || []).map(n => { const full = (d === '/' ? '' : d) + '/' + n; return isDir(full) ? { name: n, type: 'folder' } : { name: n, type: 'file', size: 1 }; }); }, close() { x.closed = true; } }; return x; };
+  const want = []; await walkRemote(mkRemote(), '/', e => want.push(`${e.type}:${e.rel}`));
+  const main = mkRemote(), extras = [mkRemote(), mkRemote({ failAfter: 1 })];
+  let opened = 0; const got = [];
+  await walkRemoteParallel(main, '/', e => got.push(`${e.type}:${e.rel}`), null, { extra: 2, openExtra: async () => extras[opened++] });
+  eq(got.slice().sort(), want.slice().sort(), 'the same items with two more connections, one of which fails half-way');
+  ok(extras.every(x => x.closed), 'every extra connection is closed at the end');
+  // A server that refuses the extra connections: the walk goes on with one.
+  const solo = []; await walkRemoteParallel(mkRemote(), '/', e => solo.push(`${e.type}:${e.rel}`), null, { extra: 2, openExtra: async () => { throw new Error('421 too many connections'); } });
+  eq(solo.slice().sort(), want.slice().sort(), 'extra connections refused: the walk goes on with the one it has');
+});
+
+SEC('0.9.9: the queue is not finished while a folder is still being listed', async () => {
+  const q = makeQueue({ protocol: 'sftp', host: '127.0.0.1', port: 1, user: 'u', password: 'p' }, normalizeSettings({}));
+  let finished = 0; q.on('finished', () => finished++);
+  q.scanBegin();
+  q.state = 'running'; q.run = { startedAt: Date.now(), done: 0, failed: 0, skipped: 0, bytes: 0, verified: 0, kept: 0 };
+  q._checkFinished();
+  eq([q.state, finished], ['running', 0], 'empty for a moment, but a listing goes on: still running');
+  q.scanEnd();
+  eq([q.state, finished], ['stopped', 1], 'listing over, nothing left: finished once');
+});
+
 SEC('resume: a damaged partial is never trusted (checks off)', async () => {
   // 0.9.7 (Noar: "le resume doit être robuste, surtout en multi-parts").
   // SAFE COPY is off, so nothing at the end would catch a bad resume: the
@@ -1960,6 +2023,30 @@ SEC('ftp (real servers, optional)', async () => {
       await r.close();
     }
   }
+});
+
+SEC('0.9.9: walk of a folder over FTP and FTPS (real servers, optional)', async () => {
+  const targets = [['ftp', process.env.FILO_TEST_FTP], ['ftps', process.env.FILO_TEST_FTPS], ['ftps-implicit', process.env.FILO_TEST_FTPS_IMPLICIT]].filter(x => x[1]);
+  if (!targets.length || !process.env.FILO_TEST_FTP_ROOT) { process.stdout.write(' (skipped: no FILO_TEST_FTP*)'); return; }
+  const base = path.join(process.env.FILO_TEST_FTP_ROOT, 'walk099');
+  fs.rmSync(base, { recursive: true, force: true });
+  const mk = (dir, d) => { fs.mkdirSync(dir, { recursive: true }); for (let i = 0; i < 3; i++) fs.writeFileSync(path.join(dir, `f${i}`), 'x'); if (d < 2) for (let i = 0; i < 4; i++) mk(path.join(dir, 'd' + i), d + 1); };
+  mk(base, 0);
+  try { const { execSync } = require('child_process'); execSync(`chown -R ${process.env.FILO_TEST_FTP_USER} "${base}"`); } catch (_) {}
+  for (const [protocol, hp] of targets) {
+    const [host, port] = hp.split(':');
+    const ep = { protocol, host, port: Number(port), user: process.env.FILO_TEST_FTP_USER, password: process.env.FILO_TEST_FTP_PASS };
+    const r = await connectTrusting(ep);
+    const home = await r.home();
+    const want = [], got = [];
+    await walkRemote(r, `${home}/walk099`, e => want.push(`${e.type}:${e.rel}`));
+    let extras = 0;
+    await walkRemoteParallel(r, `${home}/walk099`, e => got.push(`${e.type}:${e.rel}`), null, { extra: 2, openExtra: async () => { extras++; return connectTrusting(ep); } });
+    eq(got.slice().sort(), want.slice().sort(), `${protocol}: the same ${want.length} items with two more connections`);
+    ok(extras === 2, `${protocol}: two more connections were opened (${extras})`);
+    await r.close();
+  }
+  fs.rmSync(base, { recursive: true, force: true });
 });
 
 SEC('resume over FTP and FTPS (real servers, optional)', async () => {

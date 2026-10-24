@@ -4,6 +4,34 @@ All notable changes to filo are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/lang/fr/).
 
+## [0.9.9] — 2026-10-24
+
+### Changed
+
+- **Downloading a folder no longer waits for the whole listing.** Before, filo
+  listed every folder of the tree one after the other, then started: minutes
+  of waiting on a deep tree. Now:
+  - **the transfers start with the first files found** (every 500 items or
+    every half second the files go to the queue, and the queue starts), while
+    the listing goes on (the pill says "transfers started"); the queue does not
+    call itself finished while a folder is still being listed;
+  - **several folders are listed at once**: 8 listings together on the SFTP
+    connection; FTP and FTPS open 2 more connections for it (in the
+    background; a server that refuses them leaves the listing on the one it
+    has, and one that falls is taken over by the others);
+  - links to folders are asked about 16 at a time (SFTP), not one by one;
+  - the command line (`filo download`) lists the same way.
+  Measured on a local server with 40 ms of latency: 156 folders and 3 120
+  files, 52.7 s in series, 7.4 s with 8 listings at once.
+- The percentage and the time left move while a folder is being listed (the
+  total grows); the order of the files between sibling folders can vary.
+
+### Tests
+
+- 942 (FTP / FTPS real servers included): the walk in parallel on SFTP, on
+  fake FTP connections (one failing, one refused) and on the real FTP, FTPS
+  and implicit FTPS servers; the queue not finishing during a listing.
+
 ## [0.9.8] — 2026-10-24
 
 Full review of the code (bugs, security, interface, performance). No security

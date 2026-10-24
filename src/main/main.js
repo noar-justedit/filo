@@ -37,7 +37,7 @@ const { Syncer } = SYNC;
 const { DEFAULT_SYNC_EXCLUDE } = require('./config');
 const { createDirect } = require('./direct-app');
 const { RemoteError } = require('./core/errors');
-const { walkRemote, deleteRemoteTree, safeLocalName, localJoin } = require('./core/scan');
+const { walkRemoteParallel, deleteRemoteTree, safeLocalName, localJoin } = require('./core/scan');
 const sites = require('./core/sites');
 const netid = require('./core/netid');
 const { runSpeedTest } = require('./core/speedtest');
@@ -1058,7 +1058,7 @@ async function cliAdd(req, emit) {
     await fs.promises.mkdir(target, { recursive: true });
     let ep;
     try { ep = await resolveEndpoint(endpointId); }
-    catch (e) { throw Object.assign(new Error(e.code === 'NEEDS_PASSWORD' ? `the server "${site.name}" has no saved password: save it in the site manager, or use a key` : e.message), { code: 3 }); }
+    catch (e) { throw Object.assign(new Error(e.code === 'NEEDS_PASSWORD' ? `the server "${site.name}" has no saved password: save it in MY SERVERS, or use a key` : e.message), { code: 3 }); }
     const r = createRemote(ep, { log });
     try {
       await r.connect();
@@ -1070,7 +1070,8 @@ async function cliAdd(req, emit) {
         if (st.type === 'folder') {
           const root = path.join(target, safeLocalName(name));
           specs.push(Object.assign({ dir: 'down', type: 'folder', local: root, remote: src }, base));
-          await walkRemote(r, src, e => specs.push(Object.assign({ dir: 'down', type: e.type, local: localJoin(root, e.rel), remote: e.path, size: e.size || 0 }, base)));
+          await walkRemoteParallel(r, src, e => specs.push(Object.assign({ dir: 'down', type: e.type, local: localJoin(root, e.rel), remote: e.path, size: e.size || 0 }, base)), null,
+            { slots: 8, extra: 2, openExtra: async () => { const x = createRemote(ep, { log }); await x.connect(); return x; } });
         } else specs.push(Object.assign({ dir: 'down', type: 'file', local: path.join(target, safeLocalName(name)), remote: src, size: st.size }, base));
       }
     } catch (e) {
@@ -1678,11 +1679,23 @@ ipcMain.handle('queue-add', async (_, req) => {
   const tick = () => { found++; const now = Date.now(); if (now - lastSent > 200) { lastSent = now; send('scan-progress', { found }); } };
   const revived = [];
   let already = 0, queued = 0, conflict = 0;
+  // 0.9.9: the transfers start with the first files found, while the folder is
+  // still being listed (the queue does not call itself finished meanwhile).
+  let started = false, lastFlush = Date.now();
+  queue.scanBegin();
   const flush = () => {
+    lastFlush = Date.now();
     if (!specs.length) return;
     const r = queue.add(specs.splice(0), { front: !!req.front });
     revived.push(...(r.revived || [])); already += r.already || 0; queued += r.queued || 0; conflict += r.conflict || 0;
+    if (!started && req.start !== false && !token.noStart && !scheduled && queued) {
+      started = true;
+      if (queue.state !== 'running') queue.start();
+      send('scan-progress', { found, started: true });
+    }
   };
+  // Every 500 items, or every half second: the first files leave quickly.
+  const maybeFlush = () => { if (specs.length >= 500 || (specs.length && Date.now() - lastFlush > 500)) flush(); };
   try {
     if (req.dir === 'up') {
       const target = remotePath(req.target);
@@ -1696,7 +1709,7 @@ ipcMain.handle('queue-add', async (_, req) => {
           await local.walk(src, e => {
             specs.push(Object.assign({ dir: 'up', type: e.type, local: e.path, remote: posix.join(root, e.rel), size: e.size || 0 }, base));
             tick();
-            if (specs.length >= 500) flush();
+            maybeFlush();
           }, token);
         } else {
           specs.push(Object.assign({ dir: 'up', type: 'file', local: src, remote: posix.join(target, name), size: st.size }, base));
@@ -1711,12 +1724,20 @@ ipcMain.handle('queue-add', async (_, req) => {
         if (s.type === 'folder') {
           const root = path.join(target, safeLocalName(name));
           specs.push(Object.assign({ dir: 'down', type: 'folder', local: root, remote: src }, base));
-          await withBrowser(r => walkRemote(r, src, e => {
+          // Several listings at once: SFTP on its connection, FTP / FTPS on
+          // two more (opened in the background, a refusal is not an error).
+          const openExtra = async () => {
+            sameServer(scanSess);
+            const r = createRemote(await resolveEndpoint(endpointId), { log });
+            await r.connect();
+            return r;
+          };
+          await withBrowser(r => walkRemoteParallel(r, src, e => {
             sameServer(scanSess);
             specs.push(Object.assign({ dir: 'down', type: e.type, local: localJoin(root, e.rel), remote: e.path, size: e.size || 0 }, base));
             tick();
-            if (specs.length >= 500) flush();
-          }, token), scanSess);
+            maybeFlush();
+          }, token, { slots: 8, extra: 2, openExtra }), scanSess);
         } else {
           specs.push(Object.assign({ dir: 'down', type: 'file', local: path.join(target, safeLocalName(name)), remote: src, size: s.size || 0 }, base));
           tick();
@@ -1729,13 +1750,13 @@ ipcMain.handle('queue-add', async (_, req) => {
     // Paused while the folders were being listed: what was found stays queued.
     // Nothing new to do (everything was already queued, or waits for the
     // "resume or start again?" answer): no empty run, no "finished" notice.
-    if (req.start !== false && !token.noStart && queued && !scheduled) queue.start();
+    if (req.start !== false && !token.noStart && queued && !scheduled && queue.state !== 'running') queue.start();
     return { ok: true, count: found, revived: revived.slice(0, 5000), already, conflict };
   } catch (e) {
     flush();
     send('scan-progress', { found, done: true });
     return errOut(e);
-  } finally { scanTokens.delete(token); }
+  } finally { scanTokens.delete(token); queue.scanEnd(); }
 });
 ipcMain.handle('scan-cancel', () => { for (const t of scanTokens) t.cancelled = true; return true; });
 ipcMain.handle('queue-start', () => { unschedule(); queue.start(); return queue.state; });

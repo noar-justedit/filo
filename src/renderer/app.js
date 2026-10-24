@@ -4917,7 +4917,10 @@ async function init() {
     const now = Date.now();
     if (now - delProgress.at > 300) { delProgress.at = now; toast(`Deleting… ${delProgress.n} · ${String(d && d.path || '').split('/').pop()}`); }
   });
-  API.on('scan-progress', p => { $('scan-txt').textContent = p.done ? 'Done' : `Listing folders… ${p.found} items`; });
+  API.on('scan-progress', p => {
+    $('scan-txt').textContent = p.done ? 'Done' : `Listing folders… ${p.found} items${p.started ? ' · transfers started' : ''}`;
+    if (p.started) { $('scan').classList.add('open'); setQTab('queue'); }       // the transfers run while the listing goes on
+  });
   API.on('log', lines => {
     state.logs.push(...lines);
     if (state.logs.length > 3000) state.logs.splice(0, state.logs.length - 3000);

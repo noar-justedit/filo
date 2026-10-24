@@ -106,25 +106,28 @@ class SftpRemote {
     return stream;
   }
 
+  // One operation with its time limit, outside the chain.
+  _guard(fn) {
+    if (this.dead) return Promise.reject(this.dead);
+    if (!this.sftp) return Promise.reject(Object.assign(new Error('The SFTP connection is not open.'), { network: true }));
+    return new Promise((resolve, reject) => {
+      let done = false;
+      const timer = setTimeout(() => {
+        if (done) return;
+        done = true;
+        const err = new Error(`The server did not answer within ${Math.round(OP_TIMEOUT_MS / 1000)} s.`);
+        err.network = true;
+        this._die(err);
+        reject(err);
+      }, OP_TIMEOUT_MS);
+      Promise.resolve().then(fn).then(
+        v => { if (!done) { done = true; clearTimeout(timer); resolve(v); } },
+        e => { if (!done) { done = true; clearTimeout(timer); reject(e); } });
+    });
+  }
+
   _q(label, fn) {
-    const guarded = () => {
-      if (this.dead) return Promise.reject(this.dead);
-      if (!this.sftp) return Promise.reject(Object.assign(new Error('The SFTP connection is not open.'), { network: true }));
-      return new Promise((resolve, reject) => {
-        let done = false;
-        const timer = setTimeout(() => {
-          if (done) return;
-          done = true;
-          const err = new Error(`The server did not answer within ${Math.round(OP_TIMEOUT_MS / 1000)} s.`);
-          err.network = true;
-          this._die(err);
-          reject(err);
-        }, OP_TIMEOUT_MS);
-        Promise.resolve().then(fn).then(
-          v => { if (!done) { done = true; clearTimeout(timer); resolve(v); } },
-          e => { if (!done) { done = true; clearTimeout(timer); reject(e); } });
-      });
-    };
+    const guarded = () => this._guard(fn);
     const run = this._chain.then(guarded, guarded);
     this._chain = run.then(() => {}, () => {});
     return run;
@@ -341,19 +344,30 @@ class SftpRemote {
     }));
   }
 
-  async stat(p) {
-    return this._q(`stat ${p}`, () => new Promise((resolve, reject) => {
+  _statNow(p) {
+    return new Promise((resolve, reject) => {
       this.sftp.stat(normalize(p), (err, st) => {
         if (!err) return resolve(this._mapStat(st, posix.basename(normalize(p))));
         if (err.code === 2 || /no such file/i.test(err.message || '')) return resolve(null);
         reject(RemoteError.from(err, 'sftp'));
       });
-    }));
+    });
   }
 
-  async list(p) {
+  async stat(p) {
+    return this._q(`stat ${p}`, () => this._statNow(p));
+  }
+
+  // `parallel`: several listings at once on this connection (0.9.9: walking a
+  // folder to queue it, one folder after the other, cost a round trip each).
+  // They skip the chain; SFTP answers them as they come.
+  get canListParallel() { return true; }
+
+  async list(p, opts) {
     const dir = normalize(p);
-    const list = await this._q(`readdir ${dir}`, () => new Promise((resolve, reject) => {
+    const par = !!(opts && opts.parallel);
+    const run = par ? fn => this._guard(fn) : fn => this._q(`readdir ${dir}`, fn);
+    const list = await run(() => new Promise((resolve, reject) => {
       this.sftp.readdir(dir, (err, l) => err ? reject(RemoteError.from(err, 'sftp')) : resolve(l));
     }));
     const out = [];
@@ -362,13 +376,16 @@ class SftpRemote {
       if (!n || n === '.' || n === '..' || n.includes('/') || n.includes('\\')) continue;
       out.push(this._mapStat(e.attrs, n));
     }
-    // A link to a folder must be browsable as a folder: ask where it points.
-    for (const e of out) {
-      if (e.type !== 'symlink') continue;
-      try {
-        const t = await this.stat(posix.join(dir, e.name));
-        if (t) { e.linkTo = t.type; if (t.type === 'file') e.size = t.size; }
-      } catch (_) {}
+    // A link to a folder must be browsable as a folder: ask where it points
+    // (16 questions at a time, not one after the other).
+    const links = out.filter(e => e.type === 'symlink');
+    for (let i = 0; i < links.length; i += 16) {
+      await Promise.all(links.slice(i, i + 16).map(async e => {
+        try {
+          const t = par ? await this._guard(() => this._statNow(posix.join(dir, e.name))) : await this.stat(posix.join(dir, e.name));
+          if (t) { e.linkTo = t.type; if (t.type === 'file') e.size = t.size; }
+        } catch (_) {}
+      }));
     }
     return out;
   }
