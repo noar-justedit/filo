@@ -4,6 +4,60 @@ All notable changes to filo are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/lang/fr/).
 
+## [0.9.8] — 2026-10-24
+
+Full review of the code (bugs, security, interface, performance). No security
+flaw found; what the review found is fixed.
+
+### Fixed
+
+- **Resume of very large files on a slow link.** The check before a resume read
+  all its small windows in one request, under one 45 s limit: on a slow link a
+  file of hundreds of segments never got through, was retried 5 times the same
+  way, then failed. The windows are now read in batches of 2 MB, each with its
+  own limit, and the total is capped at 32 MB (3 windows per segment up to 341
+  segments, then 2, then 1, then one segment out of N past 1 024).
+- **A full disk was reported as a network error** by the Rust engine (5 useless
+  retries). The disk's own error is now the one shown.
+- **A segment sent again no longer forces a restart from zero** when the file
+  fails later and Retry is pressed.
+- A connection lost while a check was reading could crash the transfer process
+  (closing a handle on a dead connection).
+- THIS COMPUTER (SYNCTHING): every opening stacked a click listener (COPY copied
+  several times after a few openings).
+- MY SERVERS: unsaved edits of the form changed the server in the connections
+  history and the quick connect.
+- Queue: the "Retry in N s" row was rebuilt every second (a click on STOP could
+  be lost); the countdown now moves in place.
+- Queue times lost their seconds and the date (two functions had the same name).
+- The "when the queue finishes" button did not follow the settings.
+- An error while adding to the queue or listing a folder left "Listing
+  folders…" or the panel's spinner on screen.
+- `sites-export` accepted an `ids` that was not a list.
+
+### Changed
+
+- **One vocabulary: "server"** (MY SERVERS, NEW SERVER, Delete 3 servers…): no
+  more bookmark, site or site manager in the interface (the command line keeps
+  `--site`). "side bar" messages now say "title bar"; SPEED TEST, MY SERVERS and
+  LIVE SYNC titles are spelled the same everywhere.
+- **No hard-coded colour left** in the interface: everything goes through the
+  `:root` variables (new: `--white`, `--black`, `--hybrid-d`, `--seg-kept`,
+  `--qr-fg`…), transparencies with `color-mix`.
+- One writer for the LIVE SYNC button's tooltip; SAFE COPY off is no longer
+  shown as an error; dialogs keep Tab inside and say they are dialogs; in the
+  passphrase window Enter goes to the second field first.
+- **Performance:** the queue is saved without blocking the app (the disk wait
+  of a 50 000-file queue used to freeze it every second); `queue-changed` goes
+  out at most every 50 ms; LIVE SYNC reads and unzips its state, and counts its
+  trash, off the main thread, and no longer scans the queue once per file; the
+  queue's figures are rewritten only when they change.
+
+### Tests
+
+- 926 (FTP / FTPS real servers included): the check by batches and its
+  32 MB cap, the non-blocking save and the grouped events.
+
 ## [0.9.7] — 2026-10-23
 
 ### Changed

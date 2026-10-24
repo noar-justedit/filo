@@ -142,7 +142,9 @@ class PipelinedWriter extends Writable {
       // Open it here so that zero bytes still means a file of zero bytes.
       this._open(err => {
         if (err) return cb(err);
-        this.owner.sftp.close(this.handle, e => { this.handle = null; cb(e || null); });
+        const sf = this.owner.sftp;
+        if (!sf || this.owner.dead) { this.handle = null; return cb(this.owner.dead || new Error('The SFTP connection closed.')); }
+        sf.close(this.handle, e => { this.handle = null; cb(e || null); });
       });
     };
     if (!this.inflight) return done();

@@ -447,6 +447,12 @@ class SftpRemote {
   // 16 MB with OpenSSH's 254 KB, sent again).
   get resumeMargin() { return XFER_CONCURRENCY * Math.max(XFER_CHUNK, this._chunk('write')); }
 
+  // Closing a handle after the connection died: no throw, just a finished call.
+  _closeH(h, cb) {
+    if (!this.sftp || this.dead) return cb();
+    try { this.sftp.close(h, cb); } catch (_) { cb(); }
+  }
+
   // Several small pieces of a file at once, on one handle (0.9.7: checking a
   // partial before resuming it, a few windows per segment, in one round trip).
   // A piece that cannot be read comes back null (past the end, say).
@@ -456,7 +462,7 @@ class SftpRemote {
         if (err) return reject(RemoteError.from(err, 'sftp'));
         const out = new Array(ranges.length).fill(null);
         let left = ranges.length;
-        const end = () => this.sftp.close(h, () => resolve(out));
+        const end = () => this._closeH(h, () => resolve(out));
         if (!left) return end();
         ranges.forEach(([a, b], i) => {
           const buf = Buffer.alloc(Math.max(0, b - a));
@@ -495,7 +501,7 @@ class SftpRemote {
     return this._q(`create ${p}`, () => new Promise((resolve, reject) => {
       this.sftp.open(normalize(p), 'w', (err, h) => {
         if (err) return reject(RemoteError.from(err, 'sftp'));
-        this.sftp.close(h, e => (e ? reject(e) : resolve()));
+        this._closeH(h, e => (e ? reject(e) : resolve()));
       });
     }));
   }

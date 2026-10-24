@@ -977,6 +977,44 @@ SEC('queue: a resume starts the progress where it was', async () => {
   await srv.close();
 });
 
+SEC('0.9.8: big files are probed by small batches', async () => {
+  // 1 200 segments of a 300 GB file: the check must not be one read of tens of
+  // MB under a single time limit. Batches of at most 64 windows, a total of 1 024
+  // windows at most (fewer per region, then one region out of N).
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'filo-probe-'));
+  const f = path.join(tmp, 'a.bin'); fs.writeFileSync(f, crypto.randomBytes(8 * 1024 * 1024));
+  const calls = [];
+  const remote = { readRanges: async (_p, wins) => { calls.push(wins.length); return wins.map(([a, b]) => fs.readFileSync(f).subarray(a, b)); } };
+  const mk = n => Array.from({ length: n }, (_, i) => [i * 4096, i * 4096 + 4096]);
+  let r = await transfer.regionsMatch(remote, f, f, mk(700));
+  ok(r.every(Boolean) && r.length === 700, 'identical regions match');
+  ok(calls.length >= 10 && Math.max(...calls) <= 64, `700 regions read in batches of at most 64 (${calls.length} calls, max ${Math.max(...calls)})`);
+  ok(calls.reduce((a, b) => a + b, 0) <= 700, 'one window per region past 512 regions');
+  calls.length = 0;
+  r = await transfer.regionsMatch(remote, f, f, mk(2000));
+  ok(calls.reduce((a, b) => a + b, 0) <= 1024 && r.length === 2000 && r.every(Boolean), 'the total never goes past 1 024 windows (32 MB), whatever the size');
+  const bad = { readRanges: async (_p, wins) => wins.map(([a, b]) => { const x = Buffer.from(fs.readFileSync(f).subarray(a, b)); if (a === 10 * 4096) x[0] ^= 1; return x; }) };
+  r = await transfer.regionsMatch(bad, f, f, mk(20));
+  ok(r[10] === false && r.filter(Boolean).length === 19, 'a damaged region is found, the others stay trusted');
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+SEC('0.9.8: the queue saves without blocking, and the last save wins', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'filo-qsave-'));
+  const cfg = require('../src/main/config');
+  const file = path.join(tmp, 'q.json');
+  const store = { load: () => null, save: l => cfg.writeAtomic(file, JSON.stringify(l)), saveAsync: (l, cur) => cfg.writeAtomicAsync(file, JSON.stringify(l), cur) };
+  const q = new TransferQueue({ store, log: () => {} });
+  let n = 0; q.on('changed', () => n++);
+  for (let i = 0; i < 50; i++) q._changed();
+  ok(n <= 2, `50 changes in a burst, ${n} event(s) (first at once, the rest grouped)`);
+  await new Promise(r => setTimeout(r, 120));
+  ok(n <= 3, `the late one went out (${n} in all)`);
+  await cfg.writeAtomicAsync(file, '[1]', () => false).then(v => ok(v === false, 'an outdated write does not replace the file'));
+  ok(!fs.readdirSync(tmp).some(x => x.includes('.tmp-')), 'no temporary file left');
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
 SEC('resume: a damaged partial is never trusted (checks off)', async () => {
   // 0.9.7 (Noar: "le resume doit être robuste, surtout en multi-parts").
   // SAFE COPY is off, so nothing at the end would catch a bad resume: the

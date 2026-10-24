@@ -79,11 +79,13 @@ class Syncer extends EventEmitter {
 
   // ── State on disk ──────────────────────────────────────────────────────
   stateFile(id) { return path.join(this.o.dir, `${id}.json.gz`); }
-  loadState(pair) {
+  // Read and unzipped off the main thread (0.9.8: the state of a big pair is
+  // tens of MB; the sync version froze the window at each run).
+  async loadState(pair) {
     try {
-      const buf = fs.readFileSync(this.stateFile(pair.id));
+      const buf = await fs.promises.readFile(this.stateFile(pair.id));
       if (buf.length > STATE_MAX_BYTES) return { files: {} };
-      const s = JSON.parse(zlib.gunzipSync(buf).toString('utf8'));
+      const s = JSON.parse((await require('util').promisify(zlib.gunzip)(buf)).toString('utf8'));
       // The state only counts for the same two folders and the same server.
       if (s && s.local === pair.local && s.remote === pair.remote && s.siteId === pair.siteId && s.files) return s;
     } catch (_) {}
@@ -414,7 +416,7 @@ class Syncer extends EventEmitter {
     // The MASTER receives (2 WAYS, or REMOTE → LOCAL): what was put on the
     // server by hand comes here, and SYNCTHING takes it to the other computer.
     const pull = pair.direction !== 'up';
-    const out = mirrorPlan({ L, R, state: this.loadState(pair), seen: r.seen, now: Date.now(), stableMs, pull });
+    const out = mirrorPlan({ L, R, state: await this.loadState(pair), seen: r.seen, now: Date.now(), stableMs, pull });
     if (out.emptyGuard) this.log('warn', `LIVE SYNC “${pair.name}”: the local folder is empty and the S-FTP BACKUP is not: nothing deleted or brought back (a disk not connected?)`);
     const rp = rel => posix.join(root, rel);
     const lp = rel => localJoin(pair.local, rel);
@@ -458,10 +460,11 @@ class Syncer extends EventEmitter {
       if (added.revived && added.revived.length) q.retry(added.revived.map(x => x.id), 'resume');
       const have = new Map();
       for (const x of q.items.values()) if (x.type === 'file' && !x.removed && x.status !== 'done' && x.endpointId === endpointId) have.set(x.dir + '\0' + x.local + '\0' + x.remote, x);
+      const inIds = new Set(ids);
       for (const sp of specs) {
         if (sp.type !== 'file') continue;
         const it = have.get(sp.dir + '\0' + sp.local + '\0' + sp.remote);
-        if (it && !ids.includes(it.id)) ids.push(it.id);
+        if (it && !inIds.has(it.id)) { inIds.add(it.id); ids.push(it.id); }
       }
       if (q.state === 'stopped' && added.queued) q.start();
     }
@@ -556,7 +559,7 @@ class Syncer extends EventEmitter {
     pair = this.o.prefs.getSyncPair(pair.id) || pair;     // a SLAVE may just have taken new settings
     this.idleClose(r);
 
-    const state = this.loadState(pair);
+    const state = await this.loadState(pair);
     const stableMs = this.o.stableMs != null ? this.o.stableMs : STABLE_MS;
     const prefer = pair.via === 'hybrid' ? (pair.role === 'slave' ? 'r' : 'l') : null;
     const out = plan({ direction: pair.direction, L, R, state, seen: r.seen, now: Date.now(), stableMs, prefer });
@@ -580,14 +583,16 @@ class Syncer extends EventEmitter {
     // but kept in this side's trash was deleted (by this computer or by the
     // other one, through Syncthing): it is not brought back from the server.
     if (pair.via === 'hybrid') {
-      out.copies = out.copies.filter(c => {
-        if (c.from !== 'r' || L.has(c.rel)) return true;
-        if (!fs.existsSync(localJoin(path.join(pair.local, TRASH), c.rel))) return true;
+      const kept = [];
+      for (const c of out.copies) {
+        if (c.from !== 'r' || L.has(c.rel)) { kept.push(c); continue; }
+        const inTrash = await fs.promises.access(localJoin(path.join(pair.local, TRASH), c.rel)).then(() => true, () => false);
+        if (!inTrash) { kept.push(c); continue; }
         const was = { s: c.size, m: c.mtime };
         out.files[c.rel] = { l: was, r: was };              // as if on both sides: the deletion is respected from now on
         out.respected.push({ rel: c.rel, deletedOn: 'l' });
-        return false;
-      });
+      }
+      out.copies = kept;
     }
 
     // To the queue. A file that is new on the other side goes with "skip" (if
@@ -626,10 +631,15 @@ class Syncer extends EventEmitter {
       if (added.revived && added.revived.length) q.retry(added.revived.map(x => x.id), 'resume');
       // Already in the queue (an earlier run sent it, not finished yet): it
       // is one of this run's files too, for whoever waits for them.
+      // One pass over the queue, not one per file (0.9.8: n × m on big runs).
+      const inQueue = new Map(), have = new Set(ids);
+      for (const x of q.items.values()) {
+        if (x.type === 'file' && !x.removed && x.status !== 'done' && x.endpointId === endpointId) inQueue.set(`${x.dir}\0${x.local}\0${x.remote}`, x);
+      }
       for (const sp of specs) {
         if (sp.type !== 'file') continue;
-        const it = [...q.items.values()].find(x => x.type === 'file' && !x.removed && x.status !== 'done' && x.dir === sp.dir && x.local === sp.local && x.remote === sp.remote && x.endpointId === endpointId);
-        if (it && !ids.includes(it.id)) ids.push(it.id);
+        const it = inQueue.get(`${sp.dir}\0${sp.local}\0${sp.remote}`);
+        if (it && !have.has(it.id)) { have.add(it.id); ids.push(it.id); }
       }
       if (q.state === 'stopped' && queued) q.start();
     }

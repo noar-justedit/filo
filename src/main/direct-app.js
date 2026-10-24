@@ -362,7 +362,7 @@ function createDirect({ prefs, log, send, home, bin, onStatus, onFailover, onMir
     if (was) out.peer = prev.peer;
     out.role = prev ? prev.role : 'master';            // the computer that creates a session is its MASTER
     if (out.role === 'slave') { out.name = prev.name; out.direction = prev.direction; out.exclude = prev.exclude; }   // the MASTER decides those
-    if (out.via === 'hybrid' && !out.siteId) throw new Error('Choose the bookmark (server) of the S-FTP BACKUP.');
+    if (out.via === 'hybrid' && !out.siteId) throw new Error('Choose the server of the S-FTP BACKUP.');
     if (out.via === 'hybrid' && ['/', '.', ''].includes(path.posix.normalize('/' + String(out.remote || '')).replace(/\/+$/, ''))) throw new Error('Choose a folder on the server for the S-FTP BACKUP (not the root of the server): the backup is an exact copy of this folder.');
     const dir = path.resolve(String(out.local || ''));
     if (!out.local || !fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) throw new Error('Choose an existing local folder.');
@@ -473,4 +473,21 @@ function trashInfo(p) {
   return { dir, files, bytes, exists: fs.existsSync(dir) };
 }
 
-module.exports = { createDirect, DIRECT_PREFIX, trashInfo };
+// The same, without stopping the app on a big trash (0.9.8).
+async function trashInfoAsync(p) {
+  const dir = path.join(p.local, TRASH);
+  let files = 0, bytes = 0;
+  const walk = async d => {
+    let list = [];
+    try { list = await fs.promises.readdir(d, { withFileTypes: true }); } catch (_) { return; }
+    for (const e of list) {
+      const f = path.join(d, e.name);
+      if (e.isDirectory()) await walk(f);
+      else { files++; try { bytes += (await fs.promises.stat(f)).size; } catch (_) {} }
+    }
+  };
+  await walk(dir);
+  return { dir, files, bytes, exists: await fs.promises.access(dir).then(() => true, () => false) };
+}
+
+module.exports = { createDirect, DIRECT_PREFIX, trashInfo, trashInfoAsync };

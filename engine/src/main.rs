@@ -551,6 +551,12 @@ async fn get_inner(s: &mut Sftp, j: &Job, done: &AtomicU64, stop: &Stop, written
 
     drop(dtx);
     let disk_r = disk.join().map_err(|_| anyhow!("the disk writer crashed"))?;
+    // "The disk writer stopped" is the network side noticing the disk's failure:
+    // the disk's own error (full, denied) is the real one, not a retryable cut.
+    let net = match (net, &disk_r) {
+        (Err(ne), Err(_)) if ne.to_string().contains("disk writer stopped") => Ok(()),
+        (r, _) => r,
+    };
     net?;
     let (n, hash) = disk_r?;
     if n != end - j.start { bail!("{n} bytes written of {}", end - j.start); }

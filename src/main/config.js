@@ -93,6 +93,21 @@ function writeAtomic(file, text) {
   fs.renameSync(tmp, file);
 }
 
+// The same, without stopping the app on the disk (0.9.8): the queue is saved
+// every second while files move, and a 50 000-file queue made the fsync of each
+// save freeze the main process. `current()` says whether this write is still the
+// latest: an older one that finishes late must not replace a newer file.
+let tmpSeq = 0;
+async function writeAtomicAsync(file, text, current) {
+  const fsp = fs.promises;
+  const tmp = `${file}.tmp-${process.pid}-a${++tmpSeq}`;
+  const fh = await fsp.open(tmp, 'w', 0o600);
+  try { await fh.writeFile(text); try { await fh.sync(); } catch (_) {} } finally { await fh.close(); }
+  if (current && !current()) { await fsp.unlink(tmp).catch(() => {}); return false; }
+  await fsp.rename(tmp, file);
+  return true;
+}
+
 function readJson(file) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch (_) { return null; }
 }
@@ -334,8 +349,9 @@ class Prefs {
     return {
       load: () => { const r = readWithBackup(this.queueFile); this.queueRecovered = r.recovered; return r.data; },
       save: list => writeAtomic(this.queueFile, JSON.stringify(list)),
+      saveAsync: (list, current) => writeAtomicAsync(this.queueFile, JSON.stringify(list), current),
     };
   }
 }
 
-module.exports = { DEVICE_ID, FOLDER_ID, normalizeSyncPair, DEFAULT_SYNC_EXCLUDE, SYNC_ALWAYS_EXCLUDE, Prefs, DEFAULT_SETTINGS, normalizeSettings, writeAtomic };
+module.exports = { DEVICE_ID, FOLDER_ID, normalizeSyncPair, DEFAULT_SYNC_EXCLUDE, SYNC_ALWAYS_EXCLUDE, Prefs, DEFAULT_SETTINGS, normalizeSettings, writeAtomic, writeAtomicAsync };

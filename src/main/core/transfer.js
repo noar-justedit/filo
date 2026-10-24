@@ -236,14 +236,33 @@ async function readLocalRanges(file, ranges) {
 async function regionsMatch(remote, localPath, remotePath, regions) {
   if (!regions.length) return [];
   if (typeof remote.readRanges !== 'function') return null;
+  // A huge file has many regions (one per segment): probing 3 windows of each
+  // would read tens of MB before the transfer even starts. The total stays under
+  // 32 MB (1 024 windows): 3 windows per region up to 341 regions, then 2, then
+  // only the end of each (where a cut write leaves its holes), then, past 1 024
+  // regions, the end of one region out of N (and of the last one).
+  const MAXW = 1024;
+  const per = regions.length * 3 <= MAXW ? 3 : regions.length * 2 <= MAXW ? 2 : 1;
+  const stride = Math.max(1, Math.ceil(regions.length / MAXW));
   const wins = [], owner = [];
-  regions.forEach(([a, b], i) => { for (const w of probeWindows(a, b)) { wins.push(w); owner.push(i); } });
-  const [far, near] = await Promise.all([remote.readRanges(remotePath, wins), readLocalRanges(localPath, wins)]);
-  const ok = regions.map(() => true);
-  wins.forEach(([a, b], k) => {
-    const x = far[k], y = near[k];
-    if (!x || !y || x.length !== b - a || y.length !== b - a || !x.equals(y)) ok[owner[k]] = false;
+  regions.forEach(([a, b], i) => {
+    if (stride > 1 && i % stride !== 0 && i !== regions.length - 1) return;
+    const w = probeWindows(a, b);
+    const keep = per === 3 ? w : per === 2 ? [w[0], w[w.length - 1]] : [w[w.length - 1]];
+    for (const x of keep) { wins.push(x); owner.push(i); }
   });
+  const ok = regions.map(() => true);
+  // Read by batches of 64 windows (2 MB): each batch has its own time limit,
+  // so a slow link makes the check slower, never a timeout (0.9.8).
+  const BATCH = 64;
+  for (let i = 0; i < wins.length; i += BATCH) {
+    const part = wins.slice(i, i + BATCH);
+    const [far, near] = await Promise.all([remote.readRanges(remotePath, part), readLocalRanges(localPath, part)]);
+    part.forEach(([a, b], k) => {
+      const x = far[k], y = near[k];
+      if (!x || !y || x.length !== b - a || y.length !== b - a || !x.equals(y)) ok[owner[i + k]] = false;
+    });
+  }
   return ok;
 }
 // One resumed whole file: is [0, offset) the source's? FTP has no reads in
@@ -1005,4 +1024,4 @@ async function dropPart(item, remote) {
   } catch (_) {}
 }
 
-module.exports = { relayDirFor, readSmall, writeSmall, RELAY_SUFFIX, ensureLocalDirForTest: ensureLocalDir, runFile, runFolder, runSegment, finalizeSegments, ensureRemoteDir, promote, dropPart, PART, OLD, MismatchError, SEGMENT_SIZE, SEGMENT_MIN_FILE, segmentable, segmentSizeFor };
+module.exports = { regionsMatch, relayDirFor, readSmall, writeSmall, RELAY_SUFFIX, ensureLocalDirForTest: ensureLocalDir, runFile, runFolder, runSegment, finalizeSegments, ensureRemoteDir, promote, dropPart, PART, OLD, MismatchError, SEGMENT_SIZE, SEGMENT_MIN_FILE, segmentable, segmentSizeFor };

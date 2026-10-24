@@ -248,6 +248,8 @@ function openDialog({ title, sub, html, buttons, width, onOpen, focus, tag }, re
     card.innerHTML = `<div class="m-h1">${title || ''}</div>${sub ? `<div class="m-sub">${sub}</div>` : ''}<div class="body">${html || ''}</div>
       <div class="m-btns">${(buttons || [{ label: 'OK', value: true, cls: 'go' }]).map((b, i) => (b.spacer ? '<span class="sp"></span>' : `<button class="btn sm ${b.cls || ''}" data-i="${i}">${esc(b.label)}</button>`)).join('')}</div>`;
     const btns = buttons || [{ label: 'OK', value: true, cls: 'go' }];
+    card.onclick = null;
+    card.setAttribute('role', 'dialog'); card.setAttribute('aria-modal', 'true');
     card.querySelectorAll('.m-btns button').forEach(b => b.addEventListener('click', () => {
       const def = btns[+b.dataset.i];
       const v = typeof def.value === 'function' ? def.value(card) : def.value;
@@ -259,7 +261,22 @@ function openDialog({ title, sub, html, buttons, width, onOpen, focus, tag }, re
     const f = focus ? card.querySelector(focus) : card.querySelector('input,select,textarea');
     if (f) setTimeout(() => { f.focus(); if (f.select) f.select(); }, 30);
     card.onkeydown = e => {
+      // Tab stays inside the window: it goes round its fields and buttons.
+      if (e.key === 'Tab') {
+        const f = [...card.querySelectorAll('input:not([disabled]):not([type=hidden]),select:not([disabled]),textarea:not([disabled]),button:not([disabled]),[tabindex]:not([tabindex="-1"])')].filter(x => x.offsetParent !== null);
+        if (f.length) {
+          const i = f.indexOf(document.activeElement);
+          if (e.shiftKey && i <= 0) { e.preventDefault(); f[f.length - 1].focus(); }
+          else if (!e.shiftKey && (i === f.length - 1 || i < 0)) { e.preventDefault(); f[0].focus(); }
+        }
+        return;
+      }
       if (e.key === 'Enter' && e.target.tagName === 'INPUT') {
+        // Enter in a field that is followed by another one moves on to it; only
+        // the last field confirms (the passphrase and its repeat, say).
+        const ins = [...card.querySelectorAll('input[type=text],input[type=password],input:not([type])')];
+        const k = ins.indexOf(e.target);
+        if (k >= 0 && k < ins.length - 1 && ins.length === 2 && ins[0].type === 'password') { e.preventDefault(); ins[k + 1].focus(); return; }
         const primary = card.querySelector('.m-btns .btn.go, .m-btns .btn.stop');
         if (primary) { e.preventDefault(); primary.click(); }
       }
@@ -416,6 +433,7 @@ class Panel {
     this.inFlight = (this.inFlight || 0) + 1;
     let res;
     try { res = this.remote ? await API.remoteList(dir) : await API.localList(dir); }
+    catch (e) { res = { ok: false, error: (e && e.message) || 'Could not read this folder.' }; }
     finally { this.inFlight--; }
     if (token !== this.loading) return;
     if (this.busy) this.busy.style.display = 'none';
@@ -499,7 +517,7 @@ class Panel {
     });
     if (!enabled) {
       this.empty.style.display = '';
-      this.empty.innerHTML = `${I.server}<b>Not connected</b><span>Use the bar above for a quick connection,<br>or open MY SERVERS.</span><button class="btn" id="empty-sites">${I.server} BOOKMARKS</button>`;
+      this.empty.innerHTML = `${I.server}<b>Not connected</b><span>Use the bar above for a quick connection,<br>or open MY SERVERS.</span><button class="btn" id="empty-sites">${I.server} MY SERVERS</button>`;
       this.empty.querySelector('#empty-sites').onclick = () => openSites();
       this.cancelRename();
       this.spacer.style.height = '0px'; this.spacer.innerHTML = '';
@@ -1108,9 +1126,10 @@ async function queueAdd(dir, sources, target, start) {
   const hasFolder = sources.some(s => s.type === 'folder');
   let scanTimer = null;
   if (hasFolder) scanTimer = setTimeout(() => { $('scan-txt').textContent = 'Listing folders…'; $('scan').classList.add('open'); }, 300);
-  const res = await API.queueAdd({ dir, sources, target, start });
-  clearTimeout(scanTimer);
-  $('scan').classList.remove('open');
+  let res;
+  try { res = await API.queueAdd({ dir, sources, target, start }); }
+  catch (e) { res = { ok: false, error: (e && e.message) || 'Could not add to the queue.' }; }
+  finally { clearTimeout(scanTimer); $('scan').classList.remove('open'); }
   if (!res.ok) { if (!res.cancelled) toast(res.error || 'Could not add to the queue.', true); return; }
   if (res.conflict) errorBox('Not added: same destination', `${plural(res.conflict, 'file')} would land under the same name as another file of the queue (two cards with the same clip names into one folder, say). They were left out, so neither replaces the other. Send them to separate folders.`);
   else if (res.already) toast(`${plural(res.already, 'file')} already in the queue: not added twice`);
@@ -1298,7 +1317,7 @@ async function pickTestFolder(siteId, o, start) {
     body().innerHTML = `<div class="spd-path mono">${esc(dir)}</div><div class="spd-list">${dir !== '/' ? `<button data-up="1">${I.folder}<span>..</span></button>` : ''}${r.folders.map(n => `<button data-n="${esc(n)}">${I.folder}<span>${esc(n)}</span></button>`).join('') || '<div class="hint" style="padding:8px 10px">No subfolder here.</div>'}</div>`;
     body().querySelectorAll('button').forEach(b => b.onclick = () => show(b.dataset.up ? up(dir) : join(dir, b.dataset.n)));
   };
-  return dialog({ title: 'Folder for the speed test', sub: 'The bookmark points at the root of the server. Choose a folder you can write to.', width: 440, tag: 'speedtest-pick',
+  return dialog({ title: 'Folder for the speed test', sub: 'This server points at the root. Choose a folder you can write to.', width: 440, tag: 'speedtest-pick',
     html: '<div id="spd-pick"></div>',
     buttons: [{ label: 'CANCEL', value: null }, { spacer: true }, { label: 'USE THIS FOLDER', cls: 'go', value: () => dir }],
     onOpen: () => show(dir) });
@@ -1314,13 +1333,13 @@ async function openSpeedTest(siteId, opt) {
   const mbs = v => (v >= 100 ? v.toFixed(0) : v.toFixed(1));
   const gauge = (v, c, lab) => {
     const L = 219.9, off = (L * (1 - Math.min(1, v / st.scale))).toFixed(1);
-    return `<div class="spd-g"><svg viewBox="0 0 160 90" width="160" height="90"><path d="M 10 82 A 70 70 0 0 1 150 82" fill="none" stroke="rgba(255,255,255,.07)" stroke-width="8" stroke-linecap="round"/><path d="M 10 82 A 70 70 0 0 1 150 82" fill="none" stroke="${c}" stroke-opacity=".55" stroke-width="8" stroke-linecap="round" stroke-dasharray="${L}" stroke-dashoffset="${off}"/></svg><div class="v"><b>${mbs(v)}</b><i style="color:${c}">${lab} MB/s</i></div></div>`;
+    return `<div class="spd-g"><svg viewBox="0 0 160 90" width="160" height="90"><path d="M 10 82 A 70 70 0 0 1 150 82" fill="none" stroke="color-mix(in srgb,var(--white) 7%,transparent)" stroke-width="8" stroke-linecap="round"/><path d="M 10 82 A 70 70 0 0 1 150 82" fill="none" stroke="${c}" stroke-opacity=".55" stroke-width="8" stroke-linecap="round" stroke-dasharray="${L}" stroke-dashoffset="${off}"/></svg><div class="v"><b>${mbs(v)}</b><i style="color:${c}">${lab} MB/s</i></div></div>`;
   };
   const graph = () => {
     const n = Math.max(1, st.stepsN), X = f => 8 + f * 404, Y = v => 92 - Math.min(1, v / st.scale) * 82;
     const lab = (st.steps.length ? st.steps : []).map((l, i) => `<line x1="${X(i / n)}" y1="8" x2="${X(i / n)}" y2="92" stroke="var(--raise)" stroke-dasharray="3 4"/><text x="${X((i + .5) / n)}" y="108" fill="var(--text4)" font-size="10" font-weight="700" text-anchor="middle">${esc(l)}</text>`).join('');
     const line = (arr, c) => arr.length > 1 ? `<polyline points="${arr.map(p => X(p.f).toFixed(1) + ',' + Y(p.v).toFixed(1)).join(' ')}" fill="none" stroke="${c}" stroke-width="2" stroke-linejoin="round"/>` : '';
-    return `<div class="spd-gr"><svg viewBox="0 0 420 114"><line x1="8" y1="51" x2="412" y2="51" stroke="var(--raise)"/><line x1="8" y1="92" x2="412" y2="92" stroke="#262a33"/>${lab}${line(st.out, 'var(--blue)')}${line(st.in, 'var(--green)')}</svg></div>`;
+    return `<div class="spd-gr"><svg viewBox="0 0 420 114"><line x1="8" y1="51" x2="412" y2="51" stroke="var(--raise)"/><line x1="8" y1="92" x2="412" y2="92" stroke="var(--grid)"/>${lab}${line(st.out, 'var(--blue)')}${line(st.in, 'var(--green)')}</svg></div>`;
   };
   const kv = (k, v) => `<div><div class="spd-k">${k}</div><div class="mono spd-v">${v}</div></div>`;
   const info = () => {
@@ -1342,15 +1361,15 @@ async function openSpeedTest(siteId, opt) {
     const gaugeIcon = `<span class="spd-ic">${I.gauge}</span>`;
     if (st.phase === 'idle') {
       c.style.width = '400px';
-      c.innerHTML = `<div class="m-h1">Start speedtest ?</div><div class="body"><div class="spd-site">${gaugeIcon}<div><div class="n">${esc(s.name)}</div><div class="mono a">${esc(addr)}</div></div></div>
+      c.innerHTML = `<div class="m-h1">Start the speed test?</div><div class="body"><div class="spd-site">${gaugeIcon}<div><div class="n">${esc(s.name)}</div><div class="mono a">${esc(addr)}</div></div></div>
         <div class="spd-start"><button class="spd-go" id="spd-go" aria-label="Start">GO</button><div class="seg" id="spd-secs"><button data-s="20" class="${st.secs === 20 ? 'on' : ''}">20 s</button><button data-s="60" class="${st.secs === 60 ? 'on' : ''}">60 s</button></div></div>
-        <div class="hint" style="margin-top:10px">Writes temporary files in the bookmark folder, removed at the end.</div></div>
+        <div class="hint" style="margin-top:10px">Writes temporary files in the server folder, removed at the end.</div></div>
         <div class="m-btns"><span class="sp"></span><button class="btn sm stop" id="spd-cancel">CANCEL</button></div>`;
       c.querySelectorAll('#spd-secs button').forEach(b => b.onclick = () => { st.secs = +b.dataset.s; c.querySelectorAll('#spd-secs button').forEach(x => x.classList.toggle('on', x === b)); });
       $('spd-go').onclick = go;
     } else {
       c.style.width = '460px';
-      c.innerHTML = `<div class="m-h1">SPEEDTEST<span class="spd-ph" style="color:${pc}">${esc(pt)}</span></div><div class="m-sub">${esc(s.name)} · ${esc(s.host)}</div><div class="body" id="spd-live"></div>
+      c.innerHTML = `<div class="m-h1">SPEED TEST<span class="spd-ph" style="color:${pc}">${esc(pt)}</span></div><div class="m-sub">${esc(s.name)} · ${esc(s.host)}</div><div class="body" id="spd-live"></div>
         <div class="m-btns">${st.phase === 'done' ? '<button class="btn sm" id="spd-again">AGAIN</button>' : ''}<span class="sp"></span><button class="btn sm stop" id="spd-cancel">CANCEL</button>${st.phase === 'done' ? '<button class="btn sm go" id="spd-save">SAVE</button>' : ''}</div>`;
       live();
       if ($('spd-again')) $('spd-again').onclick = () => { st.again = true; closeDialog(null); };
@@ -1552,7 +1571,7 @@ function showQuickHistory() {
   items.unshift({ head: 'Recent connections' });
   if (state.conn) items.push('sep', { label: `Disconnect from ${String(state.conn.endpointId || '').startsWith('quick:') ? state.conn.address : state.conn.label}`, icon: I.unplug, key: isMac() ? '⌘D' : 'Ctrl+D', action: disconnect });
   if (items.length === 1) items.push({ label: 'No recent connection yet', disabled: true });
-  else items.push('sep', { label: 'Save the current one as a site…', icon: I.plus, disabled: !state.conn || !state.conn.endpointId.startsWith('quick:'), action: saveQuickAsSite },
+  else items.push('sep', { label: 'Save the current one as a server…', icon: I.plus, disabled: !state.conn || !state.conn.endpointId.startsWith('quick:'), action: saveQuickAsSite },
     { label: 'Clear the list', icon: I.trash, action: async () => { state.quickHistory = await API.quickClear(); } });
   showMenu(Math.max(10, r.right - 320), r.bottom + 6, items);
 }
@@ -1562,11 +1581,11 @@ async function saveQuickAsSite() {
   if (!c) return;
   const m = /^quick:([^:]+):(.*)@(.+):(\d+)$/.exec(c.endpointId);
   if (!m) return;
-  const name = await promptBox('Save as a site', m[3], 'SAVE');
+  const name = await promptBox('Save as a server', m[3], 'SAVE');
   if (!name) return;
   const r = await API.sitesFromQuick({ protocol: m[1], user: m[2], host: m[3], port: Number(m[4]) }, name);
   state.sites = r.sites;
-  toast(`Saved “${name}” in your bookmarks`);
+  toast(`Saved “${name}” in MY SERVERS`);
 }
 
 // ══ Site manager ═══════════════════════════════════════════════════════════
@@ -1590,7 +1609,7 @@ async function openSites(selectId) {
   if (!selectId && top) requestAnimationFrame(() => { $('sm-list').scrollTop = top; });
 }
 function closeSites() { $('ov-sites').classList.remove('open'); }
-// The LIVE SYNC folder of the site manager (a key no folder of the user can take).
+// The LIVE SYNC folder of MY SERVERS (a key no folder of the user can take).
 const LIVE_FOLDER = '\u0000live';
 function liveBookmarkSub(p) {
   const peer = p.peer ? splitDev(p.peer.name).name || shortDev(p.peer.id) : 'not linked yet';
@@ -1639,7 +1658,11 @@ function smToggle(path) {
 }
 function renderSiteList() {
   const q = sm.search.toLowerCase();
-  const list = state.sites.filter(s => !q || `${s.name} ${s.host} ${s.user} ${s.folder}`.toLowerCase().includes(q));
+  // The form's unsaved edits show in the list without touching state.sites (which
+  // the connections history and the quick connect read).
+  const dr = sm.draft;
+  const view = dr && dr.id ? state.sites.map(s => (s.id === dr.id ? Object.assign({}, s, { name: dr.name, host: dr.host, user: dr.user, protocol: dr.protocol }) : s)) : state.sites;
+  const list = view.filter(s => !q || `${s.name} ${s.host} ${s.user} ${s.folder}`.toLowerCase().includes(q));
   const root = { dirs: new Map(), sites: [], count: 0 };
   // The sites keep the order the user gave them (drag and drop), not A to Z.
   for (const s of list) {
@@ -1696,7 +1719,7 @@ function renderSiteList() {
     }
   };
   draw(root, 0);
-  if (!state.sites.length && !root.dirs.size) html = '<div class="sm-empty" style="padding:30px 10px">No site yet.<br>Create one, or import your FileZilla sites.</div>';
+  if (!state.sites.length && !root.dirs.size) html = '<div class="sm-empty" style="padding:30px 10px">No server yet.<br>Create one, or import your FileZilla servers.</div>';
   else if (q && !list.length) html = '<div class="sm-empty" style="padding:30px 10px">No match.</div>';
   // The empty space below the rows: a drop there goes to the top level.
   if (!q) html += '<div class="sm-drop-end"></div>';
@@ -1792,7 +1815,7 @@ async function smDuplicateFolder(path) {
 }
 async function smDeleteFolder(path) {
   const n = state.sites.filter(s => inFolder(s.folder || '', path)).length;
-  if (!(await confirmBox(`Delete the folder “${baseOf(path)}”?`, n ? `Its ${plural(n, 'site')} ${n === 1 ? 'goes' : 'go'} with it, and their remembered passwords too.` : 'It is empty.', 'DELETE', true))) return;
+  if (!(await confirmBox(`Delete the folder “${baseOf(path)}”?`, n ? `Its ${plural(n, 'server')} ${n === 1 ? 'goes' : 'go'} with it, and their remembered passwords too.` : 'It is empty.', 'DELETE', true))) return;
   state.sites = await API.sitesDeleteFolder(path);
   await smSaveArrangement(state.sites.map(s => ({ id: s.id, folder: s.folder || '' })), fullOrder().filter(f => !inFolder(f, path)));
   if (sm.selId && !state.sites.some(s => s.id === sm.selId)) selectSite(null);
@@ -1801,7 +1824,7 @@ async function smDeleteFolder(path) {
 }
 async function smDeleteSite(id) {
   const s = state.sites.find(x => x.id === id); if (!s) return;
-  if (!(await confirmBox(`Delete the site “${s.name}”?`, 'Its remembered password is deleted too.', 'DELETE', true))) return;
+  if (!(await confirmBox(`Delete the server “${s.name}”?`, 'Its remembered password is deleted too.', 'DELETE', true))) return;
   state.sites = await API.sitesDelete(id);
   if (sm.selId === id) selectSite(null); else renderSiteList();
   toast('Deleted');
@@ -1815,17 +1838,17 @@ async function smDuplicateSelection() {
   const ids = [...sm.multi].filter(id => state.sites.some(s => s.id === id));
   if (!ids.length) return;
   state.sites = await API.sitesDuplicate(ids);
-  renderSiteList(); toast(`Duplicated ${plural(ids.length, 'site')}`);
+  renderSiteList(); toast(`Duplicated ${plural(ids.length, 'server')}`);
 }
 async function smDeleteSelection() {
   const ids = [...sm.multi].filter(id => state.sites.some(s => s.id === id));
   if (!ids.length) return;
   const n = ids.length;
-  if (!(await confirmBox(`Delete ${n} sites?`, `${n} sites are deleted, and their remembered passwords too. This cannot be undone.`, `DELETE ${n} SITES`, true))) return;
+  if (!(await confirmBox(`Delete ${n} servers?`, `${n} servers are deleted, and their remembered passwords too. This cannot be undone.`, `DELETE ${n} SERVERS`, true))) return;
   state.sites = await API.sitesDelete(ids);
   sm.multi.clear(); sm.anchor = null;
   selectSite(null);
-  toast(`Deleted ${plural(n, 'site')}`);
+  toast(`Deleted ${plural(n, 'server')}`);
 }
 // Click with ⌘ / Ctrl: add or remove one site. With Shift: the whole range from
 // the last plain click, over the rows shown (a closed folder's sites are not).
@@ -1981,7 +2004,7 @@ function newSite() {
   sm.multi.clear(); sm.anchor = null;
   sm.selId = null;
   sm.pwAction = undefined; sm.ppAction = undefined;
-  sm.draft = { id: null, name: 'New site', folder: '', protocol: 'sftp', host: '', port: 22, user: '', logon: 'normal', keyPath: '', remoteDir: '', localDir: '', comment: '', transferMode: 'passive', maxConnections: 0, hasPassword: false };
+  sm.draft = { id: null, name: 'New server', folder: '', protocol: 'sftp', host: '', port: 22, user: '', logon: 'normal', keyPath: '', remoteDir: '', localDir: '', comment: '', transferMode: 'passive', maxConnections: 0, hasPassword: false };
   renderSiteList();
   renderSiteForm();
   setTimeout(() => { const n = $('sf-name'); if (n) { n.focus(); n.select(); } }, 30);
@@ -1993,12 +2016,12 @@ function renderSiteForm() {
   ['sm-save', 'sm-connect'].forEach(id => { $(id).disabled = !d; });
   if (!d && sm.multi.size > 1) {
     const n = sm.multi.size;
-    f.innerHTML = `<div class="sm-empty">${I.server.replace('<svg', '<svg width="40" height="40"')}<div><b>${n} sites selected</b></div><div class="hint">${isMac() ? '⌘' : 'Ctrl'}+click adds or removes one, Shift+click selects a range.</div><div class="inline" style="gap:8px"><button class="btn sm" id="sm-multi-dup">${I.copy} DUPLICATE</button><button class="btn sm stop" id="sm-multi-del">${I.trash} DELETE ${n} SITES</button></div></div>`;
+    f.innerHTML = `<div class="sm-empty">${I.server.replace('<svg', '<svg width="40" height="40"')}<div><b>${n} servers selected</b></div><div class="hint">${isMac() ? '⌘' : 'Ctrl'}+click adds or removes one, Shift+click selects a range.</div><div class="inline" style="gap:8px"><button class="btn sm" id="sm-multi-dup">${I.copy} DUPLICATE</button><button class="btn sm stop" id="sm-multi-del">${I.trash} DELETE ${n} SERVERS</button></div></div>`;
     $('sm-multi-dup').onclick = () => smDuplicateSelection().catch(e => toast(e.message, true));
     $('sm-multi-del').onclick = () => smDeleteSelection().catch(e => toast(e.message, true));
     return;
   }
-  if (!d) { f.innerHTML = `<div class="sm-empty">${I.server.replace('<svg', '<svg width="40" height="40"')}<div>Pick a site on the left, or create one.</div><button class="btn sm go" id="sm-new2">${I.plus} NEW SITE</button></div>`; $('sm-new2').onclick = newSite; return; }
+  if (!d) { f.innerHTML = `<div class="sm-empty">${I.server.replace('<svg', '<svg width="40" height="40"')}<div>Pick a server on the left, or create one.</div><button class="btn sm go" id="sm-new2">${I.plus} NEW SERVER</button></div>`; $('sm-new2').onclick = newSite; return; }
   const isFtp = d.protocol !== 'sftp';
   const logons = isFtp ? [['normal', 'Password'], ['ask', 'Ask each time'], ['anonymous', 'Anonymous']] : [['normal', 'Password'], ['ask', 'Ask each time'], ['key', 'Key file']];
   const pwKept = d.hasPassword && sm.pwAction !== '';
@@ -2056,17 +2079,12 @@ function renderSiteForm() {
   $('sf-ldir-pick').onclick = async () => { const p = await API.pickFolder(d.localDir || panels.local.dir); if (p) { d.localDir = p; $('sf-ldir').value = p; } };
 }
 
-function renderSiteListLive() {
-  const d = sm.draft;
-  if (!d || !d.id) return;
-  const i = state.sites.findIndex(s => s.id === d.id);
-  if (i >= 0) { state.sites[i] = Object.assign({}, state.sites[i], { name: d.name, host: d.host, user: d.user, protocol: d.protocol }); renderSiteList(); }
-}
+function renderSiteListLive() { if (sm.draft && sm.draft.id) renderSiteList(); }
 
 async function saveSite() {
   const d = sm.draft;
   if (!d) return null;
-  if (!String(d.host || '').trim()) { toast('A site needs a host.', true); $('sf-host') && $('sf-host').focus(); return null; }
+  if (!String(d.host || '').trim()) { toast('A server needs a host.', true); $('sf-host') && $('sf-host').focus(); return null; }
   const site = { id: d.id, name: d.name, folder: d.folder, protocol: d.protocol, host: d.host, port: d.port, user: d.user, logon: d.logon, keyPath: d.keyPath, remoteDir: d.remoteDir, localDir: d.localDir, comment: d.comment, transferMode: d.transferMode, maxConnections: d.maxConnections };
   const r = await API.sitesSave(site, sm.pwAction === undefined ? undefined : sm.pwAction, undefined);
   if (!r.ok) { toast(r.error, true); return null; }
@@ -2171,9 +2189,9 @@ function bindSites() {
     if (it && sm.multi.size > 1 && sm.multi.has(it.dataset.id)) {
       const n = sm.multi.size;
       return showMenu(ev.clientX, ev.clientY, [
-        { label: `Duplicate ${n} sites`, icon: I.copy, action: () => smDuplicateSelection().catch(e => toast(e.message, true)) },
+        { label: `Duplicate ${n} servers`, icon: I.copy, action: () => smDuplicateSelection().catch(e => toast(e.message, true)) },
         'sep',
-        { label: `Delete ${n} sites…`, icon: I.trash, danger: true, action: () => smDeleteSelection().catch(e => toast(e.message, true)) },
+        { label: `Delete ${n} servers…`, icon: I.trash, danger: true, action: () => smDeleteSelection().catch(e => toast(e.message, true)) },
       ]);
     }
     if (it) {
@@ -2187,7 +2205,7 @@ function bindSites() {
       ]);
     }
     showMenu(ev.clientX, ev.clientY, [
-      { label: 'New site', icon: I.plus, action: newSite },
+      { label: 'New server', icon: I.plus, action: newSite },
       { label: 'New folder', icon: I.folder, action: () => smNewFolder('').catch(e => toast(e.message, true)) },
     ]);
   });
@@ -2199,7 +2217,7 @@ function bindSites() {
   $('sm-import').onclick = importSites;
   $('sm-export').onclick = () => {
     const r = $('sm-export').getBoundingClientRect();
-    const done = x => { if (x.ok) toast(x.withPasswords ? `Exported ${plural(x.count, 'site')}, ${x.withPasswords} with the password encrypted` : `Exported ${plural(x.count, 'site')}`); else if (!x.cancelled) toast(x.error, true); };
+    const done = x => { if (x.ok) toast(x.withPasswords ? `Exported ${plural(x.count, 'server')}, ${x.withPasswords} with the password encrypted` : `Exported ${plural(x.count, 'server')}`); else if (!x.cancelled) toast(x.error, true); };
     showMenu(r.left, r.top - 120, [
       { head: 'Export (filo format)' },
       { label: 'Without passwords', icon: I.file, action: async () => done(await API.sitesExport({}, null)) },
@@ -2239,7 +2257,7 @@ function askPassphraseBox(wrong) {
 
 async function importSites() {
   const choice = await dialog({
-    title: 'Import sites',
+    title: 'Import servers',
     sub: 'From a filo export (.json) or FileZilla\'s <b>sitemanager.xml</b>.<br>' +
       (isMac() ? 'FileZilla keeps it in <code>~/.config/filezilla/</code>.' : 'FileZilla keeps it in <code>%APPDATA%\\FileZilla\\</code>.') +
       '<br><br>FileZilla stores passwords in clear (unless you set a master password). filo can put them into the system keychain.<br>A filo export with encrypted passwords asks for its passphrase.',
@@ -2257,7 +2275,7 @@ async function importSites() {
   if (!r.ok) { if (!r.cancelled) errorBox('Import failed', r.error); return; }
   state.sites = r.sites;
   renderSiteList();
-  let msg = `Imported ${plural(r.count, 'site')}`;
+  let msg = `Imported ${plural(r.count, 'server')}`;
   if (r.withPasswords) msg += `, ${r.withPasswords} with a password`;
   if (r.lockedPasswords) msg += ` — ${r.lockedPasswords} password${r.lockedPasswords > 1 ? 's are' : ' is'} protected by FileZilla's master password and will be asked at the first connection`;
   toast(msg);
@@ -2382,7 +2400,7 @@ function statusOf(it) {
     return it.dir === 'up' ? '<span class="badge g">Uploading</span>' : '<span class="badge g">Downloading</span>';
   }
   if (it.status === 'asking') return '<span class="badge o">Your call</span>';
-  if (it.status === 'waiting') return `<span class="badge o" data-tip="${esc(it.error)}">Retry in ${Math.max(0, Math.round((it.retryAt - Date.now()) / 1000))} s</span>`;
+  if (it.status === 'waiting') return `<span class="badge o rt" data-tip="${esc(it.error)}">Retry in ${Math.max(0, Math.round((it.retryAt - Date.now()) / 1000))} s</span>`;
   if (it.status === 'queued') return it.offset ? '<span class="badge n">To resume</span>' : '<span class="badge n">Queued</span>';
   if (it.status === 'paused') return '<span class="badge o">Paused</span>';
   if (it.status === 'stopped') return '<span class="badge r">Stopped</span>';
@@ -2453,8 +2471,8 @@ function patchSegBar(r, cells) {
   if (cv.height !== h) cv.height = h;
   if (!segColors) {
     const css = getComputedStyle(document.documentElement);
-    const g = css.getPropertyValue('--green').trim() || '#35c98b', o = css.getPropertyValue('--orange').trim() || '#f2a03d';
-    segColors = { done: g, run: g, kept: 'rgba(53,201,139,.45)', runTrack: 'rgba(53,201,139,.16)', wait: o };
+    const v = n => css.getPropertyValue(n).trim();
+    segColors = { done: v('--green'), run: v('--green'), kept: v('--seg-kept'), runTrack: v('--seg-track'), wait: v('--orange') };
   }
   const ctx = cv.getContext('2d');
   ctx.clearRect(0, 0, w, h);
@@ -2530,7 +2548,6 @@ function renderQueue() {
     r.style.visibility = '';
     r.dataset.id = it.id;
     const sel = state.qsel.has(it.id);
-    const wait = it.status === 'waiting' ? Math.max(0, Math.round((it.retryAt - Date.now()) / 1000)) : '';
     const pct = pctOf(it), tone = toneOf(it), a = actsOf(it);
     // Two levels. The row's structure (status, buttons…) is rebuilt only when
     // it changes; the moving figures (%, bar, speed) are patched in place.
@@ -2540,7 +2557,7 @@ function renderQueue() {
     // The piece bar while segments travel; the plain bar otherwise (and in
     // blue while the whole file is checked at the end).
     const cells = it.segs && it.segs.cells && it.status !== 'done' && it.status !== 'skipped' && it.phase !== 'verify' ? it.segs.cells : null;
-    const skey = `${it.id}|${it.status}|${it.phase}|${sel}|${wait}|${it.error}|${tone}|${a.pause}${a.resume}${a.stop}${a.retry}|${it.offset ? 1 : 0}|${cells ? cells.n : 0}`;
+    const skey = `${it.id}|${it.status}|${it.phase}|${sel}|${it.error}|${tone}|${a.pause}${a.resume}${a.stop}${a.retry}|${it.offset ? 1 : 0}|${cells ? cells.n : 0}`;
     const up = it.dir === 'up';
     const from = up ? localDir(it.local) : (it.endpointLabel ? it.endpointLabel + ' · ' : '') + posixDir(it.remote);
     const pcText = it.status === 'done' || it.status === 'skipped' ? (pct == null ? '' : '100%') : fmtPct(pct);
@@ -2550,6 +2567,10 @@ function renderQueue() {
       const w = (pct || 0).toFixed(2) + '%';
       if (r._bar.style.width !== w) r._bar.style.width = w;
       if (r._subHtml !== subHtml) { r._sub.innerHTML = subHtml; r._subHtml = subHtml; }
+      if (it.status === 'waiting') {            // the countdown moves in place: the buttons stay put
+        const rt = r.querySelector('.rt'), t = `Retry in ${Math.max(0, Math.round((it.retryAt - Date.now()) / 1000))} s`;
+        if (rt && rt.textContent !== t) rt.textContent = t;
+      }
       if (cells) patchSegBar(r, cells);
       continue;
     }
@@ -2679,10 +2700,10 @@ function patchActive(active) {
 }
 
 const QUEUE_COLORS = {
-  client: { c: 'var(--green)', fill: 'var(--green)', glow: 'rgba(53,201,139,.28)' },
-  server: { c: 'var(--violet)', fill: 'var(--violet)', glow: 'rgba(168,128,255,.28)' },
-  hybrid: { c: 'var(--hybrid)', fill: 'linear-gradient(90deg,var(--blue),var(--violet))', glow: 'rgba(143,140,251,.28)' },
-  direct: { c: 'var(--blue)', fill: 'var(--blue)', glow: 'rgba(77,144,240,.28)' },
+  client: { c: 'var(--green)', fill: 'var(--green)', glow: 'color-mix(in srgb,var(--green) 28%,transparent)' },
+  server: { c: 'var(--violet)', fill: 'var(--violet)', glow: 'color-mix(in srgb,var(--violet) 28%,transparent)' },
+  hybrid: { c: 'var(--hybrid)', fill: 'linear-gradient(90deg,var(--blue),var(--violet))', glow: 'color-mix(in srgb,var(--hybrid) 28%,transparent)' },
+  direct: { c: 'var(--blue)', fill: 'var(--blue)', glow: 'color-mix(in srgb,var(--blue) 28%,transparent)' },
 };
 // What the queue is moving: the FTP client, or a LIVE SYNC session (its
 // copies are labelled "Sync · name").
@@ -2708,7 +2729,7 @@ function renderQueueHead() {
   box.classList.toggle('paused', !running);
   // The queue takes the colour of what it moves (Noar, 12/10/2026): the FTP
   // client green, a LIVE SYNC session the colour of its mode (S-FTP violet,
-  // DUAL SYNC blue to violet). Checking a file is no longer blue (LIVE SYNC's).
+  // DUAL SYNC blue to violet). The tone `v` of a row (a file being checked) stays blue in the list.
   const QC = QUEUE_COLORS[queueMode(p)];
   box.style.setProperty('--q-color', QC.c);
   box.style.setProperty('--q-fill', QC.fill);
@@ -2742,9 +2763,9 @@ function renderQueueHead() {
   if ((running || state.qstate === 'paused') && startedAt && (pending || paused)) {
     // The whole queue's percentage, big (Noar, 12/10/2026); the time left
     // is a badge with the others.
-    $('q-times').innerHTML = `<span class="left" data-tip="Progress of the whole queue">${esc(fmtPct(pct))}</span>`
-      + `<span class="el" data-tip="Time since this run started">${esc(fmtDur((Date.now() - startedAt) / 1000))}<small>ELAPSED</small></span>`;
-  } else $('q-times').innerHTML = '';
+    setHtml($('q-times'), `<span class="left" data-tip="Progress of the whole queue">${esc(fmtPct(pct))}</span>`
+      + `<span class="el" data-tip="Time since this run started">${esc(fmtDur((Date.now() - startedAt) / 1000))}<small>ELAPSED</small></span>`);
+  } else setHtml($('q-times'), '');
 
   // The figures, as badges in the tab bar.
   const st = [];
@@ -2754,7 +2775,7 @@ function renderQueueHead() {
   if (running && (pending || paused) && startedAt) { const sp2 = avgSpark(20) || (p ? p.speed : 0); if (sp2 > 0) B('Time left', esc(fmtDur(left / sp2)), '', 'Time left for the whole queue, at the speed of the last 10 seconds'); }
   if (pending || paused) B('Left', fmtSize(left), '', 'Data still to transfer');
   if (state.qSched && !running) B('Starts', fmtClock(state.qSched), 'o', 'Scheduled start. Right-click START to change or cancel it; START starts now.');
-  $('q-stats').innerHTML = st.join('');
+  setHtml($('q-stats'), st.join(''));
 
   // Simultaneous transfers: a plain label and a plain value.
   const auto = p && p.auto;
@@ -2822,14 +2843,16 @@ async function checkAgainst(names) {
 }
 
 // ── Start the queue later ─────────────────────────────────────────────────
-function fmtClock(t) { const d = new Date(t); return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; }
+// innerHTML only when the text changed: a rebuilt node loses its hovered tooltip.
+function setHtml(el, html) { if (el._html !== html) { el._html = html; el.innerHTML = html; } }
+function fmtHM(t) { const d = new Date(t); return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; }
 function scheduleMenu(x, y) {
   const at = state.qSched || 0;
   showMenu(x, y, [{ head: 'Start the queue' }, { label: 'At a time…', icon: I.clock, action: askSchedule },
-    at ? { label: `Cancel the start at ${fmtClock(at)}`, icon: I.trash, action: async () => { state.qSched = (await API.queueSchedule(0)).at; renderQueueHead(); toast('Scheduled start cancelled'); } } : null]);
+    at ? { label: `Cancel the start at ${fmtHM(at)}`, icon: I.trash, action: async () => { state.qSched = (await API.queueSchedule(0)).at; renderQueueHead(); toast('Scheduled start cancelled'); } } : null]);
 }
 async function askSchedule() {
-  const now = new Date(), def = state.qSched ? fmtClock(state.qSched) : '23:00';
+  const now = new Date(), def = state.qSched ? fmtHM(state.qSched) : '23:00';
   const v = await dialog({
     title: 'Start the queue at',
     sub: 'Files added until then wait. filo must stay open, and the computer awake (Energy settings). START starts it right away.',
@@ -2843,7 +2866,7 @@ async function askSchedule() {
   if (t <= now) t.setDate(t.getDate() + 1);           // already past today: tomorrow
   state.qSched = (await API.queueSchedule(t.getTime())).at;
   renderQueueHead();
-  toast(`The queue starts at ${fmtClock(t)}${t.getDate() !== now.getDate() ? ' tomorrow' : ''}`);
+  toast(`The queue starts at ${fmtHM(t)}${t.getDate() !== now.getDate() ? ' tomorrow' : ''}`);
 }
 async function playQueue() {
   const c = state.qcounts || {};
@@ -3022,7 +3045,7 @@ function bindQueue() {
     if ($('q-verify').checked && !(await safeCopyBox())) { $('q-verify').checked = false; renderVerifySwitch(); return; }
     await saveSettings({ verify: $('q-verify').checked });
     renderVerifySwitch();
-    toast($('q-verify').checked ? 'SAFE COPY on — for every file that starts from now' : 'SAFE COPY off — size only, for every file that starts from now', !$('q-verify').checked);
+    toast($('q-verify').checked ? 'SAFE COPY on — for every file that starts from now' : 'SAFE COPY off — size only, for every file that starts from now');
   });
   $('q-retry').onclick = () => retryItems([]);
   if (!$('q-clear').innerHTML) $('q-clear').innerHTML = BROOM;
@@ -3162,7 +3185,7 @@ async function openSettings() {
   $('ov-settings').classList.add('open');
 }
 
-// ── POST COMMAND: filo driven by a script or another program ───────────────
+// ── COMMAND LINE: filo driven by a script or another program ───────────────
 async function renderCli() {
   const c = state.cli = await API.cliInfo();
   $('st-cli-cmd').textContent = c.command;
@@ -3186,8 +3209,8 @@ function cliHelpBox() {
   const full = (state.cli && state.cli.command) || 'filo';
   const cmd = 'filo';
   const items = [
-    ['Send files or folders to a site (names from the site manager)', `${cmd} upload --site "Studio NAS" --to /Rushes/Day2 --wait /Volumes/CARD_A/A001`],
-    ['Fetch files or folders from a site', `${cmd} download --site "Client SFTP" --to ~/Projects/Doha /Delivery/Final_v3.mov`],
+    ['Send files or folders to a server (names from MY SERVERS)', `${cmd} upload --site "Studio NAS" --to /Rushes/Day2 --wait /Volumes/CARD_A/A001`],
+    ['Fetch files or folders from a server', `${cmd} download --site "Client SFTP" --to ~/Projects/Doha /Delivery/Final_v3.mov`],
     ['Run a LIVE SYNC session now (its name in the LIVE SYNC window)', `${cmd} livesync --pair "Exports → client" --wait`],
     ['Start, pause or stop the queue', `${cmd} queue start`],
     ['What filo is doing', `${cmd} status`],
@@ -3199,7 +3222,7 @@ function cliHelpBox() {
   const html = `<div class="cli-list">${note}${items.map(([d, c], i) => `<div class="cli-it"><div class="d">${esc(d)}</div><div class="l"><code>${esc(c)}</code><button class="btn sm" data-c="${i}">COPY</button></div></div>`).join('')}
     <div class="cli-it"><div class="d">Options</div><div class="cli-codes">--wait&nbsp; wait until the files are done (the exit code tells how it went)<br>--json&nbsp; one JSON line per event · --out &lt;file&gt;&nbsp; the result, as JSON, in a file<br>--background&nbsp; if filo is not open, start it minimised</div></div>
     <div class="cli-it"><div class="d">Exit codes</div><div class="cli-codes"><b>0</b>done (with --wait: every file arrived and was verified)<br><b>1</b>some files failed or were stopped<br><b>2</b>the command is not right<br><b>3</b>the site or the LIVE SYNC session does not exist, or the server refused<br><b>4</b>filo could not be started or reached</div></div>
-    <div class="cli-it"><div class="d">No password on the command line: the site's saved password or key is used. The files go through the queue of the filo that is open, and show in its window.</div></div></div>`;
+    <div class="cli-it"><div class="d">No password on the command line: the server's saved password or key is used. The files go through the queue of the filo that is open, and show in its window.</div></div></div>`;
   return dialog({
     title: 'Command line', sub: 'Commands to start from a script, an export preset or another program.', html, width: 640,
     buttons: [{ label: 'CLOSE', value: true, cls: 'go' }],
@@ -3247,7 +3270,7 @@ async function saveSettings(patch) {
   renderConnPill();
   panels.local.compute(); panels.local.render();
   panels.remote.compute(); panels.remote.render();
-  renderQueueHead();
+  renderQueueHead(); renderAfterBtn(); renderNtfyBtn();
 }
 function bindSettings() {
   $('btn-settings').onclick = openSettings;
@@ -3393,7 +3416,7 @@ const sy = {
 const SY_TYPES = {
   direct: ['SYNCTHING', 'Straight to another computer running filo, peer to peer: no server in between. Both filo must be open at the same time.'],
   hybrid: ['DUAL SYNC', 'SYNCTHING straight to the remote computer, and a server folder (S-FTP BACKUP) kept as an exact copy of the MASTER\'s folder. The remote computer away: the files go through the server.'],
-  server: ['S-FTP', 'Through a folder on an FTP, FTPS or SFTP server: a bookmark.'],
+  server: ['S-FTP', 'Through a folder on an FTP, FTPS or SFTP server: a server.'],
 };
 // In this order on screen: 2 WAYS first (Noar, 11/10/2026).
 const SY_DIR = {
@@ -3532,7 +3555,9 @@ function renderSyncBtn() {
   $('sy-n').textContent = ask ? String(ask) : on.length > 1 ? String(on.length) : '';
   b.dataset.tip = ask ? 'LIVE SYNC: another computer is waiting for your answer'
     : err ? 'LIVE SYNC: a session has a problem'
-    : on.length ? `LIVE SYNC: connected (${on.map(p => p.name + (roleOf(p) ? ` · ${roleOf(p)}` : '')).join(', ')})` : 'LIVE SYNC: keep a folder in step with another computer or a server';
+    : document.body.classList.contains('live-on') ? 'LIVE SYNC: new session, import, connect, sessions (right-click: the same menu)'
+    : on.length ? `Show the LIVE SYNC view (connected: ${on.map(p => p.name + (roleOf(p) ? ` · ${roleOf(p)}` : '')).join(', ')}). Right-click: new session, import, connect`
+    : 'LIVE SYNC: no session connected (new, import, connect)';
 }
 async function loadSync() {
   const r = await API.syncList();
@@ -3603,7 +3628,7 @@ function syncSelect(id) {
 function renderSyncList() {
   const pd = sy.direct.pending || { devices: [], folders: [] };
   const asks = askHtml(pd);
-  const siteName = id => { const s = state.sites.find(x => x.id === id); return s ? s.name : 'no bookmark'; };
+  const siteName = id => { const s = state.sites.find(x => x.id === id); return s ? s.name : 'no server'; };
   $('sy-list').innerHTML = asks + (sy.pairs.length ? sy.pairs.map(p => {
     const err = sessionError(p);
     const dot = err ? 'err' : isOn(p) ? 'on' : '';
@@ -3667,7 +3692,7 @@ function renderSyncForm() {
     parts.push(bookmarkField(d));
   }
   if (d.via !== 'direct') {
-    // The SLAVE uses the MASTER's S-FTP folder (its own bookmark, though: its password).
+    // The SLAVE uses the MASTER's S-FTP folder (its own server entry, though: its password).
     parts.push(`<div class="field"><label>S-FTP folder</label><div class="inline"><input id="sy-remote" value="${esc(d.remote)}" spellcheck="false" placeholder="/"${ro}><button class="ibtn ins" id="sy-remote-pick"${d.siteId && !ro ? '' : ' disabled'} data-tip="Browse the folders of the server" aria-label="Browse the server">${I.folder}</button></div></div>`);
     parts.push(watchField(d));
   }
@@ -3730,8 +3755,8 @@ function bookmarkField(d) {
   const site = state.sites.find(s => s.id === d.siteId);
   const askEach = site && (site.logon === 'ask' || (site.logon === 'normal' && !site.hasPassword));
   return `<div class="field"><label>Bookmark (server)</label><select id="sy-site"><option value="">Choose…</option>${state.sites.map(s => `<option value="${esc(s.id)}"${s.id === d.siteId ? ' selected' : ''}>${esc(s.name)} · ${esc(PROTO_INFO[s.protocol] ? PROTO_INFO[s.protocol][0] : s.protocol)}</option>`).join('')}</select>
-    ${askEach ? '<div class="hint" style="color:var(--orange)">This bookmark asks for its password each time: the session cannot run on its own. Save its password in the bookmark, or use a key.</div>' : ''}
-    ${!state.sites.length ? '<div class="hint">No bookmark yet: add the server in MY SERVERS first.</div>' : ''}</div>`;
+    ${askEach ? '<div class="hint" style="color:var(--orange)">This server asks for its password each time: the session cannot run on its own. Save its password in MY SERVERS, or use a key.</div>' : ''}
+    ${!state.sites.length ? '<div class="hint">No server yet: add the server in MY SERVERS first.</div>' : ''}</div>`;
 }
 function watchField(d) {
   const custom = d.customEvery || !SY_INTERVALS.includes(Number(d.interval));
@@ -3755,7 +3780,7 @@ function pickType(via) {
 async function saveSync() {
   const d = sy.draft;
   if (!d || !d.via) return null;
-  if (d.via !== 'direct' && !d.siteId) { toast('Choose the bookmark (server).', true); return null; }
+  if (d.via !== 'direct' && !d.siteId) { toast('Choose the server.', true); return null; }
   if (!d.local) { toast('Choose the local folder.', true); return null; }
   const r = await API.syncSave(Object.assign({}, d, { interval: Number(d.interval) || 5 }));
   if (r.ok === false) { toast(r.error, true); return null; }
@@ -3783,7 +3808,7 @@ async function connectSync() {
   renderSyncBtn(); renderLive();
 }
 
-// BROWSE in the S-FTP folder field: a small folder picker on the bookmark.
+// BROWSE in the S-FTP folder field: a small folder picker on the server.
 // remoteBrowser fills a box (path + list) and reports the folder shown.
 function remoteBrowser(c, siteId, start, onDir) {
   const load = async dir => {
@@ -3805,7 +3830,7 @@ function remoteBrowser(c, siteId, start, onDir) {
   return load;
 }
 async function pickRemoteFolder(siteId, start) {
-  if (!siteId) { toast('Choose the bookmark first.', true); return null; }
+  if (!siteId) { toast('Choose the server first.', true); return null; }
   let cur = null;
   return dialog({
     title: 'Choose the S-FTP folder',
@@ -3824,7 +3849,7 @@ async function showShareInfo(pair) {
   const fsv = sh.failsafe;
   const res = await dialog({
     title: 'The config for the other computer',
-    sub: `Save it, and send the file to the other computer yourself (mail, Signal, a USB key…). There, filo opens right-click LIVE SYNC (side bar) → Import session as SLAVE. It becomes the SLAVE of “${esc(pair.name)}”; this computer is the MASTER. Then accept it here when filo asks.`,
+    sub: `Save it, and send the file to the other computer yourself (mail, Signal, a USB key…). There, filo opens right-click LIVE SYNC (title bar) → Import session as SLAVE. It becomes the SLAVE of “${esc(pair.name)}”; this computer is the MASTER. Then accept it here when filo asks.`,
     html: `<div class="sy-kv"><div class="k">Session</div><div class="v">${esc(pair.name)} · ${esc(SY_TYPES[pair.via][0])}</div>
         <div class="k">MASTER</div><div class="v">${esc(me.name)}${me.os ? ` · ${esc(me.os)}` : ''} <span class="mono sy-dim">${esc(shortDev(sh.device))}</span></div>
         <div class="k">For the SLAVE</div><div class="v">${esc(SY_DIR_DIRECT[sh.direction][0])}</div>
@@ -3860,7 +3885,7 @@ async function shareSync() {
   const other = SY_DIR[r.share.direction][0];
   const res = await dialog({
     title: `Share “${esc(d.name)}”`,
-    sub: `The other team imports it in filo (right-click LIVE SYNC (side bar) → Import session as SLAVE), types the server password and picks its own folder. For them, this session is <b>${esc(other)}</b>.`,
+    sub: `The other team imports it in filo (right-click LIVE SYNC (title bar) → Import session as SLAVE), types the server password and picks its own folder. For them, this session is <b>${esc(other)}</b>.`,
     html: `<div class="sy-kv"><div class="k">Server</div><div class="v mono">${esc(PROTO_INFO[r.share.server.protocol][0])} · ${esc(r.share.server.user ? r.share.server.user + '@' : '')}${esc(r.share.server.host)}:${esc(r.share.server.port)}</div>
         <div class="k">S-FTP folder</div><div class="v mono">${esc(r.share.remote)}</div>
         <div class="k">Password</div><div class="v">not included: give it to them another way</div></div>
@@ -4001,11 +4026,11 @@ async function waitForMaster(id, folder) {
 }
 // FAILSAFE: the bookmark and the S-FTP folder where the MASTER left its session.
 async function findOnServer() {
-  if (!state.sites.length) { errorBox('No bookmark', 'Add the server in MY SERVERS first, with its password or key.'); return null; }
+  if (!state.sites.length) { errorBox('No server', 'Add the server in MY SERVERS first, with its password or key.'); return null; }
   let cur = null;
   return dialog({
     title: 'Find the session on a server',
-    sub: 'Choose the bookmark of the DUAL SYNC server, then open the S-FTP folder of the session (double-click).',
+    sub: 'Choose the DUAL SYNC server, then open the S-FTP folder of the session (double-click).',
     html: `<div class="field"><label>Bookmark</label><select id="fos-site">${state.sites.map(s => `<option value="${esc(s.id)}">${esc(s.name)} · ${esc(PROTO_INFO[s.protocol] ? PROTO_INFO[s.protocol][0] : s.protocol)}</option>`).join('')}</select></div>
       <div class="rp-path mono">…</div><div class="rp-list"></div>`,
     buttons: [{ label: 'CANCEL', value: null }, { spacer: true }, { label: 'LOOK IN THIS FOLDER', cls: 'go', value: c => (cur ? { siteId: c.querySelector('#fos-site').value, dir: cur } : undefined) }],
@@ -4024,7 +4049,7 @@ function serverKv(sv, remote, r) {
   return `<div class="sy-kv"><div class="k">Server</div><div class="v mono">${esc(PROTO_INFO[sv.protocol][0])} · ${esc(sv.user ? sv.user + '@' : '')}${esc(sv.host)}:${esc(sv.port)}</div>
     <div class="k">S-FTP folder</div><div class="v mono">${esc(remote)}</div>
     <div class="k">Identity</div><div class="v">${idText}</div>
-    ${r.site ? `<div class="k">Bookmark</div><div class="v">${esc(r.site.name)} (already in your bookmarks)</div>` : ''}</div>`;
+    ${r.site ? `<div class="k">Server</div><div class="v">${esc(r.site.name)} (already in MY SERVERS)</div>` : ''}</div>`;
 }
 function localPickHtml() {
   return `<div class="field"><label>Your local folder</label><div class="inline"><input id="syi-local" spellcheck="false" placeholder="the folder where this session lives on this computer"><button class="ibtn ins" id="syi-pick" data-tip="Choose the folder" aria-label="Choose the folder">${I.folder}</button></div></div>`;
@@ -4093,7 +4118,7 @@ async function onAsk(kind, i) {
         title: `Accept “${esc(n.name || shortDev(d.id))}”?`,
         sub: 'Accept it only if it is your own computer, or the one you sent a config file or this computer\'s SYNCTHING ID to.',
         html: `<div class="sy-kv"><div class="k">Computer</div><div class="v">${esc(n.name)}${n.os ? ` · ${esc(n.os)}` : ''}</div><div class="k">ID</div><div class="v mono">${esc(d.id)}</div>${d.address ? `<div class="k">From</div><div class="v mono">${esc(d.address)}</div>` : ''}</div>
-          <div class="hint">To be sure: on the remote computer, right-click LIVE SYNC (side bar) → Sessions… → THIS COMPUTER shows its ID. The first group (<b class="mono">${esc(shortDev(d.id))}</b>) must be the same.</div>
+          <div class="hint">To be sure: on the remote computer, right-click LIVE SYNC (title bar) → Sessions… → THIS COMPUTER shows its ID. The first group (<b class="mono">${esc(shortDev(d.id))}</b>) must be the same.</div>
           ${open.length ? `<div class="sy-sub">Share with it <span>it becomes the SLAVE</span></div>${open.map(p => `<label class="chk"><input type="checkbox" data-share="${esc(p.id)}"${open.length === 1 ? ' checked' : ''}> ${esc(p.name)} <span class="sy-dim">· ${esc(SY_DIR_DIRECT[p.direction][0])}</span></label>`).join('')}
           <div class="hint">A session it imported from a config file links by itself: leave it unticked.</div>` : ''}`,
         buttons: [{ label: 'CANCEL', value: null }, { spacer: true }, { label: 'ACCEPT', cls: 'go', value: c => [...c.querySelectorAll('[data-share]:checked')].map(x => x.dataset.share) }], width: 600,
@@ -4149,7 +4174,7 @@ async function openDirectInfo() {
       <div class="hint" style="margin-top:12px">filo uses Syncthing ${esc(r.version)} (MPL-2.0, syncthing.net), shipped with filo as a separate program.</div>`,
     buttons: [{ spacer: true }, { label: 'CLOSE', value: true, cls: 'go' }],
     width: 640,
-    onOpen: c => { c.addEventListener('click', ev => { const b = ev.target.closest('[data-idact]'); if (b) idAction(b.dataset.idact, b.dataset.id, b.dataset.name); }); c.querySelectorAll('[data-forget]').forEach(b => b.onclick = async () => {
+    onOpen: c => { c.onclick = ev => { const b = ev.target.closest('[data-idact]'); if (b) idAction(b.dataset.idact, b.dataset.id, b.dataset.name); }; c.querySelectorAll('[data-forget]').forEach(b => b.onclick = async () => {
       const x = await API.directForget(b.dataset.forget);
       if (!x.ok) return toast(x.error, true);
       b.closest('.sy-dev').remove(); toast('Forgotten');
@@ -4217,9 +4242,9 @@ function placeMode() {
   const sp = sy.pairs.find(x => x.id === sy.liveSel);
   const via = sp && sp.via === 'server' ? 'server' : sp && sp.via === 'hybrid' ? 'hybrid' : 'direct';
   bs.style.setProperty('--m-c', via === 'server' ? 'var(--violet)' : via === 'hybrid' ? 'var(--hybrid)' : 'var(--blue)');
-  bs.style.setProperty('--m-d', via === 'server' ? 'var(--violet-d)' : via === 'hybrid' ? 'rgba(143,140,251,.15)' : 'var(--blue-d)');
+  bs.style.setProperty('--m-d', via === 'server' ? 'var(--violet-d)' : via === 'hybrid' ? 'var(--hybrid-d)' : 'var(--blue-d)');
   bs.classList.toggle('hy', via === 'hybrid');
-  $('btn-sync').dataset.tip = live ? 'LIVE SYNC: new session, import, connect, sessions (right-click: the same menu)' : connectedPairs().length ? 'Show the LIVE SYNC view (right-click: new session, import, connect)' : 'LIVE SYNC: no session connected (new, import, connect)';
+  renderSyncBtn();                               // the one place that writes the tooltip
 }
 // The ring alone (Noar, 13/10/2026): the window shrinks to LIVE SYNC's ring;
 // back to the full window as it was.
@@ -4386,8 +4411,8 @@ function remoteCard(p, st) {
     return `<div class="lv-who">${SY_PC}<span>REMOTE COMPUTER</span></div><div class="lv-host"><span class="lv-state bad alone" data-tip="No remote computer yet: send it what is below">NOT LINKED YET</span></div>
       ${quick ? `<div class="lv-link"><div class="k">SEND IT THE SESSION ID</div>
         ${sessionIdBlock(p)}
-        <div class="hint">There: right-click LIVE SYNC (side bar) → Import session as SLAVE → PASTE. Accept it here when filo asks.</div></div>
-        <div class="lv-or">OR</div>` : `<div class="lv-note">${p.via === 'hybrid' ? 'Save the config file and send it to the remote computer (it carries the S-FTP BACKUP). There: right-click LIVE SYNC (side bar) → Import session as SLAVE. Then accept it here.' : 'Send the config file to the remote computer. There: right-click LIVE SYNC (side bar) → Import session as SLAVE. Then accept it here.'}</div>`}
+        <div class="hint">There: right-click LIVE SYNC (title bar) → Import session as SLAVE → PASTE. Accept it here when filo asks.</div></div>
+        <div class="lv-or">OR</div>` : `<div class="lv-note">${p.via === 'hybrid' ? 'Save the config file and send it to the remote computer (it carries the S-FTP BACKUP). There: right-click LIVE SYNC (title bar) → Import session as SLAVE. Then accept it here.' : 'Send the config file to the remote computer. There: right-click LIVE SYNC (title bar) → Import session as SLAVE. Then accept it here.'}</div>`}
       <button class="ibtn ins lab" id="lv-code" data-tip="Save the config file to send to the remote computer">${I.share}<span>CONFIG FILE</span></button>${p.via === 'hybrid' ? serverCard(p, st.server || {}, true) : ''}`;
   }
   const n = splitDev(p.peer.name);
@@ -4496,7 +4521,7 @@ function renderMid(p) {
   if (!ring) {
     const chev = '<svg viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg>';
     const flow = side => `<div class="lv-flow ${side}" aria-hidden="true">${chev.repeat(3)}</div>`;
-    box.insertAdjacentHTML('beforeend', `<div class="lv-ring">${flow('l')}${flow('r')}<svg class="ring" viewBox="0 0 200 200"><defs><clipPath id="lv-ring-clip"><circle cx="100" cy="100" r="79"/></clipPath><linearGradient id="lv-hy" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#4d90f0"/><stop offset="1" stop-color="#a880ff"/></linearGradient></defs><g clip-path="url(#lv-ring-clip)" class="bars"></g><circle class="ring-bg" cx="100" cy="100" r="86"/><circle class="ring-fg" cx="100" cy="100" r="86" transform="rotate(-90 100 100)" stroke-dasharray="${m.C}"/></svg><div class="ring-center"></div></div>`);
+    box.insertAdjacentHTML('beforeend', `<div class="lv-ring">${flow('l')}${flow('r')}<svg class="ring" viewBox="0 0 200 200"><defs><clipPath id="lv-ring-clip"><circle cx="100" cy="100" r="79"/></clipPath><linearGradient id="lv-hy" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="var(--blue)"/><stop offset="1" stop-color="var(--violet)"/></linearGradient></defs><g clip-path="url(#lv-ring-clip)" class="bars"></g><circle class="ring-bg" cx="100" cy="100" r="86"/><circle class="ring-fg" cx="100" cy="100" r="86" transform="rotate(-90 100 100)" stroke-dasharray="${m.C}"/></svg><div class="ring-center"></div></div>`);
     ring = box.querySelector('.lv-ring');
   }
   if (ring.getAttribute('class') !== m.cls) ring.setAttribute('class', m.cls);

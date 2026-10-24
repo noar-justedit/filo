@@ -832,7 +832,8 @@ class TransferQueue extends EventEmitter {
     if (u.kind === 'seg' && retryable) {
       const c = own;
       c.attempts = (c.attempts || 0) + 1;
-      if (err.mismatch) it.mismatchCount = (it.mismatchCount || 0) + 1;
+      // A segment sent again is not a verdict on the whole file (0.9.8): only the
+      // item-level mismatch below counts towards a restart from zero.
       if (c.attempts <= retries) {
         const delay = RETRY_DELAYS_S[Math.min(c.attempts - 1, RETRY_DELAYS_S.length - 1)];
         c.retryAt = Date.now() + delay * 1000;
@@ -993,10 +994,20 @@ class TransferQueue extends EventEmitter {
   }
 
   // ── Persistence ─────────────────────────────────────────────────────────
+  // 'changed' goes out at most every 50 ms (0.9.8): thousands of small files
+  // changed state hundreds of times a second, each time a full count of the
+  // queue and a message to the window. The first change goes out at once.
   _changed() {
-    this.emit('changed', this.counts());
+    if (!this._emitTimer) {
+      this.emit('changed', this.counts());
+      this._emitTimer = setTimeout(() => {
+        this._emitTimer = null;
+        if (this._emitLate) { this._emitLate = false; this._changed(); }
+      }, 50);
+      if (this._emitTimer.unref) this._emitTimer.unref();
+    } else this._emitLate = true;
     if (this._saveTimer) return;
-    this._saveTimer = setTimeout(() => { this._saveTimer = null; this._save(); }, 1000);
+    this._saveTimer = setTimeout(() => { this._saveTimer = null; this._save(true); }, 1000);
   }
 
   _flushSave() {
@@ -1013,8 +1024,9 @@ class TransferQueue extends EventEmitter {
     queueMicrotask(() => { this._compactQ = false; this.order = this.order.filter(id => this.items.has(id)); });
   }
 
-  _save() {
+  _save(async_) {
     this._lastSave = Date.now();
+    const gen = this._saveGen = (this._saveGen || 0) + 1;
     if (!this.opts.store) return;
     // offset and done: how much of a stopped file is already in place,
     // so that after a relaunch "resume or start again?" is still asked, and
@@ -1039,7 +1051,13 @@ class TransferQueue extends EventEmitter {
       if (ACTIVE.has(o.status) || o.status === 'waiting') o.status = 'queued';
       return o;
     });
-    try { this.opts.store.save(out); } catch (e) { this.log('error', 'Could not save the queue: ' + e.message); }
+    const fail = e => this.log('error', 'Could not save the queue: ' + e.message);
+    // Timer saves go through the disk without blocking; a flush (quit) is sync.
+    if (async_ && this.opts.store.saveAsync) {
+      this.opts.store.saveAsync(out, () => gen === this._saveGen).catch(fail);
+    } else {
+      try { this.opts.store.save(out); } catch (e) { fail(e); }
+    }
   }
 
   _load() {

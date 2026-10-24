@@ -16,7 +16,7 @@
 //     profile folder (readable by this user only), sent with every request.
 // So there is one filo, one queue, and what a command adds shows in the
 // window. No password ever travels on the command line: commands use the
-// sites of the site manager, with their saved password or key.
+// servers of MY SERVERS, with their saved password or key.
 
 const net = require('net');
 const fs = require('fs');
@@ -42,7 +42,7 @@ Options
   --out <file>   also write the final result, as JSON, to this file
   --background   when filo has to be started, start it minimised
 
-  <site> and <live sync> are names from filo (site manager, LIVE SYNC window),
+  <site> and <live sync> are names from filo (MY SERVERS, LIVE SYNC window),
   or ids.
   No password on the command line: the site's saved password or key is used.
 

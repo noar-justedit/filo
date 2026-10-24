@@ -196,7 +196,7 @@ async function resolveEndpointBase(endpointId) {
   const mem = memSecrets.get(endpointId) || {};
   if (endpointId.startsWith('site:')) {
     const site = prefs.getSite(endpointId.slice(5));
-    if (!site) throw new RemoteError('This site was deleted from the site manager.', { fatal: true });
+    if (!site) throw new RemoteError('This site was deleted from MY SERVERS.', { fatal: true });
     const ep = { protocol: site.protocol, host: site.host, port: site.port, user: site.user, label: site.name,
                  transferMode: site.transferMode, maxConnections: site.maxConnections };
     if (site.logon === 'anonymous') { ep.user = ep.user || 'anonymous'; ep.password = ''; }
@@ -303,7 +303,7 @@ function createWindow() {
   const h = Math.max(680, (prefs.data.window && prefs.data.window.height) || 880);
   win = new BrowserWindow({
     width: w, height: h, minWidth: 1100, minHeight: 680,
-    backgroundColor: '#0a0b0e',
+    backgroundColor: '#0a0b0e',                 // = --page: needed before the page's CSS exists
     show: false,
     titleBarStyle: IS_MAC ? 'hiddenInset' : 'hidden',
     trafficLightPosition: IS_MAC ? { x: 18, y: 18 } : undefined,
@@ -688,7 +688,7 @@ ipcMain.handle('sync-connect', guard((_, id, on, which) => {
   return { ok: true, pair: saved, pairs: prefs.listSyncPairs(), status: allSyncStatus() };
 }));
 // This computer's trash of a SYNCTHING session (size; open it).
-ipcMain.handle('trash-info', guard((_, id) => { const p = prefs.getSyncPair(String(id)); return p && p.via !== 'server' ? require('./direct-app').trashInfo(p) : null; }));
+ipcMain.handle('trash-info', guard((_, id) => { const p = prefs.getSyncPair(String(id)); return p && p.via !== 'server' ? require('./direct-app').trashInfoAsync(p) : null; }));
 ipcMain.handle('trash-open', guard(async (_, id) => {
   const p = prefs.getSyncPair(String(id));
   if (!p || p.via === 'server') return { ok: false, error: 'This session has no trash.' };
@@ -760,7 +760,7 @@ ipcMain.handle('sync-remote-list', async (_, siteId, dir) => {
   } catch (e) {
     if (pickConn.conn) { try { pickConn.conn.close(); } catch (_) {} pickConn.conn = null; }
     const err = e && e.code ? e : RemoteError.from(e);
-    return { ok: false, error: err.code === 'NEEDS_PASSWORD' ? 'This bookmark has no saved password: connect to it once from the bar, or save its password in the site manager.' : err.code === 'TRUST_NEEDED' ? 'This server is not trusted yet: connect to it once from the bar and accept its identity.' : (err.message || String(err)) };
+    return { ok: false, error: err.code === 'NEEDS_PASSWORD' ? 'This server has no saved password: connect to it once from the bar, or save its password in MY SERVERS.' : err.code === 'TRUST_NEEDED' ? 'This server is not trusted yet: connect to it once from the bar and accept its identity.' : (err.message || String(err)) };
   }
 });
 
@@ -793,7 +793,7 @@ ipcMain.handle('direct-id-share', async (_, req) => {
     const id = String((req && req.id) || '');
     if (!DEVICE_ID.test(id)) return { ok: false, error: 'This is not a SYNCTHING ID.' };
     const name = String((req && req.name) || '').slice(0, 120);
-    const text = `filo SYNCTHING ID${name ? ' of ' + name : ''}:\n${id}\n\n(In filo: right-click LIVE SYNC (side bar) → Sessions… → THIS COMPUTER. It is not a secret: a computer still has to be accepted by hand.)\n`;
+    const text = `filo SYNCTHING ID${name ? ' of ' + name : ''}:\n${id}\n\n(In filo: right-click LIVE SYNC (title bar) → Sessions… → THIS COMPUTER. It is not a secret: a computer still has to be accepted by hand.)\n`;
     if (req.how === 'email') { shell.openExternal(`mailto:?subject=${encodeURIComponent('filo SYNCTHING ID' + (name ? ' · ' + name : ''))}&body=${encodeURIComponent(text)}`); return { ok: true }; }
     const safe = (name || 'filo').replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').trim() || 'filo';
     const res = await dialog.showSaveDialog(win, { title: 'Export the SYNCTHING ID', defaultPath: path.join(app.getPath('desktop'), `${safe} SYNCTHING ID.txt`), filters: [{ name: 'Text', extensions: ['txt'] }] });
@@ -1058,7 +1058,7 @@ async function cliAdd(req, emit) {
     await fs.promises.mkdir(target, { recursive: true });
     let ep;
     try { ep = await resolveEndpoint(endpointId); }
-    catch (e) { throw Object.assign(new Error(e.code === 'NEEDS_PASSWORD' ? `the site "${site.name}" has no saved password: save it in the site manager, or use a key` : e.message), { code: 3 }); }
+    catch (e) { throw Object.assign(new Error(e.code === 'NEEDS_PASSWORD' ? `the server "${site.name}" has no saved password: save it in the site manager, or use a key` : e.message), { code: 3 }); }
     const r = createRemote(ep, { log });
     try {
       await r.connect();
@@ -1512,7 +1512,7 @@ let speedLast = null;        // the last finished test: what SAVE keeps
 ipcMain.handle('speedtest-run', async (_, req) => {
   if (speedRun) return { ok: false, error: 'A speed test is already running.' };
   const site = req && req.siteId ? prefs.getSite(req.siteId) : null;
-  if (!site) return { ok: false, error: 'This bookmark no longer exists.' };
+  if (!site) return { ok: false, error: 'This server no longer exists.' };
   const endpointId = 'site:' + site.id;
   const token = { cancelled: false, cut: null };
   speedRun = { token };
@@ -1545,7 +1545,7 @@ ipcMain.handle('speedtest-run', async (_, req) => {
 // The folder chooser of the test: the folders of `dir` (the login folder by default).
 ipcMain.handle('speedtest-list', async (_, req) => {
   const site = req && req.siteId ? prefs.getSite(req.siteId) : null;
-  if (!site) return { ok: false, error: 'This bookmark no longer exists.' };
+  if (!site) return { ok: false, error: 'This server no longer exists.' };
   let r = null;
   try {
     const ep = await resolveEndpoint('site:' + site.id);
@@ -1905,7 +1905,7 @@ ipcMain.handle('sites-export', async (_, opts, ids) => {
     filters: [{ name: 'filo sites', extensions: ['json'] }],
   });
   if (res.canceled || !res.filePath) return { ok: false, cancelled: true };
-  const list = (ids && ids.length ? prefs.data.sites.filter(s => ids.includes(s.id)) : prefs.data.sites);
+  const list = (Array.isArray(ids) && ids.length ? prefs.data.sites.filter(s => ids.includes(s.id)) : prefs.data.sites);
   try {
     let secretsList = null, included = 0;
     if (withPw) {
