@@ -437,6 +437,49 @@ fn read_at(f: &std::fs::File, mut buf: &mut [u8], mut off: u64) -> std::io::Resu
     Ok(())
 }
 
+// On the disk before the file is called complete. On macOS, Rust's sync_all()
+// is fcntl(F_FULLFSYNC), which a network share (SMB on a Synology, say)
+// refuses: "Operation not supported (os error 45)" failed every download to
+// /Volumes/prod (Noar's colleague, 27/10/2026). Go (1.23, issue 64215), Java
+// (JDK-8232861) and libuv do the same thing here: fall back to a plain fsync,
+// which on SMB asks the server to flush. A plain fsync that fails is a real
+// error, reported as such.
+fn flush_to_disk(f: &std::fs::File) -> std::io::Result<()> {
+    match f.sync_all() {
+        Err(e) if cfg!(target_vendor = "apple") && e.raw_os_error() == Some(libc::ENOTSUP) => plain_fsync(f),
+        r => r,
+    }
+}
+#[cfg(unix)]
+fn plain_fsync(f: &std::fs::File) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+    if unsafe { libc::fsync(f.as_raw_fd()) } == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }
+}
+#[cfg(not(unix))]
+fn plain_fsync(f: &std::fs::File) -> std::io::Result<()> { f.sync_all() }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn flush_works_on_a_plain_file() {
+        let f = std::fs::File::create(std::env::temp_dir().join("filo-flush-test")).unwrap();
+        assert!(flush_to_disk(&f).is_ok());
+        assert!(plain_fsync(&f).is_ok());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn a_real_error_stays_an_error() {
+        // A closed descriptor: fsync fails with EBADF, and nothing hides it.
+        use std::os::fd::FromRawFd;
+        let f = unsafe { std::fs::File::from_raw_fd(libc::open(c"/dev/null".as_ptr(), libc::O_RDONLY)) };
+        let raw = { use std::os::fd::AsRawFd; f.as_raw_fd() };
+        unsafe { libc::close(raw); }
+        assert!(plain_fsync(&f).is_err());
+        std::mem::forget(f);
+    }
+}
+
 // ── Download ──────────────────────────────────────────────────────────────
 async fn get(s: &mut Sftp, j: &Job, done: &AtomicU64, stop: &Stop, written: &Arc<AtomicU64>) -> Result<Outcome, JobFail> {
     let r = get_inner(s, j, done, stop, written).await;
@@ -477,7 +520,7 @@ async fn get_inner(s: &mut Sftp, j: &Job, done: &AtomicU64, stop: &Stop, written
             // Complete: cut anything past the end (a resumed file that was
             // longer), then make sure it is on the disk.
             if !segment && pos == end { f.set_len(end).map_err(|e| local_fail(e, &path))?; }
-            f.sync_all().map_err(|e| local_fail(e, &path))?;
+            flush_to_disk(f).map_err(|e| local_fail(e, &path))?;
         }
         Ok((pos - start, hasher.map(|x| hex(x.digest()))))
     });

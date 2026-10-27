@@ -4,6 +4,28 @@ All notable changes to filo are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/lang/fr/).
 
+## [0.9.10] — 2026-10-27
+
+### Fixed
+
+- **SFTP downloads to a network share failed on macOS** ("Operation not
+  supported (os error 45)", a Synology SMB share mounted in /Volumes). At the
+  end of each file or segment, the Rust engine asks the system to put the data
+  on the disk; on macOS Rust does it with the strict F_FULLFSYNC, which network
+  shares refuse. The engine now falls back to a plain fsync in that one case
+  (which on SMB asks the server to flush), as Go 1.23, Java and Node already
+  do. Any other error is still reported. FTP and FTPS were not affected (they
+  do not use the Rust engine); local disks were not affected.
+
+### Changed
+
+- Engine: `libc` declared as a dependency (Unix only; it was already built in
+  through tokio, the binary does not grow). Rebuilt with the app as usual.
+
+### Tests
+
+- Engine: the fallback works on a plain file, and a real error stays an error.
+
 ## [0.9.9] — 2026-10-24
 
 ### Changed

@@ -12,6 +12,9 @@ anyhow = "1"
 serde_json = "1"
 xxhash-rust = { version = "0.8", features = ["xxh64"] }
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [profile.release]
 opt-level = 3
 lto = "fat"
