@@ -4,6 +4,47 @@ All notable changes to filo are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/lang/fr/).
 
+## [0.10.0] — 2026-10-29
+
+### Added
+
+- **Tabs, one per server** (as in FileZilla). Each tab has its own connection,
+  its own quick bar, its own local folder and its own server folder; the queue
+  stays one for all servers (each line says its server). A tab closed while
+  its files move keeps them moving: transfers have their own connections.
+  - New tab: "+" or ⌘T / Ctrl+T. Close: the cross, a middle click, or
+    ⌘W / Ctrl+W (which closes MY SERVERS or the settings first when they are
+    open). The last tab is emptied, never removed.
+  - ⌘1…⌘9 / Ctrl+1…9 and Ctrl+Tab move between tabs. Right-click a tab: copy
+    the address, disconnect or reconnect, close the other tabs.
+  - A server chosen in MY SERVERS, the recent connections or LIVE SYNC opens in
+    the current tab when it is free, in a new tab otherwise; the quick bar
+    connects in the tab shown.
+  - The tab shows a green dot when connected, a spinner while it connects, its
+    protocol (orange for plain FTP) and, in its tooltip, the full address. Its
+    name: the server's in MY SERVERS, or for a quick connection the host (and
+    its port when it is not the usual one).
+  - After a restart the tabs come back disconnected; RECONNECT in the server
+    panel opens them again, back in the folder they showed.
+
+### Changed
+
+- **⌘W now closes a tab.** On Mac, the window closes with ⇧⌘W.
+- The connection pill of the title bar is gone: the tabs carry its name,
+  address and protocol.
+
+### Fixed
+
+- The "Done / CANCEL" pill could stay on screen after a transfer of files
+  only (no folder), since 0.9.9.
+
+### Tests
+
+- 944 (FTP / FTPS real servers included). Tried in the app with two SFTP
+  servers: a download in one tab, an upload in the other, both in the queue;
+  the first tab closed during its download, which finished; the tabs back
+  after a restart, RECONNECT back in the same folder.
+
 ## [0.9.10] — 2026-10-27
 
 ### Fixed

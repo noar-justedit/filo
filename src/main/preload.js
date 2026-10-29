@@ -18,6 +18,9 @@ const inv = (ch, ...a) => ipcRenderer.invoke(ch, ...a);
 const api = {
   platform: process.platform,
   init        : ()            => inv('init'),
+  // The tabs (0.10.0): a message (in order with the requests after it), and a request.
+  tabSelect   : (id)          => ipcRenderer.send('tab-select', id),
+  tabClose    : (id)          => inv('tab-close', id),
   saveUi      : (ui)          => inv('save-ui', ui),
   settingsSave: (patch)       => inv('settings-save', patch),
   afterSet    : (v)           => inv('after-action-set', v),

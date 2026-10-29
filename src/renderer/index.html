@@ -527,7 +527,7 @@ body.syncb .p-dif{display:inline-flex !important;}
 /* ── LIVE SYNC view (main window) ── */
 #live{display:none;flex:1;min-height:200px;flex-direction:column;padding:12px 14px 18px;gap:12px;overflow:auto;}
 body.live-on #live{display:flex;}
-body.live-on #quick,body.live-on #panels{display:none;}
+body.live-on #quick,body.live-on #panels,body.live-on #tabs{display:none;}
 .lv-head{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;}
 .lv-head .lv-tabs,.lv-head .lv-ib{margin-bottom:2px;}
 .lv-tabs{display:flex;gap:6px;flex-wrap:wrap;}
@@ -924,6 +924,32 @@ body.live-st #queue .q-head,body.live-st #q-blocked,body.live-st #q-tabs,body.li
 #scan.open{display:flex;}
 .drag-ghost{position:fixed;top:-100px;left:-100px;background:var(--raise);color:var(--text);padding:6px 10px;border-radius:8px;font-size:12px;}
 .ntfy-qr svg rect{fill:var(--qr-bg);} .ntfy-qr svg path{fill:var(--qr-fg);}
+/* ── Tabs (0.10.0, Noar: "onglets soudés"): the active tab is the colour of
+   the quick bar and opens onto it; the others sit darker beside it. The
+   connection pill of the title bar gave way to them (its address is in the
+   tab's tooltip and its right-click menu). */
+#conn-pill{display:none !important;}
+#tabs{display:flex;align-items:flex-end;gap:2px;height:36px;flex-shrink:0;margin-bottom:-12px;position:relative;z-index:1;
+  overflow-x:auto;overflow-y:hidden;scrollbar-width:none;}
+#tabs::-webkit-scrollbar{display:none;}
+#quick.tab0{border-top-left-radius:0;}
+#tabs .tab{display:inline-flex;align-items:center;gap:8px;height:32px;padding:0 6px 0 14px;border-radius:12px 12px 0 0;
+  font-size:12.5px;font-weight:600;color:var(--text3);background:var(--ins);min-width:96px;max-width:230px;flex:0 1 auto;cursor:default;-webkit-app-region:no-drag;}
+#tabs .tab:hover:not(.on){color:var(--text2);}
+#tabs .tab.on{background:var(--card);color:var(--text);height:36px;}
+#tabs .tab .n{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;}
+#tabs .tab .d{width:7px;height:7px;border-radius:50%;background:var(--text4);flex:none;}
+#tabs .tab .d.g{background:var(--green);}
+#tabs .tab .d.busy{background:transparent;border:1.5px solid var(--text3);border-top-color:transparent;animation:spin .8s linear infinite;width:9px;height:9px;}
+#tabs .tab .p{font-family:var(--mono);font-size:10px;font-weight:700;color:var(--text4);letter-spacing:.04em;flex:none;}
+#tabs .tab .p.warn{color:var(--orange);}
+#tabs .tab .x{width:18px;height:18px;border:none;border-radius:5px;background:transparent;display:inline-flex;align-items:center;justify-content:center;color:var(--text4);opacity:0;flex:none;padding:0;}
+#tabs .tab.on .x,#tabs .tab:hover .x{opacity:1;}
+#tabs .tab .x:hover{background:var(--raise);color:var(--text);}
+#tabs .tab .x svg{width:11px;height:11px;}
+#tabs .tab-plus{width:28px;height:28px;margin:0 0 4px 4px;border:none;border-radius:8px;background:transparent;display:inline-flex;align-items:center;justify-content:center;color:var(--text3);flex:none;}
+#tabs .tab-plus:hover{background:var(--ins);color:var(--text);}
+#tabs .tab-plus svg{width:14px;height:14px;}
 </style>
 </head>
 <body>
@@ -963,6 +989,9 @@ body.live-st #queue .q-head,body.live-st #q-blocked,body.live-st #q-tabs,body.li
 
 <div id="shell">
 <div id="main">
+
+<!-- ── Tabs (0.10.0): one per server; the active one opens onto the quick bar ── -->
+<div id="tabs" role="tablist" aria-label="Servers"></div>
 
 <!-- ── Quick connect ─────────────────────────────────────────────────── -->
 <div id="quick" class="card">

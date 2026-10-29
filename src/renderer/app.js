@@ -452,6 +452,7 @@ class Panel {
     this.parent = res.parent;
     this._apply(res.dir, res.entries, keepSel, o.select);
     if (!this.remote) API.saveUi({});
+    saveTabs();                                   // the tab remembers its folders
     return true;
   }
 
@@ -517,8 +518,10 @@ class Panel {
     });
     if (!enabled) {
       this.empty.style.display = '';
-      this.empty.innerHTML = `${I.server}<b>Not connected</b><span>Use the bar above for a quick connection,<br>or open MY SERVERS.</span><button class="btn" id="empty-sites">${I.server} MY SERVERS</button>`;
+      const tb = curTab(), back = tb && tb.req && !state.connecting ? tabTitle(tb) : '';
+      this.empty.innerHTML = `${I.server}<b>Not connected</b><span>Use the bar above for a quick connection,<br>or open MY SERVERS.</span><div class="inline" style="gap:8px">${back ? `<button class="btn go" id="empty-reconnect">RECONNECT ${esc(back)}</button>` : ''}<button class="btn" id="empty-sites">${I.server} MY SERVERS</button></div>`;
       this.empty.querySelector('#empty-sites').onclick = () => openSites();
+      if (back) this.empty.querySelector('#empty-reconnect').onclick = () => reconnectTab(curTab());
       this.cancelRename();
       this.spacer.style.height = '0px'; this.spacer.innerHTML = '';
       this.rowEls = [];
@@ -1125,11 +1128,15 @@ async function queueAdd(dir, sources, target, start) {
   if (!sources.length) return;
   const hasFolder = sources.some(s => s.type === 'folder');
   let scanTimer = null;
-  if (hasFolder) scanTimer = setTimeout(() => { $('scan-txt').textContent = 'Listing folders…'; $('scan').classList.add('open'); }, 300);
+  if (hasFolder) { state.scanning = (state.scanning || 0) + 1; scanTimer = setTimeout(() => { $('scan-txt').textContent = 'Listing folders…'; $('scan').classList.add('open'); }, 300); }
   let res;
   try { res = await API.queueAdd({ dir, sources, target, start }); }
   catch (e) { res = { ok: false, error: (e && e.message) || 'Could not add to the queue.' }; }
-  finally { clearTimeout(scanTimer); $('scan').classList.remove('open'); }
+  finally {
+    clearTimeout(scanTimer);
+    if (hasFolder) state.scanning = Math.max(0, state.scanning - 1);
+    if (!state.scanning) $('scan').classList.remove('open');
+  }
   if (!res.ok) { if (!res.cancelled) toast(res.error || 'Could not add to the queue.', true); return; }
   if (res.conflict) errorBox('Not added: same destination', `${plural(res.conflict, 'file')} would land under the same name as another file of the queue (two cards with the same clip names into one folder, say). They were left out, so neither replaces the other. Send them to separate folders.`);
   else if (res.already) toast(`${plural(res.already, 'file')} already in the queue: not added twice`);
@@ -1177,7 +1184,8 @@ function setProto(p) {
 // 8 s on one step, they say the server is slow to answer.
 const CONN_STEPS = { resolve: 'Finding the address', open: 'Opening the connection', secure: 'Secure handshake', login: 'Login', folder: 'Reading the folder' };
 const cu = { on: false, steps: [], i: 0, t0: 0, st0: 0, timer: null, label: '', address: '', proto: '' };
-function connStart(req, label) {
+function connStart(req, label, tabId) {
+  cu.tab = tabId || tabs.cur;
   const site = req.siteId ? state.sites.find(s => s.id === req.siteId) : null;
   const q = req.quick || {};
   const proto = site ? site.protocol : q.protocol || 'sftp';
@@ -1188,6 +1196,7 @@ function connStart(req, label) {
   cu.address = host ? `${user ? user + '@' : ''}${host}${port ? ':' + port : ''}` : '';
   cu.proto = PROTO_LABEL[proto] || '';
   clearInterval(cu.timer); cu.timer = setInterval(renderConnecting, 250);
+  renderTabs();
   renderConnecting();
 }
 function connStep(id) {
@@ -1199,7 +1208,8 @@ function connStep(id) {
   if (k > cu.i) { cu.i = k; cu.st0 = Date.now(); renderConnecting(); }
 }
 function connEnd() {
-  cu.on = false; clearInterval(cu.timer); cu.timer = null;
+  cu.on = false; clearInterval(cu.timer); cu.timer = null; cu.tab = null;
+  renderTabs();
   const pan = $('cp-pan'); if (pan) pan.remove();
   const bar = $('cp-bar'); if (bar) bar.remove();
   $('conn-pill').classList.remove('busy');
@@ -1217,37 +1227,61 @@ function renderConnecting() {
   $('conn-badges').innerHTML = `<span class="cp-step">${esc(cur)}${slow ? ' (slow)' : ''}</span><span class="cp-t">${secs} s</span><button class="cp-x" id="cp-cancel">CANCEL</button>`;
   $('cp-cancel').onclick = e => { e.stopPropagation(); API.connectCancel(); };
   if (!$('cp-bar')) $('titlebar').insertAdjacentHTML('afterend', '<div class="cp-bar" id="cp-bar"><i></i></div>');
-  // The server panel is covered only when nothing is connected: another
-  // server's folder must stay readable while this one is tried.
+  // The server panel is covered only when nothing is connected in the tab
+  // that connects, and while it is the one shown: another server's folder
+  // must stay readable while this one is tried.
   let pan = $('cp-pan');
-  if (state.conn) { if (pan) pan.remove(); return; }
+  if (state.conn || cu.tab !== tabs.cur) { if (pan) pan.remove(); return; }
   const rows = cu.steps.map((s, i) => i < cu.i ? `<div class="ok"><b>✓</b>${CONN_STEPS[s]}</div>` : i === cu.i ? `<div class="now"><b>›</b>${CONN_STEPS[s]}${slow ? ' (slow)' : ''}</div>` : `<div><b>·</b>${CONN_STEPS[s]}</div>`).join('');
   const html = `<div class="ring"></div><div><div class="h">Connecting to ${esc(cu.label)}</div><div class="m">${esc(cu.address)} · ${secs} s</div></div><div class="cp-steps">${rows}</div>${slow ? '<div class="cp-warn">This server is slow to answer. filo keeps trying. Cancel here if it is not the right one.</div>' : ''}`;
   if (!pan) { pan = document.createElement('div'); pan.id = 'cp-pan'; pan.className = 'cp-pan'; pan.setAttribute('role', 'status'); panels.remote.el.appendChild(pan); }
   pan.innerHTML = html;
 }
 
-async function connectWith(req, label) {
+// The connection belongs to the tab it was started from (0.10.0): if the user
+// moves to another tab meanwhile, the result goes to that tab, not the one shown.
+async function connectWith(req, label, tabId) {
+  const tid = tabId || tabs.cur;
+  if (tid !== tabs.cur) selectTab(tid);
   panels.remote.busy.style.display = '';
   state.connecting = true; renderConnectBtn();
-  connStart(req, label);
+  connStart(req, label, tid);
   let res;
-  try { res = await API.connect(req); }
-  finally { state.connecting = false; panels.remote.busy.style.display = 'none'; connEnd(); renderConnectBtn(); }
+  try { API.tabSelect(tid); res = await API.connect(req); }
+  finally { state.connecting = false; if (tabs.cur === tid) panels.remote.busy.style.display = 'none'; connEnd(); renderConnectBtn(); }
+  const t = tabById(tid);
+  if (!t) return;                                   // the tab was closed meanwhile
   if (res.cancelled) return;
-  if (res.ok) { if (res.warn) toast(res.warn, true); return onConnected(res); }
+  if (res.ok) {
+    if (res.warn) toast(res.warn, true);
+    t.req = req.siteId ? { siteId: req.siteId } : { quick: Object.assign({}, req.quick) };
+    if (tabs.cur === tid) return onConnected(res);
+    const back = t.endpointId === res.endpointId && t.remoteDir ? t.remoteDir : '';
+    Object.assign(t, { conn: res, remoteDir: back || res.startDir, home: res.home, endpointId: res.endpointId, cache: new Map(), localDir: res.localDir || t.localDir, label: res.label });
+    if (res.quickHistory) state.quickHistory = res.quickHistory;
+    renderTabs(); saveTabs();
+    return toast(`Connected to ${res.label} (tab “${tabTitle(t)}”)`);
+  }
   if (res.code === 'TRUST_NEEDED' && res.trust) {
     const ok = await trustBox(res.trust);
-    if (ok) return connectWith(Object.assign({}, req, { acceptFingerprint: res.trust.fingerprint }), label);
+    if (ok) return connectWith(Object.assign({}, req, { acceptFingerprint: res.trust.fingerprint }), label, tid);
     return;
   }
   if (res.needsPassword) {
     const site = req.siteId ? state.sites.find(s => s.id === req.siteId) : null;
     const pw = await passwordBox(label || (site ? site.name : req.quick.host), { canSave: !!(site && site.logon === 'normal'), title: site && site.logon === 'key' ? 'Key passphrase' : 'Password' });
     if (!pw) return;
-    return connectWith(Object.assign({}, req, { password: pw.password, savePassword: pw.save }), label);
+    return connectWith(Object.assign({}, req, { password: pw.password, savePassword: pw.save }), label, tid);
   }
   errorBox('Could not connect', res.error);
+}
+// A server chosen in MY SERVERS, the recent connections or LIVE SYNC: in this
+// tab when it is free, in a new tab when this one is connected.
+function connectInTab(req, label) {
+  const t = curTab();
+  if (state.connecting) return toast('A connection is already being opened.', true);
+  if (t && (t.conn || state.conn)) { newTab(); }
+  return connectWith(req, label);
 }
 
 async function quickConnect() {
@@ -1261,6 +1295,10 @@ async function quickConnect() {
 
 function onConnected(res) {
   state.conn = res;
+  const t = curTab();
+  // Reconnecting a tab to the same server: back to the folder it showed.
+  const back = t && t.endpointId === res.endpointId && t.remoteDir ? t.remoteDir : '';
+  if (t) { t.conn = res; t.label = res.label; t.home = res.home; t.endpointId = res.endpointId; }
   fillBarFromConn();
   if (res.quickHistory) state.quickHistory = res.quickHistory;
   $('q-pass').value = '';
@@ -1268,25 +1306,227 @@ function onConnected(res) {
   panels.remote.dir = '';
   syncOff();
   renderConnPill();
-  panels.remote.load(res.startDir, { fallback: res.home });
+  panels.remote.load(back || res.startDir, { fallback: back ? res.startDir : res.home });
   if (res.localDir) panels.local.load(res.localDir);
   else panels.local.updateFoot();          // UPLOAD becomes available for what is selected
+  renderTabs(); saveTabs();
   toast(`Connected to ${res.label}`);
 }
 
 function setDisconnected() {
   state.conn = null;
+  const t = curTab(); if (t) t.conn = null;
   syncOff();
   panels.remote.entries = []; panels.remote.view = []; panels.remote.dir = ''; panels.remote.cache.clear();
   renderConnPill();
   panels.remote.render();
   panels.local.updateFoot();
+  renderTabs();
 }
 
 async function disconnect() {
   if (!state.conn) return;
+  API.tabSelect(tabs.cur);
   await API.disconnect();
   setDisconnected();
+}
+
+// ══ Tabs (0.10.0, Noar: "comme FileZilla") ══════════════════════════════════
+// One tab = one server connection for browsing, with its own quick bar, its
+// own local folder and its own server folder. The queue stays one for all:
+// every transfer already knows its server and has its own connections, so a
+// tab closed keeps its transfers going. The tabs come back after a restart,
+// disconnected; RECONNECT (or a click on CONNECT) opens them again.
+// The panels are the same two objects for every tab: switching saves what
+// one tab shows and puts the other's back (its server folder from its cache
+// at once, then refreshed).
+const tabs = { list: [], cur: null, seq: 1 };
+const tabById = id => tabs.list.find(t => t.id === id);
+const curTab = () => tabById(tabs.cur);
+function makeTab(o) {
+  const x = o || {};
+  const id = x.id && /^t\d{1,9}$/.test(x.id) && !tabById(x.id) ? x.id : 't' + tabs.seq;
+  tabs.seq = Math.max(tabs.seq, Number(id.slice(1)) + 1);
+  return {
+    id, conn: null, req: x.req || null, label: x.label || '', home: x.home || '', endpointId: x.endpointId || '',
+    proto: x.proto && PROTO_INFO[x.proto] ? x.proto : state.proto,
+    quick: Object.assign({ host: '', port: '', user: '' }, x.quick || {}), barDirty: false,
+    localDir: x.localDir || (panels.local && panels.local.dir) || '', remoteDir: x.remoteDir || '', cache: new Map(),
+  };
+}
+function tabTitle(t) {
+  const c = t.conn;
+  // A quick connection: its server's name (the user and the port are in the tooltip).
+  if (c) return String(c.endpointId || '').startsWith('quick:') ? (c.host ? c.host + (c.port && c.port !== DEFAULT_PORT[c.protocol] ? ':' + c.port : '') : c.address || c.label) : c.label;
+  if (t.label) return t.label;
+  if (t.req && t.req.siteId) { const s = state.sites.find(x => x.id === t.req.siteId); if (s) return s.name; }
+  return t.quick.host || 'New tab';
+}
+function tabProto(t) { return t.conn ? t.conn.protocol : t.req && t.req.siteId ? ((state.sites.find(x => x.id === t.req.siteId) || {}).protocol || t.proto) : t.proto; }
+// What a tab shows is kept when another one comes forward.
+function keepTab(t) {
+  if (!t || t.id !== tabs.cur) return;
+  t.conn = state.conn;
+  t.proto = state.proto;
+  t.quick = { host: $('q-host').value, port: $('q-port').value, user: $('q-user').value };
+  t.barDirty = !!state.barDirty;
+  t.localDir = panels.local.dir || t.localDir;
+  if (state.conn) t.remoteDir = panels.remote.dir || t.remoteDir;
+  t.cache = panels.remote.cache;
+}
+function showTab(t) {
+  API.tabSelect(t.id);
+  syncOff();
+  state.conn = t.conn;
+  setProto(t.proto || 'sftp');
+  $('q-host').value = t.quick.host || ''; $('q-port').value = t.quick.port || ''; $('q-user').value = t.quick.user || ''; $('q-pass').value = '';
+  state.barDirty = !!t.barDirty;
+  // An answer still coming for the other tab must not land in this one.
+  panels.remote.loading++;
+  panels.remote.cache = t.cache || new Map();
+  if (t.conn) {
+    panels.remote.dir = '';
+    panels.remote.load(t.remoteDir || t.conn.startDir, { fallback: t.conn.home || t.home });
+  } else {
+    panels.remote.entries = []; panels.remote.view = []; panels.remote.dir = '';
+    panels.remote.render();
+  }
+  if (t.localDir && t.localDir !== panels.local.dir) panels.local.load(t.localDir);
+  else panels.local.updateFoot();
+  renderConnPill(); renderConnectBtn(); renderTabs();
+  if (cu.on) renderConnecting();
+}
+function selectTab(id) {
+  if (id === tabs.cur || !tabById(id)) return;
+  keepTab(curTab());
+  tabs.cur = id;
+  showTab(curTab());
+  saveTabs();
+}
+function newTab() {
+  keepTab(curTab());
+  const t = makeTab({ localDir: panels.local.dir });
+  tabs.list.push(t);
+  tabs.cur = t.id;
+  showTab(t);
+  saveTabs();
+  $('q-host').focus();
+  return t;
+}
+async function closeTab(id) {
+  const t = tabById(id);
+  if (!t) return;
+  if (cu.on && cu.tab === id) API.connectCancel();
+  if (tabs.list.length === 1) {                     // the last one: emptied, never gone
+    if (t.conn) await disconnect();
+    Object.assign(t, makeTab({ id: t.id, localDir: panels.local.dir }));
+    showTab(t); saveTabs();
+    return;
+  }
+  const i = tabs.list.indexOf(t);
+  await API.tabClose(id);
+  tabs.list.splice(i, 1);
+  if (tabs.cur === id) { tabs.cur = (tabs.list[i] || tabs.list[i - 1]).id; showTab(curTab()); }
+  else renderTabs();
+  saveTabs();
+}
+async function closeOtherTabs(id) { for (const t of tabs.list.slice()) if (t.id !== id) await closeTab(t.id); }
+function stepTab(d) {
+  const i = tabs.list.findIndex(t => t.id === tabs.cur);
+  const n = tabs.list.length;
+  if (n > 1) selectTab(tabs.list[(i + d + n) % n].id);
+}
+async function reconnectTab(t) {
+  if (!t || !t.req) return;
+  if (t.req.siteId) { const s = state.sites.find(x => x.id === t.req.siteId); if (!s) return toast('This server is no longer in MY SERVERS.', true); return connectWith({ siteId: s.id }, s.name, t.id); }
+  return connectWith({ quick: t.req.quick }, t.req.quick.host, t.id);
+}
+// Saved in the profile: what each tab points at, never a password.
+let saveTabsT = null;
+function saveTabs() {
+  clearTimeout(saveTabsT);
+  saveTabsT = setTimeout(() => {
+    keepTab(curTab());
+    const list = tabs.list.slice(0, 30).map(t => ({
+      id: t.id, label: tabTitle(t), req: t.req, proto: t.proto, quick: t.quick, home: t.home,
+      endpointId: t.conn ? t.conn.endpointId : t.endpointId,
+      localDir: t.localDir, remoteDir: t.remoteDir,
+    }));
+    state.ui.tabs = list; state.ui.tabCur = tabs.cur;
+    API.saveUi({ tabs: list, tabCur: tabs.cur });
+  }, 400);
+}
+function restoreTabs() {
+  const saved = Array.isArray(state.ui.tabs) ? state.ui.tabs.slice(0, 30) : [];
+  for (const o of saved) if (o && typeof o === 'object') tabs.list.push(makeTab(o));
+  if (!tabs.list.length) tabs.list.push(makeTab({ localDir: panels.local.dir }));
+  tabs.cur = tabById(state.ui.tabCur) ? state.ui.tabCur : tabs.list[0].id;
+  const t = curTab();
+  API.tabSelect(t.id);
+  setProto(t.proto || state.proto);
+  $('q-host').value = t.quick.host || ''; $('q-port').value = t.quick.port || ''; $('q-user').value = t.quick.user || '';
+  renderTabs();
+  return t;
+}
+function renderTabs() {
+  const box = $('tabs');
+  if (!box) return;
+  const X = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="m7 7 10 10"/><path d="M17 7 7 17"/></svg>';
+  const html = tabs.list.map((t, k) => {
+    const on = t.id === tabs.cur, busy = cu.on && cu.tab === t.id;
+    const c = t.id === tabs.cur ? state.conn : t.conn;
+    const pr = c || t.req || t.quick.host ? tabProto(t) : '';   // an empty tab has no protocol yet
+    const tip = busy ? `Connecting to ${cu.label}… (× cancels)`
+      : c ? `${c.url || c.label}\n${PROTO_LABEL[c.protocol]}${c.protocol === 'ftp' ? ': password and files travel in clear' : ', encrypted'}\nRight-click: copy the address, disconnect…`
+      : t.req ? 'Not connected. Click RECONNECT in the server panel.' : 'Not connected';
+    const key = k < 9 ? ` (${isMac() ? '⌘' : 'Ctrl+'}${k + 1})` : '';
+    return `<div class="tab${on ? ' on' : ''}" role="tab" aria-selected="${on}" data-tab="${t.id}" data-tip="${esc(tip + key)}">`
+      + `<span class="d${busy ? ' busy' : c ? ' g' : ''}"></span><span class="n">${esc(tabTitle(t))}</span>`
+      + `${pr && PROTO_LABEL[pr] ? `<span class="p${pr === 'ftp' ? ' warn' : ''}">${esc(pr === 'ftps-implicit' ? 'FTPS-i' : PROTO_LABEL[pr])}</span>` : ''}`
+      + `<button class="x" data-close="${t.id}" aria-label="Close this tab" tabindex="-1">${X}</button></div>`;
+  }).join('') + `<button class="tab-plus" id="tab-new" aria-label="New tab" data-tip="New tab (${isMac() ? '⌘' : 'Ctrl+'}T)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg></button>`;
+  setHtml(box, html);
+  const q = $('quick'); if (q) q.classList.toggle('tab0', !!tabs.list.length && tabs.list[0].id === tabs.cur);
+  const on = box.querySelector('.tab.on');
+  if (on && on.scrollIntoView) on.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+}
+function bindTabs() {
+  const box = $('tabs');
+  box.addEventListener('click', ev => {
+    const x = ev.target.closest('[data-close]');
+    if (x) { ev.stopPropagation(); return closeTab(x.dataset.close); }
+    if (ev.target.closest('#tab-new')) return newTab();
+    const t = ev.target.closest('.tab');
+    if (t) selectTab(t.dataset.tab);
+  });
+  // Middle click closes, as in a browser.
+  box.addEventListener('auxclick', ev => { const t = ev.target.closest('.tab'); if (t && ev.button === 1) closeTab(t.dataset.tab); });
+  box.addEventListener('dblclick', ev => { if (ev.target === box) newTab(); });
+  box.addEventListener('contextmenu', ev => {
+    const el = ev.target.closest('.tab');
+    if (!el) return;
+    ev.preventDefault();
+    const t = tabById(el.dataset.tab);
+    const c = t.id === tabs.cur ? state.conn : t.conn;
+    showMenu(ev.clientX, ev.clientY, [
+      c ? { label: 'Copy the address', icon: I.copy, action: () => { API.copyText(c.url || c.label); toast('Address copied'); } } : null,
+      !c && t.req ? { label: 'Reconnect', icon: I.server, action: () => { selectTab(t.id); reconnectTab(t); } } : null,
+      c ? { label: 'Disconnect', icon: I.trash, action: async () => { selectTab(t.id); await disconnect(); } } : null,
+      'sep',
+      { label: 'New tab', icon: I.plus, action: newTab },
+      { label: 'Close this tab', icon: I.trash, action: () => closeTab(t.id) },
+      tabs.list.length > 1 ? { label: 'Close the other tabs', icon: I.trash, action: () => closeOtherTabs(t.id) } : null,
+    ].filter(Boolean));
+  });
+  document.addEventListener('keydown', ev => {
+    const mod = isMac() ? ev.metaKey : ev.ctrlKey;
+    if (ev.ctrlKey && ev.key === 'Tab') { ev.preventDefault(); return stepTab(ev.shiftKey ? -1 : 1); }
+    if (!mod || ev.altKey || isDialogOpen()) return;
+    if (/^[1-9]$/.test(ev.key) && !ev.shiftKey) {
+      const t = tabs.list[Number(ev.key) - 1];
+      if (t) { ev.preventDefault(); selectTab(t.id); }
+    }
+  });
 }
 
 
@@ -1560,7 +1800,7 @@ function showQuickHistory() {
     if (q.siteId) {
       const s = state.sites.find(x => x.id === q.siteId);
       if (!s) return null;                       // a site deleted since
-      return { label: `${s.name} · ${addr(s)}`, key: PROTO_INFO[s.protocol] ? PROTO_INFO[s.protocol][0] : '', icon: I.server, action: () => connectWith({ siteId: s.id }, s.name) };
+      return { label: `${s.name} · ${addr(s)}`, key: PROTO_INFO[s.protocol] ? PROTO_INFO[s.protocol][0] : '', icon: I.server, action: () => connectInTab({ siteId: s.id }, s.name) };
     }
     if (!PROTO_INFO[q.protocol]) return null;
     return {
@@ -1638,7 +1878,7 @@ async function browseLiveBookmark(id) {
   closeSites();
   if (document.body.classList.contains('live-on')) { sy.liveHidden = true; renderLive(); API.directFast(false); }
   const s = state.sites.find(x => x.id === p.siteId);
-  await connectWith({ siteId: p.siteId }, s && s.name);
+  await connectInTab({ siteId: p.siteId }, s && s.name);
   if (state.conn && p.remote) panels.remote.load(p.remote);
 }
 
@@ -2124,7 +2364,7 @@ function bindSites() {
       sm.lastClick = null;
       closeSites();
       const s = state.sites.find(x => x.id === id);
-      connectWith({ siteId: id }, s && s.name);
+      connectInTab({ siteId: id }, s && s.name);
       return;
     }
     sm.lastClick = { id, t: now };
@@ -2213,7 +2453,7 @@ function bindSites() {
   let scrollT = null;
   $('sm-list').addEventListener('scroll', () => { clearTimeout(scrollT); scrollT = setTimeout(() => { state.ui.sitesScroll = $('sm-list').scrollTop; API.saveUi({ sitesScroll: state.ui.sitesScroll }); }, 300); });
   $('sm-save').onclick = async () => { const s = await saveSite(); if (s) toast('Saved'); };
-  $('sm-connect').onclick = async () => { const s = await saveSite(); if (!s) return; closeSites(); connectWith({ siteId: s.id }, s.name); };
+  $('sm-connect').onclick = async () => { const s = await saveSite(); if (!s) return; closeSites(); connectInTab({ siteId: s.id }, s.name); };
   $('sm-import').onclick = importSites;
   $('sm-export').onclick = () => {
     const r = $('sm-export').getBoundingClientRect();
@@ -4814,10 +5054,12 @@ async function init() {
   $('ver').textContent = 'v' + d.version;
   panels = { local: new Panel('local'), remote: new Panel('remote') };
   setProto(state.ui.lastProto || 'sftp');
+  const firstTab = restoreTabs();
+  bindTabs();
   bindTooltips(); bindSplitters(); bindSites(); bindQueue(); bindSettings(); bindSync();
   renderConnPill(); renderAfterBtn(); renderNtfyBtn(); renderQueueHead(); renderVerifySwitch(); renderSync(); renderSparkVisibility();
   panels.remote.render();
-  panels.local.load(d.lastLocalDir || d.home);
+  panels.local.load(firstTab.localDir || d.lastLocalDir || d.home);
   setQTab('queue');
 
   // Quick connect
@@ -4919,7 +5161,11 @@ async function init() {
   });
   API.on('scan-progress', p => {
     $('scan-txt').textContent = p.done ? 'Done' : `Listing folders… ${p.found} items${p.started ? ' · transfers started' : ''}`;
-    if (p.started) { $('scan').classList.add('open'); setQTab('queue'); }       // the transfers run while the listing goes on
+    // The transfers run while a folder is still being listed: the pill stays
+    // (only while a listing goes on: plain files have no pill, 0.9.11).
+    if (p.started) setQTab('queue');
+    if (p.started && !p.done && state.scanning) $('scan').classList.add('open');
+    if (p.done && !state.scanning) $('scan').classList.remove('open');
   });
   API.on('log', lines => {
     state.logs.push(...lines);
@@ -4937,6 +5183,14 @@ async function init() {
       case 'sites': return openSites();
       case 'quick': $('q-host').focus(); return $('q-host').select();
       case 'disconnect': return disconnect();
+      case 'tab-new': return newTab();
+      case 'tab-close':
+        // ⌘W closes what is in front first: MY SERVERS, the settings.
+        if ($('ov-sites').classList.contains('open')) return closeSites();
+        if ($('ov-settings').classList.contains('open')) return $('ov-settings').classList.remove('open');
+        return closeTab(tabs.cur);
+      case 'tab-next': return stepTab(1);
+      case 'tab-prev': return stepTab(-1);
       case 'sites-import': openSites(); return importSites();
       case 'sites-export': return Promise.resolve(openSites()).then(() => setTimeout(() => $('sm-export').click(), 60));
       case 'mini': return setMini(!!m.value);

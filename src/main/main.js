@@ -230,47 +230,67 @@ function endpointLabel(endpointId) {
 // Separate from the transfer connections: browsing must never wait behind a
 // 40 GB upload, and the queue must never lose its connection because someone
 // connected the panel to another server.
-const browser = { endpointId: null, remote: null, label: '', ep: null };
+// One per tab of the window (0.10.0, Noar: tabs as in FileZilla). The window
+// says which tab it works in (tab-select, sent before the requests, in order):
+// every handler takes its tab's browser at its very start, so an answer that
+// arrives after a switch still belongs to the tab that asked.
+const browsers = new Map();
+let curTab = 't1';
+function newBrowser(tab) { return { tab, endpointId: null, remote: null, label: '', ep: null, reconnecting: null, closed: false }; }
+function B(tab) {
+  const k = String(tab || curTab);
+  let b = browsers.get(k);
+  if (!b) { b = newBrowser(k); browsers.set(k, b); }
+  return b;
+}
+function closeBrowser(b) {
+  if (b.remote) { try { b.remote.close(); } catch (_) {} }
+  Object.assign(b, { endpointId: null, remote: null, label: '', ep: null });
+}
+function closeAllBrowsers() { for (const b of browsers.values()) closeBrowser(b); }
 
 // An action in several steps (deleting a folder, listing a folder to queue
-// it) is bound to the server it started on: if the panel connects to another
-// server meanwhile, the next step stops instead of carrying on over there.
-function browserSession() { return { endpointId: browser.endpointId }; }
+// it) is bound to the tab and the server it started on: if that tab connects
+// to another server meanwhile, the next step stops instead of carrying on
+// over there.
+function browserSession(b) { const x = b || B(); return { b: x, endpointId: x.endpointId }; }
 function sameServer(sess) {
-  if (sess && sess.endpointId !== browser.endpointId) {
+  if (sess && (sess.endpointId !== sess.b.endpointId || sess.b.closed)) {
     throw new RemoteError('The panel connected to another server meanwhile: stopped here.', { code: 'SERVER_CHANGED', fatal: true });
   }
 }
 
-async function reconnectBrowser() {
+async function reconnectBrowser(b) {
   // Several actions failing at once share one reconnection (no connection
   // left open behind them).
-  if (browser.reconnecting) return browser.reconnecting;
-  const id = browser.endpointId;
-  browser.reconnecting = (async () => {
-    log('info', `Reconnecting to ${browser.label}…`);
-    try { browser.remote.close(); } catch (_) {}
+  if (b.reconnecting) return b.reconnecting;
+  const id = b.endpointId;
+  b.reconnecting = (async () => {
+    log('info', `Reconnecting to ${b.label}…`);
+    try { b.remote.close(); } catch (_) {}
     const ep = await resolveEndpoint(id);
     const r = createRemote(ep, { log });
     await r.connect();
-    if (browser.endpointId !== id) { try { r.close(); } catch (_) {} throw new RemoteError('The panel connected to another server meanwhile: stopped here.', { code: 'SERVER_CHANGED', fatal: true }); }
-    browser.remote = r;
+    if (b.endpointId !== id || b.closed) { try { r.close(); } catch (_) {} throw new RemoteError('The panel connected to another server meanwhile: stopped here.', { code: 'SERVER_CHANGED', fatal: true }); }
+    b.remote = r;
     return r;
   })();
-  try { return await browser.reconnecting; } finally { browser.reconnecting = null; }
+  try { return await b.reconnecting; } finally { b.reconnecting = null; }
 }
 
-async function withBrowser(fn, sess) {
-  if (!browser.remote) throw new RemoteError('Not connected.', { code: 'NOT_CONNECTED' });
+async function withBrowser(fn, sess0) {
+  const sess = sess0 || browserSession();
+  const b = sess.b;
+  if (!b.remote) throw new RemoteError('Not connected.', { code: 'NOT_CONNECTED' });
   sameServer(sess);
-  try { return await fn(browser.remote); }
+  try { return await fn(b.remote); }
   catch (e) {
-    const err = RemoteError.from(e, browser.ep && browser.ep.protocol);
+    const err = RemoteError.from(e, b.ep && b.ep.protocol);
     if (!err.network) throw err;
     sameServer(sess);
     // FTP servers hang up on an idle connection after a few minutes, and a
     // laptop that slept has lost all of them: reconnect once, quietly.
-    const r = await reconnectBrowser();
+    const r = await reconnectBrowser(b);
     sameServer(sess);
     return fn(r);
   }
@@ -373,8 +393,7 @@ function createWindow() {
   win.on('closed', () => {
     win = null;
     miniPrev = null;                // a new window starts full size
-    if (browser.remote) { try { browser.remote.close(); } catch (_) {} }
-    Object.assign(browser, { endpointId: null, remote: null, label: '', ep: null });
+    closeAllBrowsers();
   });
 }
 
@@ -389,6 +408,9 @@ function buildMenu() {
       { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' }, { type: 'separator' }, { role: 'quit' },
     ] }] : []),
     { label: 'File', submenu: [
+      { label: 'New Tab', accelerator: 'CmdOrCtrl+T', click: m('tab-new') },
+      { label: 'Close Tab', accelerator: 'CmdOrCtrl+W', click: m('tab-close') },
+      { type: 'separator' },
       { label: 'My Servers…', accelerator: 'CmdOrCtrl+S', click: m('sites') },
       { label: 'Quick Connect', accelerator: 'CmdOrCtrl+K', click: m('quick') },
       { label: 'Disconnect', accelerator: 'CmdOrCtrl+D', click: m('disconnect') },
@@ -396,7 +418,8 @@ function buildMenu() {
       { label: 'Import sites…', click: m('sites-import') },
       { label: 'Export sites…', click: m('sites-export') },
       { type: 'separator' },
-      IS_MAC ? { role: 'close' } : { role: 'quit' },
+      // ⌘W closes a tab (0.10.0); the window closes with ⇧⌘W.
+      IS_MAC ? { role: 'close', accelerator: 'CmdOrCtrl+Shift+W' } : { role: 'quit' },
     ] },
     // Without an Edit menu, macOS gives text fields no copy and paste.
     { role: 'editMenu' },
@@ -539,7 +562,7 @@ app.on('will-quit', e => {
   }
   try { if (syncer) syncer.stopAll(); } catch (_) {}
   try { if (queue) { queue.pause(); queue.closeAll(); } } catch (_) {}
-  try { if (browser.remote) browser.remote.close(); } catch (_) {}
+  try { closeAllBrowsers(); } catch (_) {}
 });
 app.on('window-all-closed', () => { if (!IS_MAC) app.quit(); });
 
@@ -1426,6 +1449,7 @@ ipcMain.handle('connect-cancel', async () => {
 });
 
 ipcMain.handle('connect', async (_, req) => {
+  const browser = B();                    // this tab's, taken before anything waits
   let endpointId, site = null, attempt = null;
   try {
     if (req.siteId) {
@@ -1464,7 +1488,7 @@ ipcMain.handle('connect', async (_, req) => {
     log('info', `Connecting to ${describe(ep)}…`);
     try { await remote.connect(); }
     finally { if (connecting === attempt) connecting = null; }
-    if (attempt.cancelled) { try { remote.close(); } catch (_) {} return { ok: false, cancelled: true, error: 'Cancelled.' }; }
+    if (attempt.cancelled || browser.closed) { try { remote.close(); } catch (_) {} return { ok: false, cancelled: true, error: 'Cancelled.' }; }
 
     // Connected: the new connection replaces the old one.
     if (browser.remote) { try { browser.remote.close(); } catch (_) {} }
@@ -1577,8 +1601,21 @@ ipcMain.handle('speedtest-save', (_, siteId) => {
 });
 
 ipcMain.handle('disconnect', async () => {
-  if (browser.remote) { try { await browser.remote.close(); } catch (_) {} log('info', `Disconnected from ${browser.label}`); }
-  Object.assign(browser, { endpointId: null, remote: null, label: '', ep: null });
+  const b = B();
+  if (b.remote) log('info', `Disconnected from ${b.label}`);
+  closeBrowser(b);
+  return true;
+});
+// The tabs (0.10.0). tab-select is a message, not a request: it reaches this
+// process before the requests the window sends after it.
+ipcMain.on('tab-select', (_, id) => { if (/^t\d{1,9}$/.test(String(id))) curTab = String(id); });
+ipcMain.handle('tab-close', (_, id) => {
+  const b = browsers.get(String(id));
+  if (!b) return true;
+  if (b.remote) log('info', `Disconnected from ${b.label} (tab closed)`);
+  b.closed = true;
+  closeBrowser(b);
+  browsers.delete(String(id));
   return true;
 });
 
@@ -1656,8 +1693,9 @@ ipcMain.handle('remote-delete', async (_, items) => {
 });
 ipcMain.handle('remote-delete-cancel', () => { for (const t of deleteTokens) t.cancelled = true; return true; });
 ipcMain.handle('remote-url', (_, p) => {
-  if (!browser.ep) return '';
-  return describe(browser.ep) + remotePath(p).split('/').map(encodeURIComponent).join('/');
+  const b = B();
+  if (!b.ep) return '';
+  return describe(b.ep) + remotePath(p).split('/').map(encodeURIComponent).join('/');
 });
 
 // ── IPC: the queue ─────────────────────────────────────────────────────────
@@ -1667,14 +1705,14 @@ ipcMain.handle('remote-url', (_, p) => {
 // Every listing in progress (two can overlap): CANCEL, PAUSE and STOP reach them all.
 const scanTokens = new Set();
 ipcMain.handle('queue-add', async (_, req) => {
-  const endpointId = req.endpointId || browser.endpointId;
+  const scanSess = browserSession();       // this tab's, before anything waits
+  const endpointId = req.endpointId || scanSess.endpointId;
   if (!endpointId) return { ok: false, error: 'Connect to a server first.' };
   const label = endpointLabel(endpointId);
   const token = { cancelled: false };
   scanTokens.add(token);
   const specs = [];
   const base = { endpointId, endpointLabel: label, existing: EXISTING_ACTIONS.includes(req.existing) ? req.existing : null };
-  const scanSess = { endpointId };
   let found = 0, lastSent = 0;
   const tick = () => { found++; const now = Date.now(); if (now - lastSent > 200) { lastSent = now; send('scan-progress', { found }); } };
   const revived = [];
