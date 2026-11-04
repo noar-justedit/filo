@@ -815,6 +815,103 @@ SEC('local writes are grouped', async () => {
   ok(calls < 256 / 2, `${calls} writes for 256 pieces`);
 });
 
+SEC('a local file is closed once, after its last write', async () => {
+  // Noar, 03/11/2026: two files of a 100 GB FTP download ended on "EBADF: bad
+  // file descriptor, close". A descriptor closed while a write was on its way,
+  // or closed twice, is a number the system gives again to the next file
+  // opened by any transfer: that one then loses its descriptor.
+  const { LocalSink } = require('../src/main/proto/local');
+  const d = scratch();
+  const orig = { write: fs.write, close: fs.close, fsync: fs.fsync };
+  const events = [];
+  fs.write = function (fd, buf, off, len, pos, cb) { events.push(`w+${fd}`); setTimeout(() => orig.write.call(fs, fd, buf, off, len, pos, (e, n) => { events.push(`w-${fd}`); cb(e, n); }), 30); };
+  fs.close = function (fd, cb) { events.push(`c${fd}`); return orig.close.call(fs, fd, cb); };
+  const closes = (fd, from) => events.slice(from || 0).filter(e => e === `c${fd}`).length;
+  try {
+    // 1. Destroyed while a write is on its way: closed once, after the write.
+    let s1 = new LocalSink(path.join(d, 'a.bin'), 0);
+    await new Promise(r => setTimeout(r, 20));      // opened
+    const fd1 = s1.fd, m1 = events.length;
+    s1.write(Buffer.alloc(1024, 1));
+    await new Promise(r => setImmediate(r));
+    s1.destroy();
+    // Another file opened at once may get the same number.
+    const other = fs.openSync(path.join(d, 'other.bin'), 'w');
+    await new Promise(r => s1.once('close', r));
+    await new Promise(r => setTimeout(r, 60));
+    eq(closes(fd1, m1), 1, 'destroyed during a write: one close');
+    ok(events.indexOf(`w-${fd1}`) < events.lastIndexOf(`c${fd1}`), 'the close waits for the write under way');
+    let otherOk = true; try { fs.fstatSync(other); fs.writeSync(other, 'still mine'); } catch (_) { otherOk = false; }
+    ok(otherOk, 'the file opened meanwhile keeps its descriptor');
+    orig.close.call(fs, other, () => {});
+    // 2. Destroyed while the end is being flushed: one close, no error.
+    fs.fsync = function (fd, cb) { setTimeout(() => orig.fsync.call(fs, fd, cb), 40); };
+    const m2 = events.length;
+    const s2 = new LocalSink(path.join(d, 'b.bin'), 0);
+    const err2 = new Promise(r => { s2.on('error', r); s2.on('close', () => r(null)); });
+    await new Promise(r => setTimeout(r, 20));      // opened
+    const fd2 = s2.fd;
+    s2.end(Buffer.alloc(2048, 2));
+    await new Promise(r => setTimeout(r, 45));      // the write done, the flush under way
+    s2.destroy();
+    const e2 = await err2;
+    await new Promise(r => setTimeout(r, 80));
+    ok(!e2 || e2.code !== 'EBADF', `destroyed during the flush: no EBADF (${e2 && e2.code})`);
+    eq(closes(fd2, m2), 1, 'destroyed during the flush: one close');
+    // 3. The normal end: complete on disk, one close.
+    const s3 = new LocalSink(path.join(d, 'c.bin'), 0);
+    await new Promise(r => setTimeout(r, 20));
+    const fd3 = s3.fd, m3 = events.length;
+    await new Promise((res, rej) => { s3.on('finish', res).on('error', rej); s3.end(Buffer.alloc(4096, 3)); });
+    eq(fs.readFileSync(path.join(d, 'c.bin')).length, 4096, 'complete when "finish" comes');
+    s3.destroy();
+    await new Promise(r => setTimeout(r, 20));
+    eq(closes(fd3, m3), 1, 'finished, then destroyed: one close');
+  } finally { Object.assign(fs, orig); }
+  // 4. A flush that fails for real is an error (it was silently ignored).
+  const s4 = new LocalSink(path.join(d, 'd.bin'), 0);
+  const of = fs.fsync;
+  fs.fsync = (fd, cb) => setImmediate(() => cb(Object.assign(new Error('EIO: i/o error, fsync'), { code: 'EIO' })));
+  let e4 = null;
+  try { await new Promise((res, rej) => { s4.on('finish', res).on('error', rej); s4.end(Buffer.alloc(10)); }); } catch (e) { e4 = e; } finally { fs.fsync = of; }
+  eq(e4 && e4.code, 'EIO', 'a disk error on the flush is reported');
+  // 5. A volume that cannot flush (ENOTSUP) is not an error.
+  const s5 = new LocalSink(path.join(d, 'e.bin'), 0);
+  fs.fsync = (fd, cb) => setImmediate(() => cb(Object.assign(new Error('ENOTSUP'), { code: 'ENOTSUP' })));
+  let e5 = null;
+  try { await new Promise((res, rej) => { s5.on('finish', res).on('error', rej); s5.end(Buffer.alloc(10)); }); } catch (e) { e5 = e; } finally { fs.fsync = of; }
+  eq(e5, null, 'a volume that cannot flush is not an error');
+});
+
+SEC('the log on disk takes turns and never grows past its limit', async () => {
+  const { LogFile } = require('../src/main/logfile');
+  const d = path.join(scratch(), 'logs');
+  const lf = new LogFile(d, { maxBytes: 4096, keep: 3, delayMs: 1 });
+  for (let i = 0; i < 400; i++) { lf.write({ t: Date.now(), level: i % 7 ? 'info' : 'warn', msg: `line ${i} ${'x'.repeat(60)}` }); if (i % 25 === 0) await lf.flush(); }
+  await lf.flush();
+  const files = fs.readdirSync(d).sort();
+  eq(files, ['filo.1.log', 'filo.2.log', 'filo.3.log', 'filo.log'], 'the current file and 3 older ones, no more');
+  const total = files.reduce((a, f) => a + fs.statSync(path.join(d, f)).size, 0);
+  ok(files.every(f => fs.statSync(path.join(d, f)).size <= 4096), 'no file past its limit');
+  ok(total <= 4 * 4096, `the whole stays under 4 × the limit (${total} bytes)`);
+  const last = fs.readFileSync(path.join(d, 'filo.log'), 'utf8').trim().split('\n').pop();
+  ok(/^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d{3} WARN  line 399 /.test(last), 'the newest line at the end of filo.log, with its date and level');
+  ok(/line 3\d\d/.test(fs.readFileSync(path.join(d, 'filo.1.log'), 'utf8')), 'the one before it in filo.1.log');
+  // Started again: it carries on in the same file, size counted.
+  const lf2 = new LogFile(d, { maxBytes: 4096, keep: 3, delayMs: 1 });
+  lf2.write({ t: Date.now(), level: 'error', msg: 'two\nlines' });
+  lf2.flushSync();
+  const tail = fs.readFileSync(path.join(d, 'filo.log'), 'utf8');
+  ok(/ERROR two\n {30}lines\n$/.test(tail), 'written at quit, a message on two lines kept readable');
+  // A folder that cannot be written never stops filo.
+  const blocked = path.join(scratch(), 'file-in-the-way');
+  fs.writeFileSync(blocked, 'x');
+  const lf3 = new LogFile(path.join(blocked, 'logs'), { delayMs: 1 });
+  lf3.write({ t: Date.now(), level: 'info', msg: 'nowhere' });
+  await lf3.flush(); lf3.flushSync();
+  ok(true, 'an unwritable log folder: no error thrown');
+});
+
 SEC('queue: resuming after a stop, a pause, a restart, or adding the file again', async () => {
   const { srv, ep, root } = await server({ latencyMs: 4 });
   SRV = srv; EP = ep; SRV_ROOT = () => root;

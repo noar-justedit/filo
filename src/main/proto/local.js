@@ -108,20 +108,37 @@ class LocalSink extends Writable {
   // opts.segment: one of several writers filling the same file — never
   // truncate it, neither at the start nor at the end.
   constructor(file, start, opts) {
-    // A large buffer (0.2.0): while one write is on its way, slow on a network
-    // drive, the network keeps filling the next one instead of waiting.
+    // A large buffer: while one write is on its way, slow on a network drive,
+    // the network keeps filling the next one instead of waiting.
     super({ highWaterMark: 8 * 1024 * 1024 });
     this.file = file;
     this.pos = Math.max(0, Number(start) || 0);
     this.segment = !!(opts && opts.segment);
     this.fd = null;
+    this.io = 0;                 // operations under way on the descriptor
+    this.whenIdle = [];          // what waits for them to end
+    this.closing = null;         // the one close, shared by whoever asks
   }
   _construct(cb) {
     // 'r+' keeps what is already there (resume); 'w' starts a new file.
     fs.open(this.file, this.pos > 0 || this.segment ? 'r+' : 'w', (err, fd) => { if (err) return cb(err); this.fd = fd; cb(); });
   }
+  // Every operation on the descriptor is counted, and the close waits for the
+  // ones under way. A descriptor is a number the system gives again to the
+  // next file opened by any transfer: closed while a write was still on its
+  // way, or closed twice, it would be another file that loses its descriptor
+  // or receives these bytes.
+  _op(run, cb) {
+    this.io++;
+    run((...a) => {
+      if (--this.io === 0) { const w = this.whenIdle; this.whenIdle = []; for (const f of w) f(); }
+      cb(...a);
+    });
+  }
   _write(chunk, _enc, cb) {
-    fs.write(this.fd, chunk, 0, chunk.length, this.pos, (err, n) => {
+    if (this.fd == null) return cb(Object.assign(new Error('The local file is already closed.'), { code: 'ECLOSED' }));
+    const fd = this.fd;
+    this._op(done => fs.write(fd, chunk, 0, chunk.length, this.pos, done), (err, n) => {
       if (err) return cb(err);
       this.pos += n;
       if (n < chunk.length) return this._write(chunk.subarray(n), null, cb);
@@ -129,25 +146,43 @@ class LocalSink extends Writable {
     });
   }
   // Everything that piled up while the previous write was running goes out as
-  // ONE write (0.2.0, accepted by Noar). SFTP delivers 32 KB pieces: written
-  // one by one, a network drive (SMB share, NAS, a virtual machine's shared
-  // folder) answers each of them before the next, and the copy crawls at a
-  // few MB/s (5.8 MB/s measured with 5 ms per write; 240 MB/s grouped).
+  // ONE write: SFTP delivers 32 KB pieces, and a network drive (SMB share, NAS)
+  // that answers each of them before the next crawls at a few MB/s.
   _writev(chunks, cb) {
     if (chunks.length === 1) return this._write(chunks[0].chunk, null, cb);
     this._write(Buffer.concat(chunks.map(c => c.chunk)), null, cb);
   }
 
+  // 'finish' means "on the disk": the end is cut (a resumed file that was
+  // LONGER than the source must not keep its old tail), the data flushed,
+  // the descriptor closed, before Node says the stream is done.
   _final(cb) {
-    // Cut anything past the end: a resumed file that was LONGER than the
-    // source must not keep its old tail.
-    const close = () => fs.fsync(this.fd, () => fs.close(this.fd, err => { this.fd = null; cb(err); }));
-    if (this.segment) return close();
-    fs.ftruncate(this.fd, this.pos, close);
+    const end = err => this._close(true, e => cb(err || e));
+    if (this.segment || this.fd == null) return end(null);
+    const fd = this.fd;
+    this._op(done => fs.ftruncate(fd, this.pos, done), err => end(err || null));
   }
-  _destroy(err, cb) {
-    if (this.fd == null) return cb(err);
-    fs.close(this.fd, () => { this.fd = null; cb(err); });
+  _destroy(err, cb) { this._close(false, () => cb(err)); }
+
+  // Closed once, after the last operation on the descriptor, whoever asks
+  // first (the end of the file, or a stop / an error that destroys it).
+  // `flush`: the data is pushed to the disk first; a volume that cannot do
+  // that (EINVAL, ENOTSUP) is not an error, any other failure is.
+  _close(flush, cb) {
+    if (!this.closing) {
+      this.closing = new Promise(resolve => {
+        const go = () => {
+          const fd = this.fd;
+          this.fd = null;
+          if (fd == null) return resolve(null);
+          const shut = e0 => fs.close(fd, e => resolve(e0 || e || null));
+          if (!flush) return shut(null);
+          fs.fsync(fd, e => shut(e && !['EINVAL', 'ENOTSUP', 'EOPNOTSUPP'].includes(e.code) ? e : null));
+        };
+        if (this.io) this.whenIdle.push(go); else go();
+      });
+    }
+    this.closing.then(e => cb(e));
   }
 }
 

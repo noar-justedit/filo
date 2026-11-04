@@ -4,6 +4,47 @@ All notable changes to filo are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/lang/fr/).
 
+## [0.10.1] — 2026-11-03
+
+### Added
+
+- **The log is kept on disk**: the lines of the LOG tab also go to
+  `logs/filo.log` in filo's profile folder, with the date to the millisecond
+  and the level, so that what happened is still there after filo is closed.
+  At 5 MB the file becomes `filo.1.log` and a new one starts; 4 old files are
+  kept, the whole never goes past 25 MB. **Log files** in the LOG tab opens
+  the folder. Never a password in it (nothing logged carries one).
+
+### Fixed
+
+- **"EBADF: bad file descriptor, close" on downloads** (two files of a 100 GB
+  FTP download). A local file being written could be closed while a write was
+  still on its way, or closed twice when a transfer was cut during its last
+  step. The system gives a closed file's number to the next file opened by any
+  transfer: the second close then closed ANOTHER transfer's file, which failed.
+  Each file now counts its writes in progress; it is closed once, after the
+  last one, whoever asks first (its end, a stop, an error). Affects FTP, FTPS
+  and SFTP without the Rust engine.
+- A disk that failed to flush a file at its end was silently ignored: it is
+  now an error (a volume that cannot flush at all, ENOTSUP / EINVAL, is not).
+
+### Changed
+
+- **RETRY starts the queue** (RETRY ALL at the end of a run, Retry in the
+  FAILED tab, right-click Retry), unless a start is scheduled for later.
+
+- Publishing: the publishing scripts (`scripts/push_github.*`) and internal
+  notes (`docs/notes/`) are no longer sent to GitHub; they stay in the ZIP.
+
+### Tests
+
+- 962 (FTP / FTPS real servers included). New: the log on disk takes turns
+  and never grows past its limit; a local file destroyed during
+  a write or during its final flush is closed once, after its last write, and
+  a file opened meanwhile keeps its descriptor (the old code crashed the
+  transfer process on this test); a real flush error is reported, a volume
+  that cannot flush is not.
+
 ## [0.10.0] — 2026-10-29
 
 ### Added

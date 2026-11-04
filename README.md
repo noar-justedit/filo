@@ -13,7 +13,7 @@ Licensed under the **GNU General Public License v3.0** (see [`LICENSE`](./LICENS
 
 ## Screenshots
 
-![filo 0.10.0 — connected to a site, three downloads, the first ones in segments](docs/screenshots/screenshot.png)
+![filo 0.10.1 — connected to a site, three downloads, the first ones in segments](docs/screenshots/screenshot.png)
 
 | My servers | Settings |
 |---|---|
@@ -40,6 +40,7 @@ Licensed under the **GNU General Public License v3.0** (see [`LICENSE`](./LICENS
 | **Protocols** | SFTP, FTPS (explicit and implicit), plain FTP (flagged as not encrypted). FTP passive or active |
 | **Two panels** | local and server side by side; drag and drop between them, or from the Finder / Explorer; synchronized browsing; favorite folders per server (the star); Desktop, Downloads and the mounted disks one click away on the local side; Space shows a local file in Quick Look (Mac) |
 | **Tabs** | one tab per server, as in FileZilla: each with its quick bar, its local folder and its server folder; one queue for all of them (a tab closed keeps its transfers going). ⌘T / Ctrl+T, ⌘W / Ctrl+W, ⌘1…9, Ctrl+Tab; the tabs come back after a restart, with RECONNECT |
+| **Log** | the LOG tab is also kept on disk (`logs/filo.log` in the profile folder, a few files of 5 MB that take turns, 25 MB at most); **Log files** opens the folder |
 | **Queue** | parallel transfers, saved continuously: a crash or a power cut loses nothing. Pause, resume, stop or retry one file or the whole queue; start it at a time of the day (right-click START) |
 | **Auto** | measures how many simultaneous transfers are fastest for each server (MB/s and files/s), and stays under a limit the server enforces |
 | **Segments** | a large file goes over several SFTP connections at once — the way past the per-connection limit on long-distance links |
@@ -169,10 +170,12 @@ Real FTP / FTPS servers can be added to the tests with environment variables
 
 ## Publishing
 
-Unzip the release ZIP, then double-click `scripts/push_github.command` (macOS)
-or `scripts/push_github.bat` (Windows, needs Git for Windows) in the folder:
-GitHub becomes exactly that folder, except the maintainer's own notes (they
-stay in the ZIP). Then create the Release for the tag `v<version>` and attach
+Done by the maintainer from the release ZIP, which carries the publishing
+scripts (they are not in this repository): `scripts/push_github.command`
+(macOS) or `scripts/push_github.bat` (Windows, needs Git for Windows),
+double-clicked in the unzipped folder. GitHub becomes exactly that folder,
+except the maintainer's own files (notes, rules for the AIs, release texts,
+the publishing scripts), which stay in the ZIP. Then create the Release for the tag `v<version>` and attach
 the builds; the text for it comes with the ZIP. Run `push_github.command` once more
 afterwards: it sends `version.json` last, so nobody is told about an update
 before its files can be downloaded.

@@ -162,8 +162,18 @@ const LOG_MAX = 3000;
 const logLines = [];
 let logPending = [];
 let logTimer = null;
+// The same lines also go to <profile>/logs/filo.log (core of it in logfile.js:
+// a few files of 5 MB that take turns), opened once the app is ready.
+let logFile = null;
+function openLogFile() {
+  const { LogFile } = require('./logfile');
+  logFile = new LogFile(path.join(app.getPath('userData'), 'logs'));
+  logFile.write({ t: Date.now(), level: 'info', msg: `filo ${appVersion()} started (${process.platform} ${require('os').release()}, ${process.arch})` });
+  for (const l of logLines) logFile.write(l);       // what came before the file was open
+}
 function log(level, msg) {
   const line = { t: Date.now(), level, msg: String(msg) };
+  if (logFile) logFile.write(line);
   logLines.push(line);
   if (logLines.length > LOG_MAX) logLines.splice(0, logLines.length - LOG_MAX);
   logPending.push(line);
@@ -446,6 +456,7 @@ function buildMenu() {
 
 // ── Lifecycle ──────────────────────────────────────────────────────────────
 app.whenReady().then(() => {
+  openLogFile();
   prefs = new Prefs(app.getPath('userData')).load();
   // Which network this is, for the speed profiles (read again every minute).
   netid.refresh(); setInterval(() => netid.refresh(), 60000).unref();
@@ -563,6 +574,7 @@ app.on('will-quit', e => {
   try { if (syncer) syncer.stopAll(); } catch (_) {}
   try { if (queue) { queue.pause(); queue.closeAll(); } } catch (_) {}
   try { closeAllBrowsers(); } catch (_) {}
+  try { if (logFile) { log('info', 'filo quits'); logFile.flushSync(); } } catch (_) {}
 });
 app.on('window-all-closed', () => { if (!IS_MAC) app.quit(); });
 
@@ -1250,6 +1262,13 @@ ipcMain.handle('after-action-run', async (_, action, clean) => {
   return power.run(action, { onQuit: () => { quitting = true; setTimeout(() => app.quit(), 200); } });
 });
 ipcMain.handle('open-external', (_, u) => openExternalSafely(u));
+// The folder of the log files, in the Finder / Explorer.
+ipcMain.handle('log-folder-open', async () => {
+  if (!logFile) return { ok: false, error: 'No log file.' };
+  await logFile.flush();
+  const e = await shell.openPath(logFile.dir);
+  return e ? { ok: false, error: e } : { ok: true };
+});
 ipcMain.handle('copy-text', (_, t) => { try { clipboard.writeText(String(t == null ? '' : t).slice(0, 2 * 1024 * 1024)); return true; } catch (_) { return false; } });
 
 // ── IPC: ntfy ──────────────────────────────────────────────────────────────

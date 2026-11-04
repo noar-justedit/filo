@@ -27,6 +27,7 @@ const api = {
   afterRun    : (action, clean) => inv('after-action-run', action, clean),
   openExternal: (u)           => inv('open-external', u),
   copyText    : (t)           => inv('copy-text', t),
+  logFolder   : ()            => inv('log-folder-open'),
   cliInfo     : ()            => inv('cli-info'),
   cliInstall  : ()            => inv('cli-install'),
   cliHelp     : ()            => inv('cli-help'),

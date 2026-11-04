@@ -2609,6 +2609,7 @@ function setQTab(tab) {
   $('q-clear').dataset.tip = log ? 'Copy the log' : 'Clear this list';
   $('q-clear').setAttribute('aria-label', log ? 'Copy the log' : 'Clear');
   $('q-retry').style.display = tab === 'failed' && ((state.qcounts.failed || 0) + (state.qcounts.stopped || 0)) ? '' : 'none';
+  $('q-logdir').style.display = log ? '' : 'none';
   state.qsel.clear();
   q.anchor = -1;
   renderQueueHead();
@@ -2865,7 +2866,10 @@ async function retryItems(ids) {
     if (!r) return;
     mode = r.mode; extra = r.extra;
   }
-  API.queueRetry(ids.length ? [...ids, ...extra] : ids, mode);
+  await API.queueRetry(ids.length ? [...ids, ...extra] : ids, mode);
+  // Retrying is asking for the transfer: the queue starts (Noar, 03/11/2026),
+  // unless a start is scheduled for later.
+  if (state.qstate !== 'running' && !state.qSched) API.queueStart();
 }
 
 function isStarted(it) { return it.type === 'file' && ((it.done || 0) > 0 || (it.offset || 0) > 0); }
@@ -3288,6 +3292,7 @@ function bindQueue() {
     toast($('q-verify').checked ? 'SAFE COPY on — for every file that starts from now' : 'SAFE COPY off — size only, for every file that starts from now');
   });
   $('q-retry').onclick = () => retryItems([]);
+  $('q-logdir').onclick = async () => { const r = await API.logFolder(); if (r && !r.ok) toast(r.error, true); };
   if (!$('q-clear').innerHTML) $('q-clear').innerHTML = BROOM;
   $('q-clear').onclick = () => {
     if (state.qtab === 'log') { API.copyText(state.logs.map(l => `${fmtTime(l.t)} ${l.level.toUpperCase()} ${l.msg}`).join('\n')); toast('Log copied'); return; }
