@@ -218,7 +218,7 @@ window.addEventListener('blur', closeMenu);
 let dialogResolve = null, dialogTag = null;
 const dialogWait = [];
 // ── Update notice: the same as Noar's other apps (syncto, ingesto, archivo) ─
-// A small window: NEW VERSION AVAILABLE, LATER or GET IT (the releases page).
+// A small window: NEW VERSION AVAILABLE, LATER or DOWNLOAD (the releases page).
 // Either answer, Escape or a click outside remembers the version: the same
 // one never asks twice; the next one asks again.
 async function showUpdateNotice({ version, url }) {
@@ -226,7 +226,7 @@ async function showUpdateNotice({ version, url }) {
   const go = await dialog({
     title: `<span style="display:inline-flex;align-items:center;gap:9px"><span style="display:inline-flex;width:20px;height:20px;color:var(--green)">${I.download}</span>New version available</span>`,
     sub: `filo v${esc(version)} is available. You're on v${esc($('ver').textContent.replace(/^v/, ''))}.`,
-    buttons: [{ spacer: true }, { label: 'LATER', value: false }, { label: 'GET IT', value: true, cls: 'go' }],
+    buttons: [{ spacer: true }, { label: 'LATER', value: false }, { label: 'DOWNLOAD', value: true, cls: 'go' }],
     width: 420, tag: 'update',
   });
   state.ui.updateDismissedVersion = version;
@@ -234,6 +234,9 @@ async function showUpdateNotice({ version, url }) {
   if (go) API.openExternal(url);
 }
 function dialog(o) {
+  // Every window names its own buttons: no OK by default (a button says what
+  // a click does).
+  if (!Array.isArray(o.buttons)) return Promise.reject(new Error('dialog: buttons missing'));
   return new Promise(resolve => {
     if (dialogResolve) dialogWait.push({ o, resolve });
     else openDialog(o, resolve);
@@ -246,8 +249,8 @@ function openDialog({ title, sub, html, buttons, width, onOpen, focus, tag }, re
     const card = $('dlg-card');
     card.style.width = (width || 480) + 'px';
     card.innerHTML = `<div class="m-h1">${title || ''}</div>${sub ? `<div class="m-sub">${sub}</div>` : ''}<div class="body">${html || ''}</div>
-      <div class="m-btns">${(buttons || [{ label: 'OK', value: true, cls: 'go' }]).map((b, i) => (b.spacer ? '<span class="sp"></span>' : `<button class="btn sm ${b.cls || ''}" data-i="${i}">${esc(b.label)}</button>`)).join('')}</div>`;
-    const btns = buttons || [{ label: 'OK', value: true, cls: 'go' }];
+      <div class="m-btns">${buttons.map((b, i) => (b.spacer ? '<span class="sp"></span>' : `<button class="btn sm ${b.cls || ''}" data-i="${i}">${esc(b.label)}</button>`)).join('')}</div>`;
+    const btns = buttons;
     card.onclick = null;
     card.setAttribute('role', 'dialog'); card.setAttribute('aria-modal', 'true');
     card.querySelectorAll('.m-btns button').forEach(b => b.addEventListener('click', () => {
@@ -293,14 +296,16 @@ function closeDialog(v) {
 function isDialogOpen() { return $('ov-dialog').classList.contains('open'); }
 
 function confirmBox(title, sub, okLabel, danger) {
-  return dialog({ title: esc(title), sub, buttons: [{ label: 'CANCEL', value: false }, { label: okLabel || 'OK', value: true, cls: danger ? 'stop' : 'go' }] });
+  if (!okLabel) throw new Error('confirmBox: button label missing');
+  return dialog({ title: esc(title), sub, buttons: [{ label: 'CANCEL', value: false }, { label: okLabel, value: true, cls: danger ? 'stop' : 'go' }] });
 }
 
 function promptBox(title, value, okLabel, sub) {
+  if (!okLabel) throw new Error('promptBox: button label missing');
   return dialog({
     title: esc(title), sub,
     html: `<div class="field"><input id="dlg-in" value="${esc(value || '')}" spellcheck="false"></div>`,
-    buttons: [{ label: 'CANCEL', value: null }, { label: okLabel || 'OK', cls: 'go', value: c => { const v = c.querySelector('#dlg-in').value.trim(); return v || undefined; } }],
+    buttons: [{ label: 'CANCEL', value: null }, { label: okLabel, cls: 'go', value: c => { const v = c.querySelector('#dlg-in').value.trim(); return v || undefined; } }],
   });
 }
 
@@ -1559,7 +1564,7 @@ async function pickTestFolder(siteId, o, start) {
   };
   return dialog({ title: 'Folder for the speed test', sub: 'This server points at the root. Choose a folder you can write to.', width: 440, tag: 'speedtest-pick',
     html: '<div id="spd-pick"></div>',
-    buttons: [{ label: 'CANCEL', value: null }, { spacer: true }, { label: 'USE THIS FOLDER', cls: 'go', value: () => dir }],
+    buttons: [{ label: 'CANCEL', value: null }, { spacer: true }, { label: 'USE FOLDER', cls: 'go', value: () => dir }],
     onOpen: () => show(dir) });
 }
 async function openSpeedTest(siteId, opt) {
@@ -1602,7 +1607,7 @@ async function openSpeedTest(siteId, opt) {
     if (st.phase === 'idle') {
       c.style.width = '400px';
       c.innerHTML = `<div class="m-h1">Start the speed test?</div><div class="body"><div class="spd-site">${gaugeIcon}<div><div class="n">${esc(s.name)}</div><div class="mono a">${esc(addr)}</div></div></div>
-        <div class="spd-start"><button class="spd-go" id="spd-go" aria-label="Start">GO</button><div class="seg" id="spd-secs"><button data-s="20" class="${st.secs === 20 ? 'on' : ''}">20 s</button><button data-s="60" class="${st.secs === 60 ? 'on' : ''}">60 s</button></div></div>
+        <div class="spd-start"><button class="spd-go" id="spd-go">START</button><div class="seg" id="spd-secs"><button data-s="20" class="${st.secs === 20 ? 'on' : ''}">20 s</button><button data-s="60" class="${st.secs === 60 ? 'on' : ''}">60 s</button></div></div>
         <div class="hint" style="margin-top:10px">Writes temporary files in the server folder, removed at the end.</div></div>
         <div class="m-btns"><span class="sp"></span><button class="btn sm stop" id="spd-cancel">CANCEL</button></div>`;
       c.querySelectorAll('#spd-secs button').forEach(b => b.onclick = () => { st.secs = +b.dataset.s; c.querySelectorAll('#spd-secs button').forEach(x => x.classList.toggle('on', x === b)); });
@@ -1610,7 +1615,7 @@ async function openSpeedTest(siteId, opt) {
     } else {
       c.style.width = '460px';
       c.innerHTML = `<div class="m-h1">SPEED TEST<span class="spd-ph" style="color:${pc}">${esc(pt)}</span></div><div class="m-sub">${esc(s.name)} · ${esc(s.host)}</div><div class="body" id="spd-live"></div>
-        <div class="m-btns">${st.phase === 'done' ? '<button class="btn sm" id="spd-again">AGAIN</button>' : ''}<span class="sp"></span><button class="btn sm stop" id="spd-cancel">CANCEL</button>${st.phase === 'done' ? '<button class="btn sm go" id="spd-save">SAVE</button>' : ''}</div>`;
+        <div class="m-btns">${st.phase === 'done' ? '<button class="btn sm" id="spd-again">TEST AGAIN</button>' : ''}<span class="sp"></span><button class="btn sm stop" id="spd-cancel">CANCEL</button>${st.phase === 'done' ? '<button class="btn sm go" id="spd-save">SAVE</button>' : ''}</div>`;
       live();
       if ($('spd-again')) $('spd-again').onclick = () => { st.again = true; closeDialog(null); };
       if ($('spd-save')) $('spd-save').onclick = async () => {
@@ -1671,7 +1676,7 @@ async function openSpeedTest(siteId, opt) {
       if (d) return openSpeedTest(siteId, { password: o.password, accept: o.accept, secs: st.secs, autostart: true, dir: d });
     } else if (f.code === 'READONLY') {
       const yes = await dialog({ title: 'Read-only folder', html: `<div class="hint" style="margin-top:0"><span class="mono">${esc(f.dir || '')}</span> does not accept files from this account.<br>The test can still measure <b>reception</b> by reading files that are already there. Sending is not measured.</div>`,
-        buttons: [{ label: 'CANCEL', value: false }, { spacer: true }, { label: 'TEST RECEPTION ONLY', value: true, cls: 'go' }] });
+        buttons: [{ label: 'CANCEL', value: false }, { spacer: true }, { label: 'TEST DOWNLOAD', value: true, cls: 'go' }] });
       if (yes) return openSpeedTest(siteId, { password: o.password, accept: o.accept, secs: st.secs, autostart: true, dir: f.dir, readOnly: true });
     } else errorBox('Speed test failed', f.error);
   }
@@ -2501,7 +2506,7 @@ async function importSites() {
     sub: 'From a filo export (.json) or FileZilla\'s <b>sitemanager.xml</b>.<br>' +
       (isMac() ? 'FileZilla keeps it in <code>~/.config/filezilla/</code>.' : 'FileZilla keeps it in <code>%APPDATA%\\FileZilla\\</code>.') +
       '<br><br>FileZilla stores passwords in clear (unless you set a master password). filo can put them into the system keychain.<br>A filo export with encrypted passwords asks for its passphrase.',
-    buttons: [{ label: 'CANCEL', value: null }, { spacer: true }, { label: 'WITHOUT PASSWORDS', value: 'no' }, { label: 'WITH PASSWORDS', value: 'yes', cls: 'go' }],
+    buttons: [{ label: 'CANCEL', value: null }, { spacer: true }, { label: 'SKIP PASSWORDS', value: 'no' }, { label: 'IMPORT ALL', value: 'yes', cls: 'go' }],
     width: 560,
   });
   if (!choice) return;
@@ -3069,7 +3074,7 @@ async function checkAgainst(names) {
     let r = await API.compare(req);
     if (r.ok && r.needsReadBack) {
       const go = await confirmBox('This server cannot compute checksums',
-        `To check ${plural(r.files, 'file')} (${fmtSize(r.bytes)}), filo has to read them back from the server: a download of everything, nothing written on your disk.`, 'READ THEM BACK');
+        `To check ${plural(r.files, 'file')} (${fmtSize(r.bytes)}), filo has to read them back from the server: a download of everything, nothing written on your disk.`, 'READ BACK');
       if (!go) return;
       r = await API.compare(Object.assign({ readBack: true }, req));
     }
@@ -3361,6 +3366,9 @@ async function nextAsk() {
   else if (!newer(a.src, a.dst) && newer(a.dst, a.src)) def = 'skip';
   const opts = ['overwrite', 'newer', 'sizeDiffers', 'resume', 'rename', 'skip'];
   const L = state.existingLabels;
+  // The button says what the checked choice does (the two conditional
+  // overwrites replace the file only when it differs: UPDATE).
+  const ACT = { overwrite: 'OVERWRITE', newer: 'UPDATE', sizeDiffers: 'UPDATE', resume: 'RESUME', rename: 'KEEP BOTH', skip: 'SKIP' };
   const srcLabel = a.dir === 'up' ? 'Local (new)' : 'Server (new)';
   const dstLabel = a.dir === 'up' ? 'Server (there)' : 'Local (there)';
   const res = await dialog({
@@ -3371,10 +3379,13 @@ async function nextAsk() {
         <div class="h">Modified</div><div class="v${newer(a.src, a.dst) ? ' newer' : ''}">${fmtDate(a.src.mtime) || '?'}</div><div class="v${newer(a.dst, a.src) ? ' newer' : ''}">${fmtDate(a.dst.mtime) || '?'}</div></div>
       <div class="ex-opts" id="ex-opts">${opts.map(o => `<label class="${o === def ? 'on' : ''}"><input type="radio" name="ex" value="${o}"${o === def ? ' checked' : ''}> ${esc(L[o] || o)}</label>`).join('')}</div>
       ${scopeHtml(`Every ${a.dir === 'up' ? 'upload' : 'download'} in the queue`)}`,
-    buttons: [{ label: 'OK', cls: 'go', value: c => ({ rule: c.querySelector('input[name=ex]:checked').value, all: scopeAll(c) }) }],
+    buttons: [{ label: ACT[def], cls: 'go', value: c => ({ rule: c.querySelector('input[name=ex]:checked').value, all: scopeAll(c) }) }],
     width: 540,
     tag: 'ask:' + a.askId,
-    onOpen: c => c.querySelector('#ex-opts').addEventListener('change', () => c.querySelectorAll('#ex-opts label').forEach(l => l.classList.toggle('on', l.querySelector('input').checked))),
+    onOpen: c => c.querySelector('#ex-opts').addEventListener('change', () => {
+      c.querySelectorAll('#ex-opts label').forEach(l => l.classList.toggle('on', l.querySelector('input').checked));
+      c.querySelector('.m-btns .btn.go').textContent = ACT[c.querySelector('input[name=ex]:checked').value];
+    }),
   });
   state.askOpen = false;
   // The file stopped asking (paused, stopped, removed): nothing to answer.
@@ -3592,11 +3603,13 @@ async function fireAfter() {
 }
 function startCountdown(action) {
   const W = { quit: 'filo will quit', sleep: 'This machine will sleep', shutdown: 'This machine will shut down' };
+  const NOW = { quit: 'QUIT', sleep: 'SLEEP', shutdown: 'SHUT DOWN' };
   if (!W[action]) return;
   stopCountdown();                       // never two countdowns at once
   afterState.action = action;
   afterState.left = 30;
   $('after-what').textContent = W[action];
+  $('after-now').textContent = NOW[action];
   $('after-sub').textContent = 'Every transfer finished, with no error.';
   $('after-count').textContent = '30';
   $('ov-after').classList.add('open');
@@ -3625,7 +3638,7 @@ function onFinished(s) {
       title: '',
       html: `<div class="sum-hd"><div class="sum-ico err">${I.alert}</div><div><div style="font-size:19px;font-weight:700">${plural(s.failed, 'transfer')} failed</div><div class="m-sub" style="margin:2px 0 0">${s.done} done · ${fmtSize(s.bytes)} · ${fmtDur(secs)}</div></div></div>
         <div class="err-list">${s.errors.map(e => `<div><b>${esc(e.name)}</b> — ${esc(e.message)}</div>`).join('')}</div>`,
-      buttons: [{ label: 'SHOW FAILED', value: 'failed' }, { spacer: true }, { label: 'RETRY ALL', value: 'retry' }, { label: 'OK', value: true, cls: 'go' }],
+      buttons: [{ label: 'SHOW FAILED', value: 'failed' }, { spacer: true }, { label: 'RETRY ALL', value: 'retry' }, { label: 'CLOSE', value: true, cls: 'go' }],
       width: 560,
     }).then(v => { if (v === 'failed') setQTab('failed'); if (v === 'retry') retryItems([]); });
     if (s.afterAction && s.afterAction !== 'none') toast(`“${AFTER[s.afterAction][0]}” was skipped: some transfers failed.`, true);
@@ -4080,7 +4093,7 @@ async function pickRemoteFolder(siteId, start) {
   return dialog({
     title: 'Choose the S-FTP folder',
     html: '<div class="rp-path mono">…</div><div class="rp-list"></div><div class="hint">Double-click a folder to open it.</div>',
-    buttons: [{ label: 'CANCEL', value: null }, { spacer: true }, { label: 'CHOOSE THIS FOLDER', cls: 'go', value: () => cur || undefined }],
+    buttons: [{ label: 'CANCEL', value: null }, { spacer: true }, { label: 'USE FOLDER', cls: 'go', value: () => cur || undefined }],
     width: 560,
     onOpen: c => remoteBrowser(c, () => siteId, start, d => { cur = d; }),
   });
@@ -4101,7 +4114,7 @@ async function showShareInfo(pair) {
         ${fsv ? `<div class="k">S-FTP BACKUP</div><div class="v mono">${esc(fsv.server.protocol.toUpperCase())} · ${esc(fsv.server.user ? fsv.server.user + '@' : '')}${esc(fsv.server.host)}:${esc(fsv.server.port)} · ${esc(fsv.remote)}</div>
         <div class="k">Password</div><div class="v">not in the file: the SLAVE types it when it imports</div>` : ''}
         <div class="k">Secret</div><div class="v">none inside: the other computer is accepted here, by hand</div></div>`,
-    buttons: [{ label: 'CLOSE', value: null }, { spacer: true }, { label: 'SAVE CONFIG FILE…', value: 'file', cls: 'go' }],
+    buttons: [{ label: 'CLOSE', value: null }, { spacer: true }, { label: 'SAVE CONFIG…', value: 'file', cls: 'go' }],
     width: 620,
   });
   if (res === 'file') {
@@ -4110,11 +4123,11 @@ async function showShareInfo(pair) {
     await configSaved(f.path, 'Send this file to the other computer yourself (mail, Signal, a USB key…).');
   }
 }
-// After SAVE CONFIG FILE: where it is, and the ways to send it.
+// After SAVE CONFIG: where it is, and the ways to send it.
 async function configSaved(file, what) {
   const v = await dialog({
     title: 'Config saved', sub: `<span class="mono" style="font-size:11.5px">${esc(file)}</span><br>${esc(what)}`,
-    buttons: [{ label: 'OK', value: null }, { spacer: true }, { label: 'SHOW IN FOLDER', value: 'show', cls: isMac() ? '' : 'go' }].concat(isMac() ? [{ label: 'SHARE…', value: 'share', cls: 'go' }] : []),
+    buttons: [{ label: 'CLOSE', value: null }, { spacer: true }, { label: 'SHOW FILE', value: 'show', cls: isMac() ? '' : 'go' }].concat(isMac() ? [{ label: 'SHARE…', value: 'share', cls: 'go' }] : []),
   });
   if (v === 'show') API.syncShareReveal(file);
   if (v === 'share') API.syncShareNative(file);
@@ -4135,7 +4148,7 @@ async function shareSync() {
         <div class="k">S-FTP folder</div><div class="v mono">${esc(r.share.remote)}</div>
         <div class="k">Password</div><div class="v">not included: give it to them another way</div></div>
       `,
-    buttons: [{ label: 'CLOSE', value: null }, { spacer: true }, { label: 'SAVE CONFIG FILE…', value: 'file', cls: 'go' }],
+    buttons: [{ label: 'CLOSE', value: null }, { spacer: true }, { label: 'SAVE CONFIG…', value: 'file', cls: 'go' }],
     width: 600,
   });
   if (res === 'file') {
@@ -4278,7 +4291,7 @@ async function findOnServer() {
     sub: 'Choose the DUAL SYNC server, then open the S-FTP folder of the session (double-click).',
     html: `<div class="field"><label>Bookmark</label><select id="fos-site">${state.sites.map(s => `<option value="${esc(s.id)}">${esc(s.name)} · ${esc(PROTO_INFO[s.protocol] ? PROTO_INFO[s.protocol][0] : s.protocol)}</option>`).join('')}</select></div>
       <div class="rp-path mono">…</div><div class="rp-list"></div>`,
-    buttons: [{ label: 'CANCEL', value: null }, { spacer: true }, { label: 'LOOK IN THIS FOLDER', cls: 'go', value: c => (cur ? { siteId: c.querySelector('#fos-site').value, dir: cur } : undefined) }],
+    buttons: [{ label: 'CANCEL', value: null }, { spacer: true }, { label: 'SEARCH HERE', cls: 'go', value: c => (cur ? { siteId: c.querySelector('#fos-site').value, dir: cur } : undefined) }],
     width: 560,
     onOpen: c => {
       const sel = c.querySelector('#fos-site');

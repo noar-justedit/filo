@@ -4,6 +4,28 @@ All notable changes to filo are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/lang/fr/).
 
+## [1.0.0] — 2026-11-05
+
+### Changed
+
+- **Every button says what a click does** (Noar's rule for all his apps: a
+  button names its result, one or two words, no Yes / No, OK only when there
+  is nothing to decide):
+  - "Already there": the button takes the name of the checked choice
+    (**OVERWRITE**, **UPDATE**, **RESUME**, **KEEP BOTH**, **SKIP**) instead
+    of OK.
+  - End of the queue countdown: **SHUT DOWN**, **SLEEP** or **QUIT** instead
+    of DO IT NOW.
+  - Summary with failed files and "Config saved": **CLOSE** instead of OK.
+  - Speed test: **START** instead of GO, **TEST AGAIN** instead of AGAIN.
+  - Import servers: **IMPORT ALL** and **SKIP PASSWORDS** instead of WITH /
+    WITHOUT PASSWORDS.
+  - New version available: **DOWNLOAD** instead of GET IT.
+  - Shorter: **SEARCH HERE**, **USE FOLDER**, **TEST DOWNLOAD**,
+    **SAVE CONFIG…**, **SEND TEST**, **READ BACK**, **SHOW FILE**.
+- A window can no longer get an OK button by default: each one names its
+  buttons.
+
 ## [0.10.1] — 2026-11-03
 
 ### Added
