@@ -357,7 +357,7 @@ function bindSplitters() {
   const ui = state.ui || {};
   if (ui.panelRatio) local.style.flex = `0 0 ${ui.panelRatio * 100}%`;
   if (ui.queueHeight) queue.style.height = ui.queueHeight + 'px';
-  // Synchronized browsing sits on this splitter: its button is a button, not a handle.
+  // Synchronized browsing sits in this gap: its button is a button, not a handle.
   for (const t of ['mousedown', 'dblclick']) $('q-sync').addEventListener(t, e => e.stopPropagation());
   sv.addEventListener('mousedown', e => {
     e.preventDefault(); sv.classList.add('drag');
@@ -409,7 +409,7 @@ class Panel {
     this.anchor = -1;
     this.sort = (state.ui.sort && state.ui.sort[side]) || { key: 'name', asc: true };
     this.filter = '';
-    this.cache = new Map();          // dir → entries (server only): going back is instant
+    this.cache = new Map();          // dir → { entries, parent } (server only): going back is instant
     this.loading = 0;
     this.error = '';
     this.rowEls = [];
@@ -432,7 +432,9 @@ class Panel {
     const keepSel = o.keepSel && dir === this.dir ? new Set(this.sel) : null;
     // Server: show what we had for that folder at once, then refresh it.
     if (this.remote && this.cache.has(dir) && !o.keepSel) {
-      this._apply(dir, this.cache.get(dir), null);
+      const c = this.cache.get(dir);
+      this.parent = c.parent;                     // ".." must lead from the folder shown
+      this._apply(dir, c.entries, null);
     }
     if (this.busy) this.busy.style.display = '';
     this.inFlight = (this.inFlight || 0) + 1;
@@ -452,7 +454,7 @@ class Panel {
       return false;
     }
     this.error = '';
-    if (this.remote) { this.cache.set(res.dir, res.entries); if (this.cache.size > 300) this.cache.delete(this.cache.keys().next().value); }
+    if (this.remote) { this.cache.set(res.dir, { entries: res.entries, parent: res.parent }); if (this.cache.size > 300) this.cache.delete(this.cache.keys().next().value); }
     this.sep = res.sep || '/';
     this.parent = res.parent;
     this._apply(res.dir, res.entries, keepSel, o.select);
@@ -727,7 +729,7 @@ class Panel {
     const e = this.view[i];
     if (!e) return;
     if (e.type === 'up') return this.goUp();
-    if (isDirEntry(e) || e.drive) { syncFollow(this, { into: e.name }); return this.load(this.join(e.name)); }
+    if (isDirEntry(e) || e.drive) { if (syncing()) return syncMove(this, { into: e.name }); return this.load(this.join(e.name)); }
     this.sel = new Set([e.name]); this.cursor = i; this.anchor = i; this.render();
     if (ev) this.menu(ev, i);
     else this.rename();
@@ -735,7 +737,7 @@ class Panel {
 
   goUp() {
     if (this.parent == null) return;
-    syncFollow(this, { up: true });
+    if (syncing()) return syncMove(this, { up: true });
     const from = this.remote ? posixBase(this.dir) : localBase(this.dir);
     this.load(this.parent, { select: from });
   }
@@ -2542,11 +2544,15 @@ function sameStamp(a, b) {
 }
 function diffWith(panel) {
   if (!state.sync || !state.conn || !panels.local || !panels.remote) return null;
+  // During a synchronized move, one side already shows its new folder and the
+  // other one not yet: comparing them would mark wrong differences.
+  if (state.syncMoving) return null;
   const other = panel.remote ? panels.local : panels.remote;
   if (!other.dir || other.dir === '::drives' || panel.dir === '::drives') return null;
   const them = new Map(other.entries.map(e => [e.name, e]));
   const out = new Map();
   for (const e of panel.entries) {
+    if (e.ignored) continue;                     // the "ignored files" setting: never a difference
     const t = them.get(e.name);
     if (!t || isDirEntry(t) !== isDirEntry(e)) { out.set(e.name, 'o'); continue; }
     if (isDirEntry(e)) continue;
@@ -2584,18 +2590,32 @@ function syncOff(why) {
   refreshDiff();
   if (why) toast(`Synchronized browsing turned off: ${why}.`);
 }
-async function syncFollow(src, move) {
-  if (!state.sync || !state.conn) return;
+function syncing() { return !!(state.sync && state.conn); }
+// One synchronized move: both sides open their new folder together, and the
+// differences come back only once both are shown. A click while a move is
+// still on its way is ignored: each side would otherwise compute its target
+// from a folder the other one has not reached yet, and they would drift apart.
+async function syncMove(src, move) {
+  if (state.syncMoving) return;
   const other = src.remote ? panels.local : panels.remote;
-  if (move.up) {
-    if (other.parent == null) { syncOff(`${other.remote ? 'the server' : 'this computer'} has no parent folder here`); return; }
-    const ok = await other.load(other.parent, { quiet: true });
-    if (!ok) syncOff('the other side could not follow');
-    return;
+  if (move.up && other.parent == null) { syncOff(`${other.remote ? 'the server' : 'this computer'} has no parent folder here`); return; }
+  const to = p => move.up ? p.parent : p.join(move.into);
+  const from = p => move.up ? (p.remote ? posixBase(p.dir) : localBase(p.dir)) : undefined;
+  const srcTo = to(src), otherTo = to(other), srcFrom = from(src), otherFrom = from(other);
+  state.syncMoving = true;
+  document.body.classList.add('syncmove');
+  let okOther;
+  try {
+    [, okOther] = await Promise.all([
+      src.load(srcTo, { select: srcFrom }),
+      other.load(otherTo, { quiet: true, select: otherFrom }),
+    ]);
+  } finally {
+    state.syncMoving = false;
+    document.body.classList.remove('syncmove');
   }
-  const target = other.join(move.into);
-  const ok = await other.load(target, { quiet: true });
-  if (!ok) syncOff(`“${move.into}” does not exist ${other.remote ? 'on the server' : 'on this computer'}`);
+  if (!okOther) syncOff(move.up ? 'the other side could not follow' : `“${move.into}” does not exist ${other.remote ? 'on the server' : 'on this computer'}`);
+  else refreshDiff();
 }
 
 // ══ Queue view ═════════════════════════════════════════════════════════════
@@ -3431,6 +3451,8 @@ async function openSettings() {
   $('st-serverhash').checked = s.serverHash !== false;
   $('st-hidden-desc').textContent = `names starting with a dot (${isMac() ? '⇧⌘.' : 'Ctrl+Shift+.'})`;
   $('st-hidden').checked = s.showHidden; $('st-confirmdel').checked = s.confirmDelete;
+  $('st-ignore').innerHTML = filterChips(s.ignore, false);
+  bindFilterChips($('st-ignore'), saveIgnore);
   $('st-ntfy-en').checked = state.ntfy.enabled; $('st-ntfy-server').value = state.ntfy.server || ''; $('st-ntfy-topic').value = state.ntfy.topic || '';
   $('st-hook-en').checked = !!s.hookEnabled; $('st-hook-cmd').value = s.hookCommand || ''; $('st-hook-res').textContent = '';
   $('st-ntfy-sync').checked = !!state.ntfy.syncAlert; $('st-ntfy-min').value = String(state.ntfy.syncAlertMin || 10);
@@ -3527,6 +3549,16 @@ async function saveSettings(patch) {
   panels.local.compute(); panels.local.render();
   panels.remote.compute(); panels.remote.render();
   renderQueueHead(); renderAfterBtn(); renderNtfyBtn();
+}
+// The ignored files: each listing says which of its entries are ignored, so
+// both sides are listed again (the server's from the server, not the cache).
+async function saveIgnore(v) {
+  await saveSettings({ ignore: v });
+  for (const p of [panels.local, panels.remote]) {
+    if (!p || !p.dir || !p.enabled) continue;
+    if (p.remote) p.cache.clear();
+    p.load(p.dir, { keepSel: true });
+  }
 }
 function bindSettings() {
   $('btn-settings').onclick = openSettings;
@@ -3987,16 +4019,16 @@ const chipLabel = x => (/^\*\.[^*?/\\]+$/.test(x) ? x.slice(1) : x);
 function filterChips(text, ro) {
   const list = splitFilter(text);
   return `<div class="chips" data-ro="${ro ? 1 : 0}">${list.map((x, i) => `<span class="chip mono" data-tip="${esc(x)}">${esc(chipLabel(x))}${ro ? '' : `<button data-chip="${i}" aria-label="Remove">×</button>`}</span>`).join('')}
-    ${ro ? '' : '<div class="chip-add"><input id="chip-in" class="mono" spellcheck="false" placeholder="e.g. aep"><button class="btn sm" id="chip-go">ADD</button></div>'}</div>`;
+    ${ro ? '' : '<div class="chip-add"><input class="chip-in mono" spellcheck="false" placeholder="e.g. aep"><button class="btn sm chip-go">ADD</button></div>'}</div>`;
 }
 function bindFilterChips(root, onChange) {
   const box = root.querySelector('.chips');
   if (!box || box.dataset.ro === '1') return;
-  const redraw = list => { const v = list.join(', '); onChange(v); box.outerHTML = filterChips(v, false); bindFilterChips(root, onChange); const n = root.querySelector('#chip-in'); if (n) n.focus(); };
+  const redraw = list => { const v = list.join(', '); onChange(v); box.outerHTML = filterChips(v, false); bindFilterChips(root, onChange); const n = root.querySelector('.chip-in'); if (n) n.focus(); };
   const current = () => [...box.querySelectorAll('.chip')].map(c => c.dataset.tip);
   box.querySelectorAll('[data-chip]').forEach(b => b.onclick = () => { const l = current(); l.splice(+b.dataset.chip, 1); redraw(l); });
   const add = () => {
-    const raw = box.querySelector('#chip-in').value.trim().replace(/,/g, '');
+    const raw = box.querySelector('.chip-in').value.trim().replace(/,/g, '');
     if (!raw) return;
     // An extension, with or without its dot ("aep", ".aep"): *.aep. Anything
     // else (a name, a folder, a pattern) as typed.
@@ -4006,8 +4038,8 @@ function bindFilterChips(root, onChange) {
     if (!l.includes(pat)) l.push(pat);
     redraw(l);
   };
-  box.querySelector('#chip-go').onclick = add;
-  box.querySelector('#chip-in').onkeydown = ev => { if (ev.key === 'Enter') { ev.preventDefault(); add(); } };
+  box.querySelector('.chip-go').onclick = add;
+  box.querySelector('.chip-in').onkeydown = ev => { if (ev.key === 'Enter') { ev.preventDefault(); add(); } };
 }
 function bookmarkField(d) {
   const site = state.sites.find(s => s.id === d.siteId);

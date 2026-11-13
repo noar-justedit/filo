@@ -59,6 +59,7 @@ async function walkRemoteParallel(remote, dir, onEntry, token, o) {
         const subs = [];
         for (const e of entries) {
           if (cancelled()) break;
+          if (opt.ignore && opt.ignore(e.name, e.type === 'folder')) continue;
           const r = item.rel ? item.rel + '/' + e.name : e.name;
           const full = posix.join(item.dir, e.name);
           if (e.type === 'folder') { onEntry({ rel: r, type: 'folder', path: full }); subs.push({ dir: full, rel: r }); }

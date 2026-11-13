@@ -192,4 +192,12 @@ class PathFilter {
   }
 }
 
-module.exports = { PathFilter, normRel };
+// The "ignored files" setting, for one name at a time: true when this file
+// (or folder) must be left out. Same patterns as above.
+function nameIgnorer(str) {
+  const f = new PathFilter('*', str || '');
+  if (f.trivial) return () => false;
+  return (name, isFolder) => !(isFolder ? f.passFolder(name) : f.passFile(name));
+}
+
+module.exports = { PathFilter, normRel, nameIgnorer };

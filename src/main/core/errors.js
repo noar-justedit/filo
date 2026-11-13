@@ -32,6 +32,11 @@ class RemoteError extends Error {
       const where = `"${err.path}"`;
       const msg = code === 'EPERM' || code === 'EACCES' ? `filo is not allowed to write to ${where} on this computer.`
         : code === 'ENOSPC' ? `This computer's disk is full (${where}).`
+        // Creating or renaming a file whose folder is there: "missing" says
+        // nothing true. A network share, an antivirus or Windows itself (a
+        // Thumbs.db it keeps) refused that name.
+        : code === 'ENOENT' && err.syscall === 'open' ? `This computer could not create ${where}: its folder is missing, or the disk refuses this name.`
+        : code === 'ENOENT' && err.syscall === 'rename' ? `This computer could not rename ${where}${err.dest ? ` to "${err.dest}"` : ''}: the disk refuses it (a network share, an antivirus or another program may hold that name).`
         : code === 'ENOENT' ? `${where} does not exist on this computer.`
         : code === 'EROFS' ? `${where} is on a read-only disk.`
         : code === 'EBUSY' ? `${where} is in use by another application.`

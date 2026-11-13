@@ -203,10 +203,12 @@ async function setMTime(p, ms) {
 }
 
 // Walks a folder for the queue: every sub-folder (so empty ones are recreated
-// too) and every file, with a hard stop on links that loop.
+// too) and every file, with a hard stop on links that loop. opts.ignore(name,
+// isFolder): left out, and nothing under an ignored folder is read.
 async function walk(root, onEntry, token, opts) {
   const seen = new Set();
   const strict = !!(opts && opts.strict);
+  const ignore = (opts && opts.ignore) || null;
   async function go(dir, rel) {
     if (token && token.cancelled) return;
     let real;
@@ -221,6 +223,7 @@ async function walk(root, onEntry, token, opts) {
       const r = rel ? rel + '/' + e.name : e.name;
       const full = path.join(dir, e.name);
       const isDir = e.type === 'folder' || (e.type === 'symlink' && e.linkTo === 'folder');
+      if (ignore && ignore(e.name, isDir)) continue;
       if (isDir) { if (!(strict && seen.has(await fsp.realpath(full).catch(() => full)))) onEntry({ rel: r, type: 'folder', path: full }); await go(full, r); }
       else if (e.type === 'file' || (e.type === 'symlink' && e.linkTo === 'file')) onEntry({ rel: r, type: 'file', path: full, size: e.size, mtime: e.mtime });
     }

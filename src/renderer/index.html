@@ -172,10 +172,6 @@ body.win #wincontrols,body.linux #wincontrols{display:flex;}
 .btn.sm{height:28px;padding:0 11px;font-size:11px;}
 #q-sites{padding:0 13px;}
 #q-hist{width:34px;padding:0;flex-shrink:0;}
-/* Synchronized browsing joins the two panels: on the splitter, at the height of their heads. */
-#split-panels{position:relative;}
-#q-sync{position:absolute;top:8px;left:50%;transform:translateX(-50%);width:30px;height:30px;padding:0;z-index:2;background:var(--raise);}
-#q-sync svg{width:14px;height:14px;}
 #q-connect{width:100%;min-width:52px;padding:0;justify-content:center;}
 #q-connect svg{width:18px;height:18px;}
 #q-connect.busy svg{animation:qc-pulse 1s ease-in-out infinite;}
@@ -183,7 +179,6 @@ body.win #wincontrols,body.linux #wincontrols{display:flex;}
 #q-proto{min-width:112px;justify-content:space-between;gap:8px;}
 #q-proto .chev{width:12px;height:12px;color:var(--text3);transform:rotate(90deg);}
 #q-proto.warn{color:var(--orange);}
-#q-sync.on{background:var(--blue-d);color:var(--blue);}
 /* A favorite folder of this server (Noar, 12/10/2026): the star filled, yellow. */
 .p-fav.on{color:var(--yellow);}
 .p-fav.on svg{fill:currentColor;}
@@ -210,6 +205,15 @@ body.win #wincontrols,body.linux #wincontrols{display:flex;}
    name is highlighted, not the row. */
 .p-dif{display:none !important;}
 body.syncb .p-dif{display:inline-flex !important;}
+/* Synchronized browsing joins the two panels: in the middle of the gap between
+   them (Noar, 13/11/2026). The gap is wide enough to hold it whole. */
+#split-panels{position:relative;width:26px;}
+#q-sync{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:24px;height:24px;padding:0;border-radius:50%;background:var(--card);box-shadow:0 0 0 1px var(--grid);color:var(--text2);}
+#q-sync svg{width:13px;height:13px;}
+#q-sync:not(:disabled):hover{color:var(--text);background:var(--raise);}
+#q-sync.on{background:var(--blue-d);color:var(--blue);box-shadow:0 0 0 1px color-mix(in srgb,var(--blue) 45%,transparent);}
+/* A synchronized move on its way: both sides wait for it. */
+body.syncmove .p-scroll{cursor:progress;}
 .ibtn.ins.p-dif.on{background:color-mix(in srgb,var(--yellow) 15%,transparent);color:var(--yellow);}
 .row .nm .hl{padding:1px 6px;margin-left:-6px;border-radius:5px;}
 .row .nm .hl.o{background:color-mix(in srgb,var(--yellow) 20%,transparent);color:var(--yellow);}
@@ -754,6 +758,10 @@ body.live-st #queue .q-head,body.live-st #q-blocked,body.live-st #q-tabs,body.li
 .chip button:hover{color:var(--red);}
 .chip-add{display:flex;gap:8px;width:100%;}
 .chip-add .btn{box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--white) 18%,transparent);}
+.set-row-chips{flex-wrap:wrap;align-items:flex-start;}
+.set-row-chips > label:first-child{padding-top:8px;}
+#st-ignore{flex:1;min-width:0;}
+.set-row-chips .set-desc{flex:0 0 100%;padding-left:230px;white-space:normal;}
 .chip-add input{width:160px;background:var(--card);border:none;border-radius:var(--r-field);padding:5px 9px;font-size:11px;color:var(--text);outline:none;}
 .sy-peer{display:flex;align-items:center;gap:10px;font-size:13px;}
 .sy-peer .mono{font-size:11px;word-break:break-all;flex:1;min-width:0;}
@@ -1044,9 +1052,7 @@ body.live-st #queue .q-head,body.live-st #q-blocked,body.live-st #q-tabs,body.li
     </div>
   </div>
 
-  <div class="split-v" id="split-panels" data-tip="Drag to resize"><button class="btn" id="q-sync" aria-label="Synchronized browsing" disabled>
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
-  </button></div>
+  <div class="split-v" id="split-panels" data-tip="Drag to resize"><button class="ibtn" id="q-sync" aria-label="Synchronized browsing" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg></button></div>
 
   <div class="panel card" id="p-remote" data-side="remote">
     <div class="p-head">
@@ -1240,6 +1246,9 @@ body.live-st #queue .q-head,body.live-st #q-blocked,body.live-st #q-tabs,body.li
         <div class="set-row"><label>Show hidden files</label>
           <label class="switch"><input type="checkbox" id="st-hidden"><span class="slider"></span></label>
           <span class="set-desc" id="st-hidden-desc">names starting with a dot</span></div>
+        <div class="set-row set-row-chips"><label>Ignored files</label>
+          <div id="st-ignore"></div>
+          <span class="set-desc">left out of the folders you transfer, never marked as a difference; a file you pick yourself still goes</span></div>
         <div class="set-row"><label>Confirm before deleting</label>
           <label class="switch"><input type="checkbox" id="st-confirmdel"><span class="slider"></span></label>
           <span class="set-desc">on the server, deleting is final</span></div>

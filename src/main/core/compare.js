@@ -10,29 +10,34 @@ const posix = path.posix;
 const { hashFile, createHasher, Tap } = require('./hash');
 const { Writable } = require('stream');
 
-const SKIP = /^(\.DS_Store|Thumbs\.db|desktop\.ini|\._.*|.*\.filopart|.*\.filoold)$/i;
+// filo's own work files are never compared; the litter of the systems is
+// what the "ignored files" setting says (ignore(name, isFolder), from main).
+const OWN = /^(.*\.filopart|.*\.filoold)$/i;
+const skipper = ignore => (name, isFolder) => OWN.test(name) || !!(ignore && ignore(name, isFolder));
 
 // Every file under the selected names, on one side: rel → size.
-async function walkLocal(root, names, token) {
+async function walkLocal(root, names, token, ignore) {
   const out = new Map();
+  const skip = skipper(ignore);
   const go = async (abs, rel) => {
     if (token && token.cancelled) return;
     let st; try { st = await fs.promises.lstat(abs); } catch (_) { return; }
     if (st.isDirectory()) {
-      let list = []; try { list = await fs.promises.readdir(abs); } catch (_) { return; }
-      for (const n of list) if (!SKIP.test(n)) await go(path.join(abs, n), rel + '/' + n);
+      let list = []; try { list = await fs.promises.readdir(abs, { withFileTypes: true }); } catch (_) { return; }
+      for (const d of list) if (!skip(d.name, d.isDirectory())) await go(path.join(abs, d.name), rel + '/' + d.name);
     } else if (st.isFile()) out.set(rel, st.size);
   };
   for (const n of names) await go(path.join(root, n), n);
   return out;
 }
-async function walkRemote(remote, root, names, token) {
+async function walkRemote(remote, root, names, token, ignore) {
   const out = new Map();
+  const skip = skipper(ignore);
   const top = new Map((await remote.list(root)).map(e => [e.name, e]));
   const go = async (e, abs, rel) => {
     if (token && token.cancelled) return;
     if (e.type === 'folder') {
-      for (const c of await remote.list(abs)) if (!SKIP.test(c.name)) await go(c, posix.join(abs, c.name), rel + '/' + c.name);
+      for (const c of await remote.list(abs)) if (!skip(c.name, c.type === 'folder')) await go(c, posix.join(abs, c.name), rel + '/' + c.name);
     } else if (e.type === 'file') out.set(rel, e.size || 0);
   };
   for (const n of names) { const e = top.get(n); if (e) await go(e, posix.join(root, n), n); }
@@ -53,8 +58,8 @@ async function remoteReadHash(remote, p, token) {
 }
 
 // plan: what there is to check, and how. run: the check itself.
-async function plan(remote, { localRoot, remoteRoot, names, serverHash = true }, token) {
-  const [L, R] = await Promise.all([walkLocal(localRoot, names, token), walkRemote(remote, remoteRoot, names, token)]);
+async function plan(remote, { localRoot, remoteRoot, names, serverHash = true, ignore }, token) {
+  const [L, R] = await Promise.all([walkLocal(localRoot, names, token, ignore), walkRemote(remote, remoteRoot, names, token, ignore)]);
   let algos = [];
   if (serverHash) { try { algos = await remote.hashAlgos(); } catch (_) { algos = []; } }
   const both = [...L.keys()].filter(k => R.has(k) && R.get(k) === L.get(k));

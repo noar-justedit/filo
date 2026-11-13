@@ -444,18 +444,23 @@ fn read_at(f: &std::fs::File, mut buf: &mut [u8], mut off: u64) -> std::io::Resu
 // (JDK-8232861) and libuv do the same thing here: fall back to a plain fsync,
 // which on SMB asks the server to flush. A plain fsync that fails is a real
 // error, reported as such.
+// Only macOS has that fallback: elsewhere sync_all() is already a plain fsync
+// (Linux) or FlushFileBuffers (Windows, where the libc crate is not used).
+#[cfg(target_vendor = "apple")]
 fn flush_to_disk(f: &std::fs::File) -> std::io::Result<()> {
     match f.sync_all() {
-        Err(e) if cfg!(target_vendor = "apple") && e.raw_os_error() == Some(libc::ENOTSUP) => plain_fsync(f),
+        Err(e) if e.raw_os_error() == Some(libc::ENOTSUP) => plain_fsync(f),
         r => r,
     }
 }
-#[cfg(unix)]
+#[cfg(not(target_vendor = "apple"))]
+fn flush_to_disk(f: &std::fs::File) -> std::io::Result<()> { f.sync_all() }
+#[cfg(all(unix, any(target_vendor = "apple", test)))]
 fn plain_fsync(f: &std::fs::File) -> std::io::Result<()> {
     use std::os::fd::AsRawFd;
     if unsafe { libc::fsync(f.as_raw_fd()) } == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }
 }
-#[cfg(not(unix))]
+#[cfg(all(not(unix), test))]
 fn plain_fsync(f: &std::fs::File) -> std::io::Result<()> { f.sync_all() }
 
 #[cfg(test)]

@@ -38,6 +38,12 @@ const { DEFAULT_SYNC_EXCLUDE } = require('./config');
 const { createDirect } = require('./direct-app');
 const { RemoteError } = require('./core/errors');
 const { walkRemoteParallel, deleteRemoteTree, safeLocalName, localJoin } = require('./core/scan');
+const { nameIgnorer } = require('./core/filter');
+// The "ignored files" setting (Thumbs.db, .DS_Store…): left out inside the
+// folders that are transferred, and never marked as a difference.
+const ignorer = () => nameIgnorer(prefs.data.settings.ignore);
+// A listing for the panels: each entry the setting ignores says so.
+const markIgnored = entries => { const ig = ignorer(); for (const e of entries) if (ig(e.name, e.type === 'folder' || e.linkTo === 'folder')) e.ignored = true; return entries; };
 const sites = require('./core/sites');
 const netid = require('./core/netid');
 const { runSpeedTest } = require('./core/speedtest');
@@ -1075,6 +1081,7 @@ async function cliAdd(req, emit) {
   const endpointId = 'site:' + site.id;
   const base = { endpointId, endpointLabel: site.name };
   const specs = [];
+  const ignore = ignorer();
   if (req.cmd === 'upload') {
     const target = remotePath(req.to);
     for (const p of req.args) {
@@ -1085,7 +1092,7 @@ async function cliAdd(req, emit) {
       if (st.isDirectory()) {
         const root = posix.join(target, name);
         specs.push(Object.assign({ dir: 'up', type: 'folder', local: src, remote: root }, base));
-        await local.walk(src, e => specs.push(Object.assign({ dir: 'up', type: e.type, local: e.path, remote: posix.join(root, e.rel), size: e.size || 0 }, base)));
+        await local.walk(src, e => specs.push(Object.assign({ dir: 'up', type: e.type, local: e.path, remote: posix.join(root, e.rel), size: e.size || 0 }, base)), null, { ignore });
       } else specs.push(Object.assign({ dir: 'up', type: 'file', local: src, remote: posix.join(target, name), size: st.size }, base));
     }
   } else {
@@ -1106,7 +1113,7 @@ async function cliAdd(req, emit) {
           const root = path.join(target, safeLocalName(name));
           specs.push(Object.assign({ dir: 'down', type: 'folder', local: root, remote: src }, base));
           await walkRemoteParallel(r, src, e => specs.push(Object.assign({ dir: 'down', type: e.type, local: localJoin(root, e.rel), remote: e.path, size: e.size || 0 }, base)), null,
-            { slots: 8, extra: 2, openExtra: async () => { const x = createRemote(ep, { log }); await x.connect(); return x; } });
+            { slots: 8, extra: 2, ignore, openExtra: async () => { const x = createRemote(ep, { log }); await x.connect(); return x; } });
         } else specs.push(Object.assign({ dir: 'down', type: 'file', local: path.join(target, safeLocalName(name)), remote: src, size: st.size }, base));
       }
     } catch (e) {
@@ -1313,7 +1320,7 @@ ipcMain.handle('local-list', async (_, dir) => {
     // "D:" typed alone means the root of D:, not "the current folder of D:".
     if (process.platform === 'win32' && /^[a-z]:$/i.test(d)) d += '\\';
     d = absLocal(d);
-    const entries = await local.list(d);
+    const entries = markIgnored(await local.list(d));
     prefs.data.lastLocalDir = d;
     const up = path.dirname(d) !== d ? path.dirname(d) : (process.platform === 'win32' ? DRIVES : null);
     return { ok: true, dir: d, parent: up, sep: path.sep, entries };
@@ -1663,7 +1670,7 @@ function remotePath(p) {
 ipcMain.handle('remote-list', async (_, dir) => {
   try {
     const d = remotePath(dir);
-    const entries = await withBrowser(r => r.list(d));
+    const entries = markIgnored((await withBrowser(r => r.list(d))).map(e => Object.assign({}, e)));
     return { ok: true, dir: d, parent: d === '/' ? null : posix.dirname(d), entries };
   } catch (e) { return errOut(e); }
 });
@@ -1732,6 +1739,7 @@ ipcMain.handle('queue-add', async (_, req) => {
   scanTokens.add(token);
   const specs = [];
   const base = { endpointId, endpointLabel: label, existing: EXISTING_ACTIONS.includes(req.existing) ? req.existing : null };
+  const ignore = ignorer();               // inside the folders only: a name chosen by hand still goes
   let found = 0, lastSent = 0;
   const tick = () => { found++; const now = Date.now(); if (now - lastSent > 200) { lastSent = now; send('scan-progress', { found }); } };
   const revived = [];
@@ -1767,7 +1775,7 @@ ipcMain.handle('queue-add', async (_, req) => {
             specs.push(Object.assign({ dir: 'up', type: e.type, local: e.path, remote: posix.join(root, e.rel), size: e.size || 0 }, base));
             tick();
             maybeFlush();
-          }, token);
+          }, token, { ignore });
         } else {
           specs.push(Object.assign({ dir: 'up', type: 'file', local: src, remote: posix.join(target, name), size: st.size }, base));
           tick();
@@ -1794,7 +1802,7 @@ ipcMain.handle('queue-add', async (_, req) => {
             specs.push(Object.assign({ dir: 'down', type: e.type, local: localJoin(root, e.rel), remote: e.path, size: e.size || 0 }, base));
             tick();
             maybeFlush();
-          }, token, { slots: 8, extra: 2, openExtra }), scanSess);
+          }, token, { slots: 8, extra: 2, ignore, openExtra }), scanSess);
         } else {
           specs.push(Object.assign({ dir: 'down', type: 'file', local: path.join(target, safeLocalName(name)), remote: src, size: s.size || 0 }, base));
           tick();
@@ -2002,7 +2010,7 @@ ipcMain.handle('compare', async (_, req) => {
   const r = req || {};
   const names = (Array.isArray(r.names) ? r.names : []).map(String).filter(n => n && !/[\/\\]/.test(n) && n !== '..' && n !== '.');
   if (!names.length) return { ok: false, error: 'Nothing selected.' };
-  const opts = { localRoot: absLocal(r.localRoot), remoteRoot: remotePath(r.remoteRoot), names, serverHash: prefs.data.settings.serverHash !== false };
+  const opts = { localRoot: absLocal(r.localRoot), remoteRoot: remotePath(r.remoteRoot), names, serverHash: prefs.data.settings.serverHash !== false, ignore: ignorer() };
   const sess = browserSession();
   if (compareToken) compareToken.cancelled = true;
   const token = compareToken = { cancelled: false };

@@ -4,6 +4,38 @@ All notable changes to filo are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/lang/fr/).
 
+## [1.0.1] — 2026-11-13
+
+### Fixed
+
+- **Synchronized browsing on a slow connection**: going up quickly could move
+  the server up one folder and this computer up two, leaving the two sides
+  apart. A synchronized move now goes as one step on both sides; a click
+  while it is on its way is ignored.
+- **Synchronized browsing**: the differences (in yellow) no longer show while
+  one side has opened its new folder and the other not yet.
+- On a server folder already visited, ".." could lead to the wrong folder.
+- A file this computer refused to create or rename (a Thumbs.db on a network
+  share, for instance) was reported as "does not exist"; the message now says
+  what was refused.
+
+- **Windows: the Rust engine was left out of every build since 0.9.10.** The
+  macOS fix of 0.9.10 (fsync on a network share) named a system constant that
+  does not exist on Windows; the engine no longer compiled there, and the build
+  carried on without it (SFTP transfers then go through the slower built-in
+  engine). The macOS fallback is now compiled for macOS only.
+
+### Added
+
+- **Ignored files** (Settings → File management): left out of the folders you
+  transfer and never marked as a difference. By default `Thumbs.db`,
+  `desktop.ini`, `.DS_Store` and `._*`. A file you pick yourself still goes.
+
+### Changed
+
+- The synchronized browsing button sits in the middle of the gap between the
+  two panels, halfway down, and no longer straddles them.
+
 ## [1.0.0] — 2026-11-05
 
 ### Changed

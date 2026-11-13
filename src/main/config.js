@@ -34,6 +34,10 @@ const DEFAULT_SETTINGS = {
   confirmDelete: true,
   hookEnabled: false,       // the command after the queue (Settings)
   hookCommand: '',
+  // Files never taken in a folder, nor marked as a difference: the litter the
+  // systems leave behind (Noar, 13/11/2026). A name chosen by hand still goes.
+  // Same patterns as the LIVE SYNC file filter, separated by commas.
+  ignore: 'Thumbs.db, desktop.ini, .DS_Store, ._*',
 };
 
 // LIVE SYNC pairs. Excluded by default: system clutter and the temporary
@@ -149,6 +153,7 @@ function normalizeSettings(s) {
   o.readBack = true;
   o.hookEnabled = !!o.hookEnabled;
   o.hookCommand = String(o.hookCommand || '').slice(0, 2000);
+  o.ignore = o.ignore == null ? DEFAULT_SETTINGS.ignore : String(o.ignore).slice(0, 4000);
   return o;
 }
 

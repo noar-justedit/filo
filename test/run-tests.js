@@ -2010,7 +2010,9 @@ SEC('check against the other side', async () => {
   const r = await connectTrusting(ep);
   try {
     const names = ['DAY1', 'only-here.mov', 'only-there.mov'];
-    const p = await compare.plan(r, { localRoot: L, remoteRoot: '/deliv', names });
+    // main passes the "ignored files" setting (default list): .DS_Store goes through it.
+    const ignore = require('../src/main/core/filter').nameIgnorer(normalizeSettings({}).ignore);
+    const p = await compare.plan(r, { localRoot: L, remoteRoot: '/deliv', names, ignore });
     eq(p.algo, null, 'this test server computes no checksum');
     eq(p.both.sort(), ['DAY1/flip.mov', 'DAY1/same.mov', 'DAY1/sub/same2.mov'], 'same size on both sides: to check; .DS_Store left out');
     const res = await compare.run(r, p, { localRoot: L, remoteRoot: '/deliv', readBack: true });
@@ -2415,6 +2417,58 @@ SEC('speed test (0.8.0)', async () => {
     q3.closeAll();
     await srv.close();
   }
+});
+
+SEC('1.0.1: ignored files (Thumbs.db, .DS_Store…)', async () => {
+  const { nameIgnorer } = require('../src/main/core/filter');
+  const local = require('../src/main/proto/local');
+  const compare = require('../src/main/core/compare');
+  const def = normalizeSettings({}).ignore;
+  eq(def, 'Thumbs.db, desktop.ini, .DS_Store, ._*', 'the default list');
+  eq(normalizeSettings({ ignore: '' }).ignore, '', 'an empty list stays empty (nothing ignored)');
+  const ig = nameIgnorer(def);
+  for (const n of ['Thumbs.db', 'THUMBS.DB', 'desktop.ini', '.DS_Store', '._clip.mov']) ok(ig(n, false), `${n} is ignored`);
+  for (const n of ['Thumbs.db.txt', 'clip.mov', 'DS_Store', 'my.Thumbs.db']) ok(!ig(n, false), `${n} is not`);
+  ok(!nameIgnorer('')('Thumbs.db', false), 'an empty list ignores nothing');
+  ok(nameIgnorer('CACHE')('CACHE', true), 'a folder name in the list: the folder is ignored');
+
+  // Upload side: the local walk leaves them out, and nothing under an ignored folder.
+  const d = scratch();
+  for (const f of ['a/clip.mov', 'a/Thumbs.db', 'a/b/.DS_Store', 'a/b/logo.png', 'a/CACHE/x.bin', 'a/b/._logo.png']) randomFile(path.join(d, f), 10);
+  const seen = [];
+  await local.walk(path.join(d, 'a'), e => seen.push(`${e.type}:${e.rel}`), null, { ignore: nameIgnorer(def + ', CACHE') });
+  eq(seen.sort(), ['file:b/logo.png', 'file:clip.mov', 'folder:b'], 'local walk: only the real files');
+  const all = [];
+  await local.walk(path.join(d, 'a'), e => all.push(e.rel));
+  eq(all.length, 8, 'without the setting, everything is walked (as before)');
+
+  // Download side: the same over SFTP, several listings at once.
+  const { srv, ep, root } = await server();
+  for (const f of ['t/clip.mov', 't/Thumbs.db', 't/LOGOS/CNN/Thumbs.db', 't/LOGOS/CNN/cnn.png', 't/desktop.ini']) randomFile(path.join(root, f), 10);
+  const r = await connectTrusting(ep);
+  const got = [];
+  await walkRemoteParallel(r, '/t', e => got.push(`${e.type}:${e.rel}`), null, { slots: 8, ignore: ig });
+  eq(got.sort(), ['file:LOGOS/CNN/cnn.png', 'file:clip.mov', 'folder:LOGOS', 'folder:LOGOS/CNN'], 'server walk: only the real files');
+
+  // CHECK AGAINST THE OTHER SIDE: a Thumbs.db on one side only is not a difference.
+  const L = scratch();
+  fs.mkdirSync(path.join(L, 't/LOGOS/CNN'), { recursive: true });
+  fs.copyFileSync(path.join(root, 't/clip.mov'), path.join(L, 't/clip.mov'));
+  fs.copyFileSync(path.join(root, 't/LOGOS/CNN/cnn.png'), path.join(L, 't/LOGOS/CNN/cnn.png'));
+  randomFile(path.join(L, 't/.DS_Store'), 5);
+  const p = await compare.plan(r, { localRoot: L, remoteRoot: '/', names: ['t'], serverHash: false, ignore: ig });
+  eq([...p.L.keys()].sort(), [...p.R.keys()].sort(), 'compared: the same files on both sides');
+  ok(![...p.R.keys()].some(k => /Thumbs|desktop/.test(k)), 'the ignored files are not compared');
+  await r.close();
+  await srv.close();
+});
+
+SEC('1.0.1: a refused file name is not called "missing"', async () => {
+  const at = (syscall, extra) => RemoteError.from(Object.assign(new Error('x'), { code: 'ENOENT', syscall, path: 'V:\\LOGOS\\Thumbs.db.filopart' }, extra || {})).message;
+  ok(/could not create/.test(at('open')), 'creating: ' + at('open'));
+  ok(/could not rename .*to "V:\\LOGOS\\Thumbs\.db"/.test(at('rename', { dest: 'V:\\LOGOS\\Thumbs.db' })), 'renaming: ' + at('rename', { dest: 'V:\\LOGOS\\Thumbs.db' }));
+  ok(/does not exist/.test(at('stat')), 'reading a file that is gone: still "does not exist"');
+  ok(RemoteError.from(Object.assign(new Error('x'), { code: 'ENOENT', syscall: 'open', path: 'p' })).fatal, 'still not retried');
 });
 
 // ══ Run ══════════════════════════════════════════════════════════════════
