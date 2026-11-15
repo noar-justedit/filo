@@ -4,6 +4,45 @@ All notable changes to filo are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/lang/fr/).
 
+## [1.0.2] — 2026-11-15
+
+### Fixed
+
+- **Connecting after closing the last tab showed nothing**: the emptied tab got
+  a new number inside filo, and the connection that followed was dropped
+  without a word (only a restart helped).
+- **A PAUSE no longer lifts itself.** LIVE SYNC, the segment relay and the
+  command line restarted a queue the user had paused; they also started a
+  queue scheduled for later, before its time. Now only the user (START, files
+  they add, the command line they type) starts a paused queue; a scheduled
+  start waits for its time, and no longer resumes files paused one by one.
+- **DUAL SYNC: SYNCTHING goes first again.** The mark telling the S-FTP
+  BACKUP's copies apart was lost on the way into the queue: they never waited
+  for SYNCTHING.
+- **DUAL SYNC: a folder deleted here no longer wipes the server's whole
+  folder.** Only the files this session synchronized go; a file put on the
+  server since, or left out by the filters, stays, and so does its folder.
+- **A key protected by a passphrase**: filo now asks for the passphrase (at
+  connection, and when the queue needs it) instead of failing file after file.
+- **`filo … --wait`** no longer reports successful files as failed beyond
+  5,000 finished files (a long image sequence).
+- An upload removed from the queue no longer leaves its `.filopart` on the
+  server.
+- LIVE SYNC no longer lists the whole server again after each file it brings
+  here.
+- The ignored files are also left out when a server link points to a folder.
+
+### Changed
+
+- Build (Linux): the end says whether the Rust engine is in the packages,
+  like on macOS and Windows.
+- Build (macOS): when Apple refuses notarization because a developer
+  agreement must be accepted, the build says so at once, with what to do,
+  and does not try for nothing.
+- Inside: every request on a server names its tab; filo's work-file names,
+  protocol ports and names, and checksum names are each written once; every
+  field of a queue item is described once (`core/itemfields.js`).
+
 ## [1.0.1] — 2026-11-13
 
 ### Fixed

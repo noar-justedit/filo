@@ -39,6 +39,7 @@ const { createDirect } = require('./direct-app');
 const { RemoteError } = require('./core/errors');
 const { walkRemoteParallel, deleteRemoteTree, safeLocalName, localJoin } = require('./core/scan');
 const { nameIgnorer } = require('./core/filter');
+const { PART, OWN_PATTERNS } = require('./core/ownfiles');
 // The "ignored files" setting (Thumbs.db, .DS_Store…): left out inside the
 // folders that are transferred, and never marked as a difference.
 const ignorer = () => nameIgnorer(prefs.data.settings.ignore);
@@ -195,9 +196,21 @@ const memSecrets = new Map();       // endpointId → { password, passphrase } (
 const quickEndpoints = new Map();   // endpointId → { protocol, host, port, user }
 
 function quickId(q) { return `quick:${q.protocol}:${q.user || ''}@${String(q.host).toLowerCase()}:${q.port}`; }
+// The other way round (a quick connection forgotten by a restart).
+function parseQuickId(id) {
+  const m = /^quick:([^:]+):(.*)@(.+):(\d+)$/.exec(String(id));
+  return m ? { protocol: m[1], user: m[2], host: m[3], port: Number(m[4]) } : null;
+}
 
 function needsPassword(endpointId, label, what) {
   return new RemoteError(`filo needs the ${what || 'password'} for ${label}.`, { code: 'NEEDS_PASSWORD', fatal: true, endpointId, what: what || 'password' });
+}
+
+function keyNeedsPassphrase(buf) {
+  try {
+    const r = require('ssh2').utils.parseKey(buf);
+    return r instanceof Error && /passphrase|encrypted/i.test(r.message);
+  } catch (_) { return false; }
 }
 
 // The identities this server is known by travel with the endpoint: a transfer
@@ -220,6 +233,9 @@ async function resolveEndpointBase(endpointId) {
       try { ep.privateKey = fs.readFileSync(site.keyPath); }
       catch (_) { throw new RemoteError(`The private key "${site.keyPath}" cannot be read.`, { fatal: true }); }
       ep.passphrase = mem.passphrase || secrets.decrypt(site.passphraseEnc) || undefined;
+      // A key protected by a passphrase, and none known: ask for it, the way a
+      // password is asked for, rather than fail at the server.
+      if (!ep.passphrase && keyNeedsPassphrase(ep.privateKey)) throw needsPassword(endpointId, site.name, 'passphrase');
     } else {
       ep.password = mem.password || (site.logon === 'normal' ? secrets.decrypt(site.passwordEnc) : '');
       if (!ep.password) throw needsPassword(endpointId, site.name);
@@ -246,15 +262,15 @@ function endpointLabel(endpointId) {
 // Separate from the transfer connections: browsing must never wait behind a
 // 40 GB upload, and the queue must never lose its connection because someone
 // connected the panel to another server.
-// One per tab of the window (0.10.0, Noar: tabs as in FileZilla). The window
-// says which tab it works in (tab-select, sent before the requests, in order):
-// every handler takes its tab's browser at its very start, so an answer that
-// arrives after a switch still belongs to the tab that asked.
+// One per tab of the window (0.10.0, Noar: tabs as in FileZilla). Every
+// request that works on a server names its tab (the window passes the tab it
+// was made in): there is no "current tab" here to drift from the window's.
 const browsers = new Map();
-let curTab = 't1';
+const TAB_RE = /^t\d{1,9}$/;
 function newBrowser(tab) { return { tab, endpointId: null, remote: null, label: '', ep: null, reconnecting: null, closed: false }; }
 function B(tab) {
-  const k = String(tab || curTab);
+  if (!TAB_RE.test(String(tab))) throw new RemoteError('No tab for this request.', { fatal: true });
+  const k = String(tab);
   let b = browsers.get(k);
   if (!b) { b = newBrowser(k); browsers.set(k, b); }
   return b;
@@ -269,7 +285,7 @@ function closeAllBrowsers() { for (const b of browsers.values()) closeBrowser(b)
 // it) is bound to the tab and the server it started on: if that tab connects
 // to another server meanwhile, the next step stops instead of carrying on
 // over there.
-function browserSession(b) { const x = b || B(); return { b: x, endpointId: x.endpointId }; }
+function browserSession(b) { return { b, endpointId: b.endpointId }; }
 function sameServer(sess) {
   if (sess && (sess.endpointId !== sess.b.endpointId || sess.b.closed)) {
     throw new RemoteError('The panel connected to another server meanwhile: stopped here.', { code: 'SERVER_CHANGED', fatal: true });
@@ -294,8 +310,7 @@ async function reconnectBrowser(b) {
   try { return await b.reconnecting; } finally { b.reconnecting = null; }
 }
 
-async function withBrowser(fn, sess0) {
-  const sess = sess0 || browserSession();
+async function withBrowser(fn, sess) {
   const b = sess.b;
   if (!b.remote) throw new RemoteError('Not connected.', { code: 'NOT_CONNECTED' });
   sameServer(sess);
@@ -329,7 +344,7 @@ function offerTrust(t) {
 function errOut(e) {
   const err = RemoteError.from(e);
   if (err.trust) offerTrust(err.trust);
-  return { ok: false, error: err.message, code: err.code || null, trust: err.trust || null, needsPassword: err.code === 'NEEDS_PASSWORD', what: err.what || null, endpointId: err.endpointId || null };
+  return { ok: false, error: err.message, code: err.code || null, auth: err.auth || null, trust: err.trust || null, needsPassword: err.code === 'NEEDS_PASSWORD', what: err.what || null, endpointId: err.endpointId || null };
 }
 
 // ── Window ─────────────────────────────────────────────────────────────────
@@ -507,6 +522,8 @@ app.whenReady().then(() => {
   queue.on('ask-closed', id => send('queue-ask-closed', id));
   queue.on('blocked', b => { if (b && b.trust) offerTrust(b.trust); send('queue-blocked', b); });
   queue.on('finished', s => onQueueFinished(s).catch(e => log('error', 'After the queue: ' + e.message)));
+  queue.on('scheduled', s => send('queue-scheduled', s));
+  queue.on('drop-remote', d => dropRemoteParts(d));
 
   syncer = new Syncer({
     prefs, queue, log,
@@ -1035,8 +1052,15 @@ function waitItems(ids, emit, gone) {
   return new Promise(resolve => {
     const want = new Set(ids);
     let lastEmit = 0;
+    // The queue keeps the last 5,000 finished files only: a file finished
+    // long ago (a sequence of 20,000 frames) may be gone from it by the end.
+    // What each file became is kept here as it is seen, so it still counts.
+    const seen = new Map();
+    const note = it => { if (it && want.has(it.id)) seen.set(it.id, { id: it.id, status: it.status, size: it.size, done: it.done, error: it.error, dir: it.dir, local: it.local, remote: it.remote }); };
+    const onDone = (it, status) => { note(it); const x = seen.get(it && it.id); if (x && status) x.status = status; };
+    queue.on('item-done', onDone);
     const check = () => {
-      const its = [...want].map(id => queue.get(id));
+      const its = [...want].map(id => { const it = queue.get(id); if (it) note(it); return it || seen.get(id); });
       const end = it => !it || ['done', 'skipped', 'failed', 'stopped'].includes(it.status);
       const now = Date.now();
       if (now - lastEmit > 2000) {
@@ -1051,13 +1075,13 @@ function waitItems(ids, emit, gone) {
       const b = queue.blocked;
       // (A refused site stops the whole queue, these files included.)
       if (b && queue.state !== 'running' && its.some(it => it && !end(it))) {
-        queue.removeListener('changed', kick); queue.removeListener('state', kick);
+        queue.removeListener('changed', kick); queue.removeListener('state', kick); queue.removeListener('item-done', onDone);
         clearInterval(t); clearTimeout(pend);
         resolve({ code: 3, files: its.length, error: `${b.endpointLabel || 'the server'}: ${b.message} (the queue is stopped)` });
         return;
       }
       if (its.every(end) || gone()) {
-        queue.removeListener('changed', kick); queue.removeListener('state', kick);
+        queue.removeListener('changed', kick); queue.removeListener('state', kick); queue.removeListener('item-done', onDone);
         clearInterval(t); clearTimeout(pend);
         const count = s => its.filter(it => it && it.status === s).length;
         const failed = count('failed') + count('stopped') + its.filter(it => !it).length;
@@ -1130,7 +1154,7 @@ async function cliAdd(req, emit) {
     const it = [...queue.items.values()].find(x => x.dir === sp.dir && x.local === sp.local && x.remote === sp.remote && x.endpointId === endpointId && x.status !== 'done');
     if (it && !ids.includes(it.id)) ids.push(it.id);
   }
-  if (queue.state !== 'running' && queue.state !== 'paused') queue.start();
+  if (queue.state !== 'running') queue.start();          // asked for on the command line: the user's start
   const fileIds = ids.filter(id => { const it = queue.get(id); return it && it.type === 'file'; });
   emit({ type: 'queued', files: fileIds.length, conflict: added.conflict || 0, message: `${fileIds.length} file${fileIds.length === 1 ? '' : 's'} in the queue (${site.name})${added.conflict ? `, ${added.conflict} left out (same destination as another file)` : ''}` });
   return fileIds;
@@ -1253,6 +1277,10 @@ ipcMain.handle('init', () => ({
   queueCounts: queue.counts(),
   log: logLines.slice(-500),
   existingLabels: EXISTING_LABELS,
+  ownPatterns: OWN_PATTERNS,             // never shown in a file filter
+  // Written once, here: the window shows the same names and ports.
+  protocols: { ports: DEFAULT_PORT, labels: LABEL },
+  hashLabels: require('./core/queue').HASH_LABEL,
 }));
 ipcMain.handle('save-ui', (_, ui) => { prefs.save({ ui: Object.assign({}, prefs.data.ui, ui || {}) }); return true; });
 ipcMain.handle('settings-save', (_, patch) => {
@@ -1410,10 +1438,10 @@ ipcMain.handle('local-move', async (_, paths, target) => {
   if (moved.length) log('info', `Moved ${moved.length} item${moved.length > 1 ? 's' : ''} to ${dest}`);
   return { ok: !errors.length, moved, errors };
 });
-ipcMain.handle('remote-move', async (_, paths, target) => {
+ipcMain.handle('remote-move', async (_, tab, paths, target) => {
   const errors = [], moved = [];
   const dest = remotePath(target);
-  const sess = browserSession();
+  const sess = browserSession(B(tab));
   for (const p of Array.isArray(paths) ? paths : []) {
     const from = remotePath(p);
     const name = posix.basename(from);
@@ -1474,8 +1502,8 @@ ipcMain.handle('connect-cancel', async () => {
   return true;
 });
 
-ipcMain.handle('connect', async (_, req) => {
-  const browser = B();                    // this tab's, taken before anything waits
+ipcMain.handle('connect', async (_, tab, req) => {
+  const browser = B(tab);                    // this tab's, taken before anything waits
   let endpointId, site = null, attempt = null;
   try {
     if (req.siteId) {
@@ -1548,9 +1576,11 @@ ipcMain.handle('connect', async (_, req) => {
     const r = errOut(e);
     // A refused login: the password (or passphrase) typed for it was wrong.
     // Forget it, so the next attempt asks again, or uses the saved one.
-    if (endpointId && /refused the login|private key cannot be read/i.test(r.error)) {
+    if (endpointId && r.auth) {
       const m = memSecrets.get(endpointId);
       if (m) { delete m.password; delete m.passphrase; }
+      // A key's passphrase refused: asked again, like a wrong password.
+      if (r.auth === 'key' && site && site.logon === 'key') Object.assign(r, { needsPassword: true, what: 'passphrase' });
     }
     log(r.code === 'TRUST_NEEDED' || r.needsPassword ? 'info' : 'error', r.error.split('\n')[0]);
     return r;
@@ -1588,7 +1618,7 @@ ipcMain.handle('speedtest-run', async (_, req) => {
     if (e && e.cancelled) return { ok: false, cancelled: true };
     if (e && (e.code === 'PICK_DIR' || e.code === 'READONLY' || e.code === 'NO_FILE')) return { ok: false, code: e.code, dir: e.dir, error: e.message };
     const r = errOut(e);
-    if (/refused the login|private key cannot be read/i.test(r.error)) { const mm = memSecrets.get(endpointId); if (mm) { delete mm.password; delete mm.passphrase; } }
+    if (r.auth) { const mm = memSecrets.get(endpointId); if (mm) { delete mm.password; delete mm.passphrase; } }
     log(r.code === 'TRUST_NEEDED' || r.needsPassword ? 'info' : 'warn', 'Speed test: ' + r.error.split('\n')[0]);
     return r;
   } finally { speedRun = null; }
@@ -1626,15 +1656,14 @@ ipcMain.handle('speedtest-save', (_, siteId) => {
   return { ok: true, site: saved, warn };
 });
 
-ipcMain.handle('disconnect', async () => {
-  const b = B();
+ipcMain.handle('disconnect', async (_, tab) => {
+  const b = B(tab);
   if (b.remote) log('info', `Disconnected from ${b.label}`);
   closeBrowser(b);
   return true;
 });
 // The tabs (0.10.0). tab-select is a message, not a request: it reaches this
 // process before the requests the window sends after it.
-ipcMain.on('tab-select', (_, id) => { if (/^t\d{1,9}$/.test(String(id))) curTab = String(id); });
 ipcMain.handle('tab-close', (_, id) => {
   const b = browsers.get(String(id));
   if (!b) return true;
@@ -1656,8 +1685,8 @@ ipcMain.handle('endpoint-password', (_, endpointId, password) => {
   memSecrets.set(endpointId, m);
   // A quick connection forgotten by a restart: rebuild it from the id.
   if (endpointId.startsWith('quick:') && !quickEndpoints.has(endpointId)) {
-    const mm = /^quick:([^:]+):(.*)@(.+):(\d+)$/.exec(endpointId);
-    if (mm) quickEndpoints.set(endpointId, { protocol: mm[1], user: mm[2], host: mm[3], port: Number(mm[4]) });
+    const q = parseQuickId(endpointId);
+    if (q) quickEndpoints.set(endpointId, q);
   }
   return true;
 });
@@ -1667,27 +1696,27 @@ function remotePath(p) {
   const s = String(p || '/');
   return posix.normalize(s.startsWith('/') ? s : '/' + s);
 }
-ipcMain.handle('remote-list', async (_, dir) => {
+ipcMain.handle('remote-list', async (_, tab, dir) => {
   try {
     const d = remotePath(dir);
-    const entries = markIgnored((await withBrowser(r => r.list(d))).map(e => Object.assign({}, e)));
+    const entries = markIgnored((await withBrowser(r => r.list(d), browserSession(B(tab)))).map(e => Object.assign({}, e)));
     return { ok: true, dir: d, parent: d === '/' ? null : posix.dirname(d), entries };
   } catch (e) { return errOut(e); }
 });
-ipcMain.handle('remote-mkdir', async (_, dir, name) => {
+ipcMain.handle('remote-mkdir', async (_, tab, dir, name) => {
   try {
     if (/[/]/.test(name) || name === '.' || name === '..' || !String(name || '').trim()) return { ok: false, error: 'This name is not allowed (no "/", not "." or "..").' };
     const p = posix.join(remotePath(dir), String(name));
-    await withBrowser(r => r.mkdir(p));
+    await withBrowser(r => r.mkdir(p), browserSession(B(tab)));
     return { ok: true, path: p };
   } catch (e) { return errOut(e); }
 });
-ipcMain.handle('remote-rename', async (_, from, toName) => {
+ipcMain.handle('remote-rename', async (_, tab, from, toName) => {
   try {
     if (/[/]/.test(toName) || toName === '.' || toName === '..' || !String(toName || '').trim()) return { ok: false, error: 'This name is not allowed (no "/", not "." or "..").' };
     const f = remotePath(from);
     const t = posix.join(posix.dirname(f), String(toName));
-    const sess = browserSession();
+    const sess = browserSession(B(tab));
     if (await withBrowser(r => r.stat(t), sess)) return { ok: false, error: 'Something with that name is already there.' };
     await withBrowser(r => r.rename(f, t), sess);
     return { ok: true };
@@ -1695,10 +1724,10 @@ ipcMain.handle('remote-rename', async (_, from, toName) => {
 });
 // Every delete in progress (several can run): Cancel stops them all.
 const deleteTokens = new Set();
-ipcMain.handle('remote-delete', async (_, items) => {
+ipcMain.handle('remote-delete', async (_, tab, items) => {
   const deleteToken = { cancelled: false };
   deleteTokens.add(deleteToken);
-  const sess = browserSession();
+  const sess = browserSession(B(tab));
   const errors = [];
   let n = 0;
   for (const it of items || []) {
@@ -1718,11 +1747,36 @@ ipcMain.handle('remote-delete', async (_, items) => {
   return { ok: !errors.length, count: n, errors };
 });
 ipcMain.handle('remote-delete-cancel', () => { for (const t of deleteTokens) t.cancelled = true; return true; });
-ipcMain.handle('remote-url', (_, p) => {
-  const b = B();
+ipcMain.handle('remote-url', (_, tab, p) => {
+  const b = B(tab);
   if (!b.ep) return '';
   return describe(b.ep) + remotePath(p).split('/').map(encodeURIComponent).join('/');
 });
+
+// The .filopart files of uploads removed from the queue: gathered for a
+// second, then deleted on one connection per server. Best effort: a server
+// that cannot be reached keeps them (they are only partial copies).
+const dropWait = new Map();          // endpointId → Set of paths
+function dropRemoteParts({ endpointId, path: p }) {
+  if (!endpointId || !p) return;
+  if (!dropWait.has(endpointId)) {
+    dropWait.set(endpointId, new Set());
+    setTimeout(async () => {
+      const paths = [...dropWait.get(endpointId)];
+      dropWait.delete(endpointId);
+      let r = null;
+      try {
+        r = createRemote(await resolveEndpoint(endpointId), { log: () => {} });
+        await r.connect();
+        // The same file put back in the queue meanwhile writes there again: kept.
+        const busy = new Set([...queue.items.values()].filter(it => it.dir === 'up' && it.endpointId === endpointId && !['done', 'skipped'].includes(it.status)).map(it => it.remote + PART));
+        for (const x of paths) { if (busy.has(x)) continue; try { await r.unlink(x); } catch (_) { /* not there: nothing to clean */ } }
+      } catch (_) { /* no password, server away: the partials stay */ }
+      finally { if (r) { try { r.close(); } catch (_) {} } }
+    }, 1000);
+  }
+  dropWait.get(endpointId).add(p);
+}
 
 // ── IPC: the queue ─────────────────────────────────────────────────────────
 // req: { dir: 'up'|'down', sources: [{ path, type, size, mtime }], target, start, existing }
@@ -1730,9 +1784,9 @@ ipcMain.handle('remote-url', (_, p) => {
 // so that empty folders arrive too.
 // Every listing in progress (two can overlap): CANCEL, PAUSE and STOP reach them all.
 const scanTokens = new Set();
-ipcMain.handle('queue-add', async (_, req) => {
-  const scanSess = browserSession();       // this tab's, before anything waits
-  const endpointId = req.endpointId || scanSess.endpointId;
+ipcMain.handle('queue-add', async (_, tab, req) => {
+  const scanSess = browserSession(B(tab)); // this tab's, before anything waits
+  const endpointId = scanSess.endpointId;
   if (!endpointId) return { ok: false, error: 'Connect to a server first.' };
   const label = endpointLabel(endpointId);
   const token = { cancelled: false };
@@ -1753,7 +1807,7 @@ ipcMain.handle('queue-add', async (_, req) => {
     if (!specs.length) return;
     const r = queue.add(specs.splice(0), { front: !!req.front });
     revived.push(...(r.revived || [])); already += r.already || 0; queued += r.queued || 0; conflict += r.conflict || 0;
-    if (!started && req.start !== false && !token.noStart && !scheduled && queued) {
+    if (!started && req.start !== false && !token.noStart && !queue.startAt && queued) {
       started = true;
       if (queue.state !== 'running') queue.start();
       send('scan-progress', { found, started: true });
@@ -1815,7 +1869,7 @@ ipcMain.handle('queue-add', async (_, req) => {
     // Paused while the folders were being listed: what was found stays queued.
     // Nothing new to do (everything was already queued, or waits for the
     // "resume or start again?" answer): no empty run, no "finished" notice.
-    if (req.start !== false && !token.noStart && queued && !scheduled && queue.state !== 'running') queue.start();
+    if (req.start !== false && !token.noStart && queued && !queue.startAt && queue.state !== 'running') queue.start();
     return { ok: true, count: found, revived: revived.slice(0, 5000), already, conflict };
   } catch (e) {
     flush();
@@ -1824,36 +1878,10 @@ ipcMain.handle('queue-add', async (_, req) => {
   } finally { scanTokens.delete(token); queue.scanEnd(); }
 });
 ipcMain.handle('scan-cancel', () => { for (const t of scanTokens) t.cancelled = true; return true; });
-ipcMain.handle('queue-start', () => { unschedule(); queue.start(); return queue.state; });
-// ── Start the queue later (Noar, 12/10/2026): at a time of the day, while
-// filo is open. Adding files meanwhile does not start it; START does.
-let scheduled = null;   // { at, timer }
-function unschedule() { if (scheduled) { clearTimeout(scheduled.timer); scheduled = null; send('queue-scheduled', { at: 0 }); } }
-ipcMain.handle('queue-schedule', (_, at) => {
-  if (scheduled) clearTimeout(scheduled.timer);
-  scheduled = null;
-  const t = Number(at) || 0;
-  if (t > Date.now()) {
-    const fire = () => {
-      if (!scheduled) return;
-      // setTimeout cannot wait more than ~24 days, and a machine asleep
-      // delays it: check the clock again rather than trust the timer.
-      if (Date.now() < scheduled.at - 500) { scheduled.timer = setTimeout(fire, Math.min(scheduled.at - Date.now(), 60000)); return; }
-      scheduled = null;
-      send('queue-scheduled', { at: 0, fired: true });
-      log('info', 'Scheduled start: the queue starts');
-      if (queue.state !== 'running') {
-        const paused = queue.page('queue', 0, 1e6).items.filter(i => i.status === 'paused').map(i => i.id);
-        if (paused.length) queue.resumeItems(paused);
-        queue.start();
-      }
-    };
-    scheduled = { at: t, timer: setTimeout(fire, Math.min(t - Date.now(), 60000)) };
-    log('info', `Scheduled start: ${new Date(t).toLocaleString()}`);
-  }
-  return { at: scheduled ? scheduled.at : 0 };
-});
-ipcMain.handle('queue-scheduled', () => ({ at: scheduled ? scheduled.at : 0 }));
+ipcMain.handle('queue-start', () => { queue.start(); return queue.state; });
+// Start later: kept by the queue itself, so nothing else starts it before.
+ipcMain.handle('queue-schedule', (_, at) => ({ at: queue.schedule(at) }));
+ipcMain.handle('queue-scheduled', () => ({ at: queue.startAt }));
 ipcMain.handle('queue-pause', () => { for (const t of scanTokens) t.noStart = true; queue.pause(); return queue.state; });
 // Stop everything also stops a folder listing still adding files.
 ipcMain.handle('queue-stop-all', () => { for (const t of scanTokens) t.cancelled = true; queue.stopAll(); return queue.state; });
@@ -2005,13 +2033,13 @@ ipcMain.handle('sites-export', async (_, opts, ids) => {
 
 // ── IPC: check a delivery against the other side (Noar, 12/10/2026) ───────
 let compareToken = null;
-ipcMain.handle('compare', async (_, req) => {
+ipcMain.handle('compare', async (_, tab, req) => {
   const compare = require('./core/compare');
   const r = req || {};
   const names = (Array.isArray(r.names) ? r.names : []).map(String).filter(n => n && !/[\/\\]/.test(n) && n !== '..' && n !== '.');
   if (!names.length) return { ok: false, error: 'Nothing selected.' };
   const opts = { localRoot: absLocal(r.localRoot), remoteRoot: remotePath(r.remoteRoot), names, serverHash: prefs.data.settings.serverHash !== false, ignore: ignorer() };
-  const sess = browserSession();
+  const sess = browserSession(B(tab));
   if (compareToken) compareToken.cancelled = true;
   const token = compareToken = { cancelled: false };
   try {

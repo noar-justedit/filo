@@ -216,8 +216,11 @@ function mirrorPlan({ L, R, state, seen, now, stableMs, pull }) {
     files[rel] = { r: snap(r), l: files[rel] && files[rel].l, pend: 'l' };
   };
 
-  // Folders. A folder gone here goes whole from the server: what it holds is
-  // not looked at again.
+  // Folders. A folder gone here is NOT deleted whole on the server (a server
+  // has no trash): its files go through the same rules as any other (only
+  // what this session knows as synchronized and unchanged is deleted; a file
+  // put there since, or left out by the filters, stays), and the folder is
+  // removed at the end only if that left it empty.
   const gone = [];
   const dirs = new Set();
   for (const [rel, e] of L) if (e.type === 'folder') dirs.add(rel);
@@ -230,7 +233,7 @@ function mirrorPlan({ L, R, state, seen, now, stableMs, pull }) {
     if (r.type !== 'folder') continue;
     if (b && b.dir && !b.pend) {                     // it was here: deleted here
       if (guard) continue;
-      out.deletes.push({ rel, type: 'folder' }); gone.push(rel);
+      gone.push(rel);
       delete files['/' + rel];
       continue;
     }
@@ -241,7 +244,6 @@ function mirrorPlan({ L, R, state, seen, now, stableMs, pull }) {
   for (const [rel, e] of L) if (e.type === 'file') rels.add(rel);
   for (const [rel, e] of R) if (e.type === 'file') rels.add(rel);
   for (const rel of [...rels].sort()) {
-    if (under(rel, gone)) { delete files[rel]; continue; }
     if (under(rel, partial)) continue;
     let l = L.get(rel), r = R.get(rel);
     if (l && l.type !== 'file') l = null;
@@ -276,6 +278,13 @@ function mirrorPlan({ L, R, state, seen, now, stableMs, pull }) {
       continue;
     }
     if (pull) down(rel, r, true);                     // put on the server by hand
+  }
+  // The folders gone here, deepest first, after their files: removed only
+  // when empty (the caller removes a folder, never what it still holds).
+  const goneDirs = [...R].filter(([rel, e]) => e.type === 'folder' && under(rel, gone)).map(([rel]) => rel);
+  for (const rel of goneDirs.sort((a, b) => b.split('/').length - a.split('/').length || (a < b ? 1 : -1))) {
+    out.deletes.push({ rel, type: 'folder' });
+    delete files['/' + rel];
   }
   for (const rel of Object.keys(files)) {
     const k = rel.startsWith('/') ? rel.slice(1) : rel;

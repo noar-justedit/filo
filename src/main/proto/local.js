@@ -18,10 +18,6 @@ function modeString(mode, isDir, isLink) {
   return (isLink ? 'l' : isDir ? 'd' : '-') + r(0o400, 'r') + r(0o200, 'w') + r(0o100, 'x') + r(0o40, 'r') + r(0o20, 'w') + r(0o10, 'x') + r(0o4, 'r') + r(0o2, 'w') + r(0o1, 'x');
 }
 
-// Hidden, for the "show hidden files" switch: a leading dot everywhere, and
-// the operating system's own litter (.DS_Store is caught by the dot already).
-const OS_LITTER = new Set(['Thumbs.db', 'desktop.ini', '$RECYCLE.BIN', 'System Volume Information']);
-function isHiddenName(name) { return name.startsWith('.') || OS_LITTER.has(name); }
 
 async function list(dir, strict) {
   const names = await fsp.readdir(dir);
@@ -231,4 +227,4 @@ async function walk(root, onEntry, token, opts) {
   await go(root, '');
 }
 
-module.exports = { list, stat, roots, windowsDrives, LocalSink, createReadStream, replace, setMTime, walk, isHiddenName, modeString };
+module.exports = { list, stat, roots, windowsDrives, LocalSink, createReadStream, replace, setMTime, walk, modeString };

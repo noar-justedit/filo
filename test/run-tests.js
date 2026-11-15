@@ -413,12 +413,15 @@ SEC('settings', () => {
 
 SEC('segment sizes', () => {
   // Measured by the code itself, not the test setting (FILO_TEST_SEGMENT_MB).
+  // segmentSizeFor itself, in a process without the test setting.
   const MB = 1024 * 1024, GB = 1024 * MB;
-  const sizeFor = size => Math.min(256 * MB, Math.max(32 * MB, Math.ceil(size / 16 / MB) * MB));
-  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'core', 'transfer.js'), 'utf8');
-  ok(/SEG_MIN = 32 \* MB, SEG_MAX = 256 \* MB, SEG_TARGET = 16/.test(src), 'segments: 32 to 256 MB, about 16 per file');
-  eq([1 * GB, 4 * GB, 300 * GB].map(x => Math.ceil(x / sizeFor(x))), [16, 16, 1200], '1 GB and 4 GB: 16 segments; 300 GB: 256 MB each');
-  eq(Math.ceil(100 * MB / sizeFor(100 * MB)), 4, '100 MB: 4 segments of 32 MB');
+  const sizes = [1 * GB, 4 * GB, 300 * GB, 100 * MB, 10 * MB];
+  const env = Object.assign({}, process.env); delete env.FILO_TEST_SEGMENT_MB;
+  const out = require('child_process').execFileSync(process.execPath, ['-e',
+    `const t = require(${JSON.stringify(path.join(__dirname, '..', 'src', 'main', 'core', 'transfer.js'))}); console.log(JSON.stringify(${JSON.stringify(sizes)}.map(t.segmentSizeFor)))`], { env }).toString();
+  const seg = JSON.parse(out);
+  eq(seg.map((x, i) => Math.ceil(sizes[i] / x)), [16, 16, 1200, 4, 1], '1 GB and 4 GB: 16 segments; 300 GB: 256 MB each; 100 MB: 4; 10 MB: 1');
+  ok(seg.every(x => x >= 32 * MB && x <= 256 * MB), 'segments: 32 to 256 MB');
 });
 
 SEC('site manager order', () => {
@@ -1605,7 +1608,15 @@ SEC('dual sync: the server, a mirror of the MASTER', async () => {
   ok(mp.emptyGuard && !mp.deletes.length && !mp.downloads.some(d => d.rel === 'a'), 'local folder empty, server not: nothing deleted (a disk not connected?)');
   const RD = () => new Map([['k', f(1, 1)], ['d', { type: 'folder' }], ['d/x', f(1, 1)]]);
   mp = mirrorPlan({ L: new Map([['k', f(1, 1)]]), R: RD(), state: { files: { '/d': { dir: true }, 'd/x': { l: { s: 1, m: 1 }, r: { s: 1, m: 1 } } } }, seen: new Map(), now: 0, stableMs: 0 });
-  eq(mp.deletes.map(d => d.rel), ['d'], 'a folder gone here goes whole from the server');
+  eq(mp.deletes.map(d => `${d.type}:${d.rel}`), ['file:d/x', 'folder:d'], 'a folder gone here: its synchronized files, then the folder (only if empty)');
+  // 1.0.2 (review): what the session never synchronized in that folder stays
+  // on the server (a file put there since, a file the filters leave out).
+  const RD2 = () => new Map([['k', f(1, 1)], ['d', { type: 'folder' }], ['d/x', f(1, 1)], ['d/new.mov', f(7, 5)], ['d/sub', { type: 'folder' }], ['d/sub/y', f(2, 2)]]);
+  mp = mirrorPlan({ L: new Map([['k', f(1, 1)]]), R: RD2(), state: { files: { '/d': { dir: true }, '/d/sub': { dir: true }, 'd/x': { l: { s: 1, m: 1 }, r: { s: 1, m: 1 } }, 'd/sub/y': { l: { s: 2, m: 2 }, r: { s: 2, m: 2 } } } }, seen: new Map(), now: 0, stableMs: 0 });
+  eq(mp.deletes.map(d => `${d.type}:${d.rel}`), ['file:d/sub/y', 'file:d/x', 'folder:d/sub', 'folder:d'], 'the deepest folder first, after the files');
+  ok(!mp.deletes.some(d => d.rel === 'd/new.mov'), 'a file put on the server since stays (no trash on a server)');
+  mp = mirrorPlan({ L: new Map([['k', f(1, 1)]]), R: new Map([['k', f(1, 1)], ['d', { type: 'folder' }], ['d/x', f(9, 9)]]), state: { files: { '/d': { dir: true }, 'd/x': { l: { s: 1, m: 1 }, r: { s: 1, m: 1 } } } }, seen: new Map(), now: 0, stableMs: 0 });
+  ok(!mp.deletes.some(d => d.rel === 'd/x'), 'a file changed on the server since stays');
   mp = mirrorPlan({ L: new Map([['k', f(1, 1)]]), R: RD(), state: { files: {} }, seen: new Map([['r:d/x', { size: 1, mtime: 1, at: 0 }]]), now: 1, stableMs: 0, pull: true });
   eq([mp.deletes.length, mp.localFolders, mp.downloads.map(d => d.rel)], [0, ['d'], ['d/x']], 'put on the server by hand: brought here (3 ways), never deleted');
   mp = mirrorPlan({ L: new Map([['k', f(1, 1)]]), R: RD(), state: { files: {} }, seen: new Map(), now: 0, stableMs: 0, pull: false });
@@ -2469,6 +2480,80 @@ SEC('1.0.1: a refused file name is not called "missing"', async () => {
   ok(/could not rename .*to "V:\\LOGOS\\Thumbs\.db"/.test(at('rename', { dest: 'V:\\LOGOS\\Thumbs.db' })), 'renaming: ' + at('rename', { dest: 'V:\\LOGOS\\Thumbs.db' }));
   ok(/does not exist/.test(at('stat')), 'reading a file that is gone: still "does not exist"');
   ok(RemoteError.from(Object.assign(new Error('x'), { code: 'ENOENT', syscall: 'open', path: 'p' })).fatal, 'still not retried');
+});
+
+SEC('1.0.2: a pause or a scheduled start belongs to the user', async () => {
+  const { Syncer } = require('../src/main/syncer');
+  const { srv, ep, root } = await server();
+  const d = scratch();
+  const loc = path.join(d, 'Exports');
+  randomFile(path.join(loc, 'a.bin'), 30000);
+  const pairs = [{ id: 'cccccccccccccccc', name: 'Exports', siteId: 's1', local: loc, remote: '/p102', direction: 'up', auto: false, interval: 5, exclude: '' }];
+  const prefs = { listSyncPairs: () => pairs, getSyncPair: id => pairs.find(p => p.id === id), getSite: () => ({ id: 's1' }) };
+  const q = makeQueue(ep, SETTINGS, 'inline');
+  const sy = new Syncer({ prefs, queue: q, log: () => {}, resolveEndpoint: async () => ep, createRemote: e => proto.createRemote(e), dir: path.join(d, 'state'), stableMs: 0 });
+  // PAUSE by the user, then a LIVE SYNC pass with a file to send.
+  q.start(); q.pause();
+  await sy.run(pairs[0].id, 'test'); await sleep(50);
+  let r = await sy.run(pairs[0].id, 'test');
+  ok(r.copies >= 1, 'LIVE SYNC put the file in the queue');
+  eq(q.state, 'stopped', 'and the paused queue stays paused');
+  q.wake();
+  eq(q.state, 'stopped', 'wake() (LIVE SYNC, the relay) never lifts a user pause');
+  // A start scheduled for later: nothing starts the queue before it.
+  q.start(); q.pause(); q.held = false;   // as after a restart: not paused by the user
+  q.schedule(Date.now() + 3600e3);
+  q.wake();
+  eq([q.state, q.startAt > 0], ['stopped', true], 'scheduled: wake() waits for the time');
+  // The user's START lifts both.
+  await runQueue(q);
+  eq([q.held, q.startAt], [false, 0], 'START: the pause and the schedule are gone');
+  ok(fs.existsSync(path.join(root, 'p102', 'a.bin')), 'and the file went');
+  // STOP ALL holds the queue too; a file filo held and resumes does not start it.
+  q.stopAll();
+  const ids = q.add([{ dir: 'up', type: 'file', local: path.join(loc, 'a.bin'), remote: '/p102/b.bin', size: 30000, endpointId: 'e', endpointLabel: 't' }]);
+  q.pauseItems(ids);
+  q.resumeItems(ids, false);
+  eq(q.state, 'stopped', 'filo resuming its own held copy: the stopped queue stays stopped');
+  q.pauseItems(ids);
+  let started = false; q.once('state', st => { started = st === 'running'; });
+  q.resumeItems(ids);
+  ok(started && !q.held, 'the user resuming a file: the queue goes');
+  q.pause(); q.schedule(0);
+  await sy.stopAll ? sy.stopAll() : null;
+  await srv.close();
+});
+
+SEC('1.0.2: what a queue item carries is kept on the way', () => {
+  const { fieldsFor } = require('../src/main/core/itemfields');
+  const q = makeQueue({ host: 'x', port: 1 }, SETTINGS, 'inline');
+  const [id] = q.add([{ dir: 'up', type: 'file', local: '/l/a', remote: '/r/a', size: 1, endpointId: 'e', endpointLabel: 't',
+    sync: { pairId: 'p1', rel: 'a', mirror: true, trash: path.resolve('/l/.filo-trash'), junk: 1 } }]);
+  const it = q.get(id);
+  eq(it.sync, { pairId: 'p1', rel: 'a', trash: path.resolve('/l/.filo-trash'), mirror: true }, 'DUAL SYNC: "mirror" kept (SYNCTHING goes first again), nothing unknown');
+  for (const k of ['resume', 'restartFromZero', 'ownTarget', 'local', 'remote']) ok(fieldsFor('meta').includes(k) && fieldsFor('saved').includes(k), `${k}: decided early and saved`);
+  for (const k of fieldsFor('patch')) ok(fieldsFor('saved').includes(k), `${k}: sent back and saved`);
+  q.closeAll();
+});
+
+SEC('1.0.2: a key protected by a passphrase', () => {
+  const { utils } = require('ssh2');
+  const k = utils.generateKeyPairSync('ed25519', { passphrase: 'secret', cipher: 'aes256-cbc' });
+  const parsed = utils.parseKey(Buffer.from(k.private));
+  ok(parsed instanceof Error, 'an encrypted key cannot be read without its passphrase');
+  const e = RemoteError.from(parsed);
+  eq([e.auth, e.fatal, !!e.network], ['key', true, false], 'classed as a key problem (asked for), not a network one (retried)');
+  eq(RemoteError.from(new Error('All configured authentication methods failed')).auth, 'login', 'a refused login: auth = login');
+  eq(RemoteError.from(Object.assign(new Error('530 Login incorrect.'), { code: 530 })).auth, 'login', 'FTP 530: auth = login');
+  ok(!RemoteError.from(new Error('read ECONNRESET')).auth, 'a cut connection is not an authentication problem');
+});
+
+SEC('1.0.2: filo\'s own work files, one list', () => {
+  const own = require('../src/main/core/ownfiles');
+  const { SYNC_ALWAYS_EXCLUDE } = require('../src/main/config');
+  for (const n of ['clip.mov.filopart', 'clip.mov.filoold', '.clip.mov.filoparts']) ok(own.isOwnName(n), `${n}: filo's`);
+  for (const n of ['clip.mov', 'filopart', 'notes.filoparts']) ok(!own.isOwnName(n), `${n}: not filo's`);
+  eq(SYNC_ALWAYS_EXCLUDE, own.OWN_PATTERNS.join(', '), 'LIVE SYNC leaves out exactly those');
 });
 
 // ══ Run ══════════════════════════════════════════════════════════════════

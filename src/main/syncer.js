@@ -9,7 +9,9 @@
 // A run lists both folders (the server through a connection of its own, never
 // the browsing one), asks core/syncplan.js what to do, and hands the copies to
 // the transfer queue, which already does everything a copy needs: segments,
-// checksums, resume, retries. Nothing is ever deleted.
+// checksums, resume, retries. Copies never delete; only the S-FTP BACKUP
+// mirror deletes on the server what was deleted here, and only what this
+// session knows as synchronized (syncplan.js mirrorPlan).
 //
 // When a run happens:
 //  - AUTO pairs: when filo starts, every `interval` minutes (the server cannot
@@ -31,14 +33,14 @@ const { plan, mirrorPlan } = require('./core/syncplan');
 const { PathFilter } = require('./core/filter');
 const { SYNC_ALWAYS_EXCLUDE } = require('./config');
 const local = require('./proto/local');
-const { walkRemote, deleteRemoteTree, localJoin } = require('./core/scan');
+const { walkRemote, localJoin } = require('./core/scan');
 const { RemoteError } = require('./core/errors');
 const { readSmall, writeSmall, RELAY_SUFFIX } = require('./core/transfer');
 // SYNCTHING FAILSAFE: the MASTER's settings, on the server, for the
 // SLAVE (the only file of filo's own a server receives, and only for these
 // sessions: Noar, 11/10/2026). Never synced as a file, like SYNCTHING's own.
 const SESSION_FILE = '.filo-session';
-const TRASH = '.filo-trash';
+const { TRASH, isOwnName } = require('./core/ownfiles');
 const NEVER_SYNCED = new Set(['.stfolder', '.stignore', '.stversions', TRASH, SESSION_FILE]);
 function conflictName(rel, host) {
   const d = new Date(), p = n => String(n).padStart(2, '0');
@@ -58,6 +60,7 @@ const RELAY_POLL_MS = 15000;      // a relayed file in progress: its sender is l
 
 const STABLE_MS = 10000;          // same size and date for 10 s before a file is sent
 const WATCH_DEBOUNCE_MS = 4000;
+const OWN_WRITE_MS = 10000;     // a file just brought here: its own events are ignored this long
 const IDLE_CLOSE_MS = 60000;      // the listing connection closes after a minute of rest
 const STATE_MAX_BYTES = 64 * 1024 * 1024;
 
@@ -66,14 +69,19 @@ class Syncer extends EventEmitter {
   constructor(opts) {
     super();
     this.o = opts;
-    this.runs = new Map();          // pairId → { busy, again, timer, watcher, debounce, conn, seen, status }
+    this.runs = new Map();          // pairId → { busy, again, timer, watcher, debounce, conn, seen, status, own }
     this.stopped = false;
+    // A file LIVE SYNC just brought here: its last rename must not wake the
+    // watcher (it would list the whole server again for nothing).
+    if (opts.queue && typeof opts.queue.on === 'function') opts.queue.on('item-done', it => {
+      if (it && it.sync && it.dir === 'down') this.rt(it.sync.pairId).own.set(String(it.sync.rel), Date.now());
+    });
   }
 
   log(level, msg) { try { this.o.log(level, msg); } catch (_) {} }
   rt(id) {
     let r = this.runs.get(id);
-    if (!r) { r = { busy: false, again: false, seen: new Map(), status: { state: 'idle' } }; this.runs.set(id, r); }
+    if (!r) { r = { busy: false, again: false, seen: new Map(), own: new Map(), status: { state: 'idle' } }; this.runs.set(id, r); }
     return r;
   }
 
@@ -182,8 +190,13 @@ class Syncer extends EventEmitter {
     const r = this.rt(pair.id);
     try {
       r.watcher = fs.watch(pair.local, { recursive: true }, (_ev, name) => {
-        const n = String(name || '');
-        if (/\.filopart$|\.filoold$/.test(n)) return;          // filo's own writes
+        const n = String(name || '').replace(/\\/g, '/');
+        // filo's own writes: its work files, the session's trash, and the
+        // files it brought here a moment ago.
+        if (isOwnName(posix.basename(n)) || n === TRASH || n.startsWith(TRASH + '/')) return;
+        const t = r.own.get(n);
+        if (t && Date.now() - t < OWN_WRITE_MS) return;
+        for (const [k, at] of r.own) if (Date.now() - at > OWN_WRITE_MS) r.own.delete(k);
         if (r.debounce) clearTimeout(r.debounce);
         r.debounce = setTimeout(() => { r.debounce = null; this.run(pair.id, 'change'); }, WATCH_DEBOUNCE_MS);
       });
@@ -378,7 +391,7 @@ class Syncer extends EventEmitter {
   releaseHeld(id) {
     const q = this.o.queue;
     const ids = this.pairItems(id, it => it.sync.held && it.status === 'paused').map(it => { delete it.sync.held; return it.id; });
-    if (ids.length) q.resumeItems(ids);
+    if (ids.length) q.resumeItems(ids, false);
   }
   // The S-FTP BACKUP switched off, or the session deleted: what it still had
   // to copy stops (to Failed, retryable).
@@ -429,10 +442,15 @@ class Syncer extends EventEmitter {
         const dst = rp(d.rel);
         const inside = this.pairItems(pair.id, it => it.remote === dst || it.remote.startsWith(dst + '/')).map(it => it.id);
         if (inside.length) q.remove(inside);
-        try {
-          if (d.type === 'folder') await deleteRemoteTree(remote, dst, null, null); else await remote.unlink(dst);
-          deleted++;
-        } catch (e) { this.log('warn', `LIVE SYNC “${pair.name}”: ${d.rel} not deleted on the S-FTP BACKUP (${RemoteError.from(e).message})`); }
+        // A folder: removed only if empty (its synchronized files went just
+        // before); one still holding other files stays, with them.
+        if (d.type === 'folder') {
+          try { await remote.rmdir(dst); deleted++; }
+          catch (_) { this.log('info', `LIVE SYNC “${pair.name}”: ${d.rel} kept on the S-FTP BACKUP: it still holds files this session did not synchronize`); }
+          continue;
+        }
+        try { await remote.unlink(dst); deleted++; }
+        catch (e) { this.log('warn', `LIVE SYNC “${pair.name}”: ${d.rel} not deleted on the S-FTP BACKUP (${RemoteError.from(e).message})`); }
       }
       this.log('info', `LIVE SYNC “${pair.name}”: ${deleted} item${deleted === 1 ? '' : 's'} deleted on the S-FTP BACKUP (no longer on this computer)${out.deletes.length <= 5 ? ': ' + out.deletes.map(d => d.rel).join(', ') : ''}`);
     }
@@ -466,12 +484,12 @@ class Syncer extends EventEmitter {
         const it = have.get(sp.dir + '\0' + sp.local + '\0' + sp.remote);
         if (it && !inIds.has(it.id)) { inIds.add(it.id); ids.push(it.id); }
       }
-      if (q.state === 'stopped' && added.queued) q.start();
+      if (added.queued) q.wake();
     }
     r.mirrorIds = ids.filter(id => { const it = q.get(id); return it && it.type === 'file'; });
     // SYNCTHING busy again while this pass listed: its copies wait too;
     // otherwise the ones held earlier go on (never one the user paused).
-    if (this.mirrorOn(pair)) { this.releaseHeld(pair.id); if (q.state === 'stopped' && r.mirrorIds.length) q.start(); }
+    if (this.mirrorOn(pair)) { this.releaseHeld(pair.id); if (r.mirrorIds.length) q.wake(); }
     else this.holdMirror(pair.id, true);
     await this.saveState(pair, out.files);
     this.idleClose(r);
@@ -641,7 +659,7 @@ class Syncer extends EventEmitter {
         const it = inQueue.get(`${sp.dir}\0${sp.local}\0${sp.remote}`);
         if (it && !have.has(it.id)) { have.add(it.id); ids.push(it.id); }
       }
-      if (q.state === 'stopped' && queued) q.start();
+      if (queued) q.wake();
     }
     await this.saveState(pair, out.files);
 

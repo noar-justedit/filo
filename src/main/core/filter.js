@@ -193,7 +193,8 @@ class PathFilter {
 }
 
 // The "ignored files" setting, for one name at a time: true when this file
-// (or folder) must be left out. Same patterns as above.
+// (or folder) must be left out. Same wildcards as above, matched against a
+// NAME only: a pattern with a "/" (a path from the root) means nothing here.
 function nameIgnorer(str) {
   const f = new PathFilter('*', str || '');
   if (f.trivial) return () => false;

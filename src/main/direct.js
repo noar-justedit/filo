@@ -44,7 +44,7 @@ const { EventEmitter } = require('events');
 
 const PREFIX = 'filo-';
 const CTL_PREFIX = 'filoctl-';   // the small control folder of each pair (MASTER → SLAVE settings)
-const TRASH = '.filo-trash';     // per side, inside the synced folder, never synced
+const { TRASH } = require('./core/ownfiles');   // per side, inside the synced folder, never synced
 // A copy Syncthing kept beside a file changed on both computers.
 const CONFLICT = /^(.*)\.sync-conflict-(\d{8}-\d{6})-([A-Z2-7]{7})(\.[^./]*)?$/;
 function ctlId(folderId) { return CTL_PREFIX + String(folderId).slice(PREFIX.length); }

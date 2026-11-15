@@ -439,7 +439,7 @@ class Panel {
     if (this.busy) this.busy.style.display = '';
     this.inFlight = (this.inFlight || 0) + 1;
     let res;
-    try { res = this.remote ? await API.remoteList(dir) : await API.localList(dir); }
+    try { res = this.remote ? await API.remoteList(tabs.cur, dir) : await API.localList(dir); }
     catch (e) { res = { ok: false, error: (e && e.message) || 'Could not read this folder.' }; }
     finally { this.inFlight--; }
     if (token !== this.loading) return;
@@ -755,7 +755,7 @@ class Panel {
   async mkdir() {
     const name = await promptBox('New folder', '', 'CREATE');
     if (!name) return;
-    const r = this.remote ? await API.remoteMkdir(this.dir, name) : await API.localMkdir(this.dir, name);
+    const r = this.remote ? await API.remoteMkdir(tabs.cur, this.dir, name) : await API.localMkdir(this.dir, name);
     if (!r.ok) return toast(r.error, true);
     this.cache.delete(this.dir);
     this.load(this.dir, { keepSel: true, select: name });
@@ -831,7 +831,7 @@ class Panel {
     r.busy = true;
     r.el.disabled = true;
     const from = this.join(r.name);
-    const res = this.remote ? await API.remoteRename(from, name) : await API.localRename(from, name);
+    const res = this.remote ? await API.remoteRename(tabs.cur, from, name) : await API.localRename(from, name);
     this._ren = null;
     r.el.remove();
     if (!res.ok) {
@@ -857,7 +857,7 @@ class Panel {
       }
       toast('Deleting…');
       delProgress.n = 0;
-      const r = await API.remoteDelete(s.map(e => ({ path: this.join(e.name), type: isDirEntry(e) ? 'folder' : 'file' })));
+      const r = await API.remoteDelete(tabs.cur, s.map(e => ({ path: this.join(e.name), type: isDirEntry(e) ? 'folder' : 'file' })));
       if (!r.ok) errorBox('Some items were not deleted', r.errors.join('\n'));
       else toast(`Deleted ${plural(r.count, 'item')}`);
     } else {
@@ -897,7 +897,7 @@ class Panel {
     items.push({ label: 'Rename', icon: I.edit, key: 'F2', action: () => this.rename(), disabled: n !== 1 });
     items.push({ label: 'New folder', icon: I.plus, action: () => this.mkdir() });
     items.push('sep');
-    if (this.remote) items.push({ label: 'Copy URL', icon: I.copy, action: async () => { const u = await API.remoteUrl(n ? this.join(s[0].name) : this.dir); API.copyText(u); toast('Copied'); } });
+    if (this.remote) items.push({ label: 'Copy URL', icon: I.copy, action: async () => { const u = await API.remoteUrl(tabs.cur, n ? this.join(s[0].name) : this.dir); API.copyText(u); toast('Copied'); } });
     items.push({ label: 'Copy path', icon: I.copy, action: () => { API.copyText(n ? s.map(x => this.join(x.name)).join('\n') : this.dir); toast('Copied'); } });
     items.push({ label: 'Refresh', icon: I.refresh, key: 'F5', action: () => { this.cache.delete(this.dir); this.load(this.dir, { keepSel: true }); } });
     items.push('sep');
@@ -1078,7 +1078,7 @@ class Panel {
   // Dragged onto a folder of the same panel (or ".."): moved there.
   async moveItems(items, dir) {
     const paths = items.map(x => this.join(x.name));
-    const r = this.remote ? await API.remoteMove(paths, dir) : await API.localMove(paths, dir);
+    const r = this.remote ? await API.remoteMove(tabs.cur, paths, dir) : await API.localMove(paths, dir);
     if (this.remote) { this.cache.delete(this.dir); this.cache.delete(dir); }
     this.sel.clear();
     this.load(this.dir, { keepSel: false });
@@ -1137,7 +1137,7 @@ async function queueAdd(dir, sources, target, start) {
   let scanTimer = null;
   if (hasFolder) { state.scanning = (state.scanning || 0) + 1; scanTimer = setTimeout(() => { $('scan-txt').textContent = 'Listing folders…'; $('scan').classList.add('open'); }, 300); }
   let res;
-  try { res = await API.queueAdd({ dir, sources, target, start }); }
+  try { res = await API.queueAdd(tabs.cur, { dir, sources, target, start }); }
   catch (e) { res = { ok: false, error: (e && e.message) || 'Could not add to the queue.' }; }
   finally {
     clearTimeout(scanTimer);
@@ -1159,15 +1159,16 @@ async function queueAdd(dir, sources, target, start) {
 }
 
 // ══ Connection ═════════════════════════════════════════════════════════════
-const DEFAULT_PORT = { sftp: 22, ftps: 21, 'ftps-implicit': 990, ftp: 21 };
-const PROTO_LABEL = { sftp: 'SFTP', ftps: 'FTPS', 'ftps-implicit': 'FTPS implicit', ftp: 'FTP' };
+// Ports and names of the protocols: main's (proto/index.js), given at init.
+let DEFAULT_PORT = {}, PROTO_LABEL = {};
 
 const PROTO_INFO = {
-  sftp: ['SFTP', 'over SSH, encrypted', 'SFTP — over SSH, encrypted. Port 22.'],
-  ftps: ['FTPS', 'explicit TLS, encrypted', 'FTPS explicit (AUTH TLS) — encrypted. Port 21.'],
-  'ftps-implicit': ['FTPS-i', 'implicit TLS, encrypted', 'FTPS implicit — encrypted from the first byte. Port 990.'],
+  sftp: ['SFTP', 'over SSH, encrypted', 'SFTP — over SSH, encrypted.'],
+  ftps: ['FTPS', 'explicit TLS, encrypted', 'FTPS explicit (AUTH TLS) — encrypted.'],
+  'ftps-implicit': ['FTPS-i', 'implicit TLS, encrypted', 'FTPS implicit — encrypted from the first byte.'],
   ftp: ['FTP', 'NOT encrypted', 'Plain FTP — NOT encrypted: password and files travel in clear.'],
 };
+const protoTip = p => `${PROTO_INFO[p][2]} Port ${DEFAULT_PORT[p]}.`;
 // Only the protocol in use shows; a click lists the four.
 function protoMenu() {
   const r = $('q-proto').getBoundingClientRect();
@@ -1182,7 +1183,7 @@ function setProto(p) {
   const b = $('q-proto');
   b.innerHTML = `${esc(PROTO_INFO[p][0])}${I.chev.replace('<svg', '<svg class="chev"')}`;
   b.classList.toggle('warn', p === 'ftp');
-  b.dataset.tip = PROTO_INFO[p][2] + ' Click to change.';
+  b.dataset.tip = protoTip(p) + ' Click to change.';
   $('q-port').placeholder = String(DEFAULT_PORT[p]);
 }
 
@@ -1254,7 +1255,7 @@ async function connectWith(req, label, tabId) {
   state.connecting = true; renderConnectBtn();
   connStart(req, label, tid);
   let res;
-  try { API.tabSelect(tid); res = await API.connect(req); }
+  try { res = await API.connect(tid, req); }
   finally { state.connecting = false; if (tabs.cur === tid) panels.remote.busy.style.display = 'none'; connEnd(); renderConnectBtn(); }
   const t = tabById(tid);
   if (!t) return;                                   // the tab was closed meanwhile
@@ -1333,8 +1334,7 @@ function setDisconnected() {
 
 async function disconnect() {
   if (!state.conn) return;
-  API.tabSelect(tabs.cur);
-  await API.disconnect();
+  await API.disconnect(tabs.cur);
   setDisconnected();
 }
 
@@ -1350,9 +1350,11 @@ async function disconnect() {
 const tabs = { list: [], cur: null, seq: 1 };
 const tabById = id => tabs.list.find(t => t.id === id);
 const curTab = () => tabById(tabs.cur);
-function makeTab(o) {
+// replace: the tab that carries this id is being emptied, and keeps its id
+// (the window and main both know it by that id).
+function makeTab(o, replace) {
   const x = o || {};
-  const id = x.id && /^t\d{1,9}$/.test(x.id) && !tabById(x.id) ? x.id : 't' + tabs.seq;
+  const id = x.id && /^t\d{1,9}$/.test(x.id) && (replace || !tabById(x.id)) ? x.id : 't' + tabs.seq;
   tabs.seq = Math.max(tabs.seq, Number(id.slice(1)) + 1);
   return {
     id, conn: null, req: x.req || null, label: x.label || '', home: x.home || '', endpointId: x.endpointId || '',
@@ -1382,7 +1384,6 @@ function keepTab(t) {
   t.cache = panels.remote.cache;
 }
 function showTab(t) {
-  API.tabSelect(t.id);
   syncOff();
   state.conn = t.conn;
   setProto(t.proto || 'sftp');
@@ -1426,8 +1427,9 @@ async function closeTab(id) {
   if (cu.on && cu.tab === id) API.connectCancel();
   if (tabs.list.length === 1) {                     // the last one: emptied, never gone
     if (t.conn) await disconnect();
-    Object.assign(t, makeTab({ id: t.id, localDir: panels.local.dir }));
-    showTab(t); saveTabs();
+    const fresh = makeTab({ id: t.id, localDir: panels.local.dir }, true);
+    tabs.list[tabs.list.indexOf(t)] = fresh;
+    showTab(fresh); saveTabs();
     return;
   }
   const i = tabs.list.indexOf(t);
@@ -1469,7 +1471,6 @@ function restoreTabs() {
   if (!tabs.list.length) tabs.list.push(makeTab({ localDir: panels.local.dir }));
   tabs.cur = tabById(state.ui.tabCur) ? state.ui.tabCur : tabs.list[0].id;
   const t = curTab();
-  API.tabSelect(t.id);
   setProto(t.proto || state.proto);
   $('q-host').value = t.quick.host || ''; $('q-port').value = t.quick.port || ''; $('q-user').value = t.quick.user || '';
   renderTabs();
@@ -1826,11 +1827,10 @@ function showQuickHistory() {
 async function saveQuickAsSite() {
   const c = state.conn;
   if (!c) return;
-  const m = /^quick:([^:]+):(.*)@(.+):(\d+)$/.exec(c.endpointId);
-  if (!m) return;
-  const name = await promptBox('Save as a server', m[3], 'SAVE');
+  if (!String(c.endpointId || '').startsWith('quick:')) return;
+  const name = await promptBox('Save as a server', c.host, 'SAVE');
   if (!name) return;
-  const r = await API.sitesFromQuick({ protocol: m[1], user: m[2], host: m[3], port: Number(m[4]) }, name);
+  const r = await API.sitesFromQuick({ protocol: c.protocol, user: c.user, host: c.host, port: c.port }, name);
   state.sites = r.sites;
   toast(`Saved “${name}” in MY SERVERS`);
 }
@@ -2275,7 +2275,7 @@ function renderSiteForm() {
   f.innerHTML = `
     <div class="frow"><div class="field" style="flex:2"><label>Name</label><input id="sf-name" value="${esc(d.name)}"></div>
       <div class="field"><label>Folder</label><input id="sf-folder" value="${esc(d.folder)}" placeholder="optional" list="sf-folders"><datalist id="sf-folders">${[...new Set(state.sites.map(s => s.folder).filter(Boolean))].map(x => `<option value="${esc(x)}">`).join('')}</datalist></div></div>
-    <div class="field"><label>Protocol</label><div class="seg" id="sf-proto" style="align-self:flex-start">${['sftp', 'ftps', 'ftps-implicit', 'ftp'].map(p => `<button data-v="${p}" class="${d.protocol === p ? 'on' : ''}${p === 'ftp' ? ' warn' : ''}" data-tip="${esc(PROTO_INFO[p][2])}">${PROTO_INFO[p][0]}</button>`).join('')}</div>
+    <div class="field"><label>Protocol</label><div class="seg" id="sf-proto" style="align-self:flex-start">${['sftp', 'ftps', 'ftps-implicit', 'ftp'].map(p => `<button data-v="${p}" class="${d.protocol === p ? 'on' : ''}${p === 'ftp' ? ' warn' : ''}" data-tip="${esc(protoTip(p))}">${PROTO_INFO[p][0]}</button>`).join('')}</div>
       ${d.protocol === 'ftp' ? '<div class="hint" style="color:var(--orange)">Plain FTP: the password and the files travel in clear on the network.</div>' : ''}</div>
     <div class="frow"><div class="field" style="flex:3"><label>Host</label><input id="sf-host" value="${esc(d.host)}" placeholder="server.example.com" spellcheck="false"></div>
       <div class="field" style="flex:0 0 90px"><label>Port</label><input id="sf-port" value="${esc(d.port)}" inputmode="numeric"></div></div>
@@ -2657,7 +2657,7 @@ function fetchQueue(now) {
   }, now ? 0 : 200);
 }
 
-const VLABEL = { xxh64: 'xxHash64', sha256: 'SHA-256', sha1: 'SHA-1', md5: 'MD5', crc32: 'CRC32' };
+let VLABEL = {};                                  // checksum names: main's, given at init
 const CHK = () => I.check.replace('<svg', '<svg width="10" height="10"');
 function statusOf(it) {
   if (it.status === 'running') {
@@ -3029,7 +3029,7 @@ function renderQueueHead() {
   // the title (Noar, 11/10/2026). Left = what remains ÷ the speed of the last
   // 10 seconds: the instant speed made it jump at every tick.
   const startedAt = p && p.run && p.run.startedAt;
-  if ((running || state.qstate === 'paused') && startedAt && (pending || paused)) {
+  if (running && startedAt && (pending || paused)) {
     // The whole queue's percentage, big (Noar, 12/10/2026); the time left
     // is a badge with the others.
     setHtml($('q-times'), `<span class="left" data-tip="Progress of the whole queue">${esc(fmtPct(pct))}</span>`
@@ -3086,17 +3086,18 @@ function renderQueueHead() {
 // server computes its checksum, filo the local one; nothing is transferred.
 async function checkAgainst(names) {
   const req = { localRoot: panels.local.dir, remoteRoot: panels.remote.dir, names };
+  const tab = tabs.cur;                         // the tab this check belongs to
   state.comparing = true;
   let last = 0;
   const off = API.on('compare-progress', p => { if (Date.now() - last > 600) { last = Date.now(); toast(`Checking ${p.i} / ${p.n}: ${p.rel.split('/').pop()}`); } });
   try {
     toast('Checking: listing both sides…');
-    let r = await API.compare(req);
+    let r = await API.compare(tab, req);
     if (r.ok && r.needsReadBack) {
       const go = await confirmBox('This server cannot compute checksums',
         `To check ${plural(r.files, 'file')} (${fmtSize(r.bytes)}), filo has to read them back from the server: a download of everything, nothing written on your disk.`, 'READ BACK');
       if (!go) return;
-      r = await API.compare(Object.assign({ readBack: true }, req));
+      r = await API.compare(tab, Object.assign({ readBack: true }, req));
     }
     if (!r.ok) return errorBox('Not checked', r.error);
     const list = (title, arr, cls) => arr.length ? `<div class="cmp-h ${cls}">${title} <span>${arr.length}</span></div><div class="cmp-l">${arr.slice(0, 60).map(x => `<div>${esc(typeof x === 'string' ? x : x.rel)}${x.why ? `<small>${esc(x.why)}</small>` : ''}</div>`).join('')}${arr.length > 60 ? `<div>… ${arr.length - 60} more (see Log)</div>` : ''}</div>` : '';
@@ -3161,11 +3162,10 @@ function avgSpark(n) {
   return a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0;
 }
 function resetSpark() { spark = []; sparkMax = 0; sparkLive = sparkTarget = 0; drawSpark(); }
-// The graph only shows while there is a run: running, or paused (then it
-// stays, frozen, until Resume). Finished or stopped: it goes, and the next run
-// starts a new one.
+// The graph only shows while the queue runs. Paused, finished or stopped: it
+// goes, and the next run starts a new one.
 function renderSparkVisibility() {
-  const live = state.qstate === 'running' || state.qstate === 'paused';
+  const live = state.qstate === 'running';
   const box = document.querySelector('.q-titles');
   if (box) box.classList.toggle('nograph', !live);
   if (!live && spark.length) resetSpark();
@@ -3361,7 +3361,8 @@ function renderBlocked() {
   if (!b) { el.classList.remove('open'); el.innerHTML = ''; return; }
   el.classList.add('open');
   if (b.code === 'NEEDS_PASSWORD') {
-    el.innerHTML = `${I.key.replace('<svg', '<svg width="16" height="16"')}<span class="msg">The queue is waiting for the password of <b>${esc(b.endpointLabel)}</b>.</span><input type="password" id="blk-pw" placeholder="password"><button class="btn sm go" id="blk-go">RESUME</button>`;
+    const what = b.what === 'passphrase' ? 'key passphrase' : 'password';
+    el.innerHTML = `${I.key.replace('<svg', '<svg width="16" height="16"')}<span class="msg">The queue is waiting for the ${what} of <b>${esc(b.endpointLabel)}</b>.</span><input type="password" id="blk-pw" placeholder="${what}"><button class="btn sm go" id="blk-go">RESUME</button>`;
     const go = async () => { const v = $('blk-pw').value; if (!v) return; await API.endpointPassword(b.endpointId, v); state.blocked = null; renderBlocked(); API.queueStart(); };
     $('blk-go').onclick = go;
     $('blk-pw').onkeydown = e => { if (e.key === 'Enter') go(); };
@@ -4011,10 +4012,9 @@ function renderSyncForm() {
 // FILE FILTER as chips (Noar, 12/10/2026, syncto's look): one chip per
 // pattern, × to remove it, a field and ADD. A bare word is an extension:
 // "tmp" → *.tmp (shown ".tmp"). Kept as one text, separated by commas.
-// filo's own work files are always left out (main: SYNC_ALWAYS_EXCLUDE):
-// not shown, not kept in the list.
-const FILTER_HIDDEN = new Set(['*.filopart', '*.filoold', '.*.filoparts']);
-const splitFilter = t => String(t || '').split(/[,;|\n\r]+/).map(x => x.trim()).filter(x => x && !FILTER_HIDDEN.has(x));
+// filo's own work files are always left out (main: core/ownfiles.js, sent
+// at init as state.ownPatterns): not shown, not kept in the list.
+const splitFilter = t => String(t || '').split(/[,;|\n\r]+/).map(x => x.trim()).filter(x => x && !(state.ownPatterns && state.ownPatterns.has(x)));
 const chipLabel = x => (/^\*\.[^*?/\\]+$/.test(x) ? x.slice(1) : x);
 function filterChips(text, ro) {
   const list = splitFilter(text);
@@ -5100,7 +5100,9 @@ async function init() {
   Object.assign(state, {
     settings: d.settings, ntfy: d.ntfy, sites: d.sites, siteFolderOrder: d.siteFolderOrder || [], quickHistory: d.quickHistory, afterAction: d.afterAction,
     ui: d.ui || {}, vault: d.vaultAvailable, qstate: d.queueState, qcounts: d.queueCounts, logs: d.log || [], existingLabels: d.existingLabels,
+    ownPatterns: new Set(d.ownPatterns || []),
   });
+  DEFAULT_PORT = d.protocols.ports; PROTO_LABEL = d.protocols.labels; VLABEL = d.hashLabels;
   $('ver').textContent = 'v' + d.version;
   panels = { local: new Panel('local'), remote: new Panel('remote') };
   setProto(state.ui.lastProto || 'sftp');

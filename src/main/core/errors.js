@@ -4,9 +4,12 @@
  * Licensed under the GNU General Public License v3.0 or later. See LICENSE.
  */
 
-// One error type for every protocol, carrying the two answers the queue needs:
+// One error type for every protocol, carrying the answers the queue needs:
 //   network — the connection broke: reconnect and resume, it may work next time;
-//   fatal   — retrying cannot help (wrong password, no permission, no space).
+//   fatal   — retrying cannot help (wrong password, no permission, no space);
+//   auth    — 'login' (user name or password refused) or 'key' (the private
+//             key cannot be opened: no passphrase, or a wrong one). Decided
+//             here, once: everyone else reads `auth`, never the wording.
 // And a message a person can act on. "ECONNREFUSED" or "530" says nothing to
 // someone delivering rushes at midnight; "the server refused the password"
 // does.
@@ -54,12 +57,15 @@ class RemoteError extends Error {
       if (code >= 500) out.fatal = true;
     }
     if (code === 'ENOTFOUND' || code === 'ECONNREFUSED') { out.fatal = true; out.network = false; }
-    if (/authentication|login|530\b|password/i.test(raw) && !out.network) out.fatal = true;
+    if (KEY_RE.test(raw)) { out.auth = 'key'; out.fatal = true; out.network = false; }
+    else if (/authentication|login|530\b|password/i.test(raw) && !out.network) { out.auth = 'login'; out.fatal = true; }
     if (/ENOSPC|no space|quota|552\b/i.test(raw)) { out.fatal = true; out.network = false; out.noSpace = true; }
     if (/EACCES|EPERM|permission denied|access denied|550\b|553\b/i.test(raw)) { out.fatal = true; out.network = false; }
     return out;
   }
 }
+
+const KEY_RE = /Cannot parse privateKey|Encrypted private (OpenSSH )?key detected|bad passphrase|Integrity check failed|bad decrypt/i;
 
 function friendly(raw, code, protocol) {
   const s = String(raw);
@@ -69,7 +75,7 @@ function friendly(raw, code, protocol) {
   if (code === 'EHOSTUNREACH' || code === 'ENETUNREACH') return 'The server cannot be reached from this network.';
   if (/All configured authentication methods failed/i.test(s)) return 'The server refused the login: wrong user name, password or key.';
   if (/^530\b|Login incorrect|not logged in/i.test(s)) return 'The server refused the login: wrong user name or password.';
-  if (/Cannot parse privateKey|Encrypted private (OpenSSH )?key detected/i.test(s)) return 'The private key cannot be read: wrong passphrase, or not a key file.';
+  if (KEY_RE.test(s)) return 'The private key cannot be read: wrong passphrase, or not a key file.';
   if (/wrong version number|unknown protocol|EPROTO/i.test(s)) return 'The secure handshake failed: the server does not speak TLS on this port (check FTPS explicit / implicit).';
   if (/self[- ]signed|unable to verify|certificate/i.test(s)) return 'The server\'s certificate could not be verified.';
   if (/no such file|ENOENT|^550 .*(No such|not found|not exist)/i.test(s)) return 'This item no longer exists on the server.';

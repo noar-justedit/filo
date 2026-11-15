@@ -20,7 +20,7 @@
 const { runFile, runFolder, runSegment, finalizeSegments } = require('./transfer');
 const { RemoteError } = require('./errors');
 
-const PATCH_KEYS = ['size', 'local', 'remote', 'resume', 'restartFromZero', 'offset', 'seg', 'ownTarget'];
+const PATCH_KEYS = require('./itemfields').fieldsFor('patch');
 
 function patchOf(kind, item) {
   const p = {};

@@ -151,7 +151,11 @@ case "$SIGN_MODE" in
     echo -e "  ${GREEN}Signed and notarized: it opens with a double-click on any Mac.${NC}" ;;
   signed)
     echo -e "  ${YELLOW}Signed but not notarized: another Mac will say Apple could not${NC}"
-    echo -e "  ${YELLOW}check it for malware. Right-click → Open gets past it.${NC}" ;;
+    echo -e "  ${YELLOW}check it for malware. Right-click → Open gets past it.${NC}"
+    if [ -n "$NOTARY_AGREEMENT" ]; then
+      echo -e "  ${YELLOW}Why: Apple refuses notarization until a developer agreement is${NC}"
+      echo -e "  ${YELLOW}accepted (see step [3/5] above). Do not publish this build.${NC}"
+    fi ;;
   *)
     echo -e "  ${YELLOW}First launch (unsigned build): right-click filo → Open.${NC}" ;;
 esac

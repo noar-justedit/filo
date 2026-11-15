@@ -50,8 +50,7 @@ async function keepOldLocal(item, finalPath) {
   }
 }
 
-const PART = '.filopart';
-const OLD = '.filoold';
+const { PART, OLD, RELAY_SUFFIX } = require('./ownfiles');
 
 class MismatchError extends RemoteError {}
 
@@ -719,7 +718,6 @@ const SEGMENT_SIZE = TEST_SEG || SEG_MAX;     // the largest; kept for the tests
 // checks it against that hash, writes it at its place in its own .filopart,
 // and finishes once the sender has given the file its real name. Nothing to
 // merge: the segments are already where they belong.
-const RELAY_SUFFIX = '.filoparts';
 function relayDirFor(finalPath) { return posix.join(posix.dirname(finalPath), '.' + posix.basename(finalPath) + RELAY_SUFFIX); }
 async function writeSmall(remote, p, text) {
   const { Readable } = require('stream');

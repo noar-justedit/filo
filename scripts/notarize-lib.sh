@@ -78,6 +78,13 @@ notary_profile_ready() {
     return 0
   fi
   NOTARY_ERROR=$(echo "$out" | grep -v '^[[:space:]]*$' | head -2 | tr '\n' ' ')
+  # Apple answered, and said no because a developer agreement is not signed
+  # (it publishes new versions now and then; until the account holder accepts
+  # one, every notarization is refused with a 403). Not a credentials problem:
+  # the stored credentials must not be trusted "anyway" nor asked for again.
+  case "$out" in
+    *"required agreement"*|*"agreement is missing"*|*"agreements"*"expired"*) NOTARY_AGREEMENT="$NOTARY_PROFILE"; return 1 ;;
+  esac
 
   # Stored, but notarytool would not answer just now. Trust the stored profile
   # and say plainly that Apple was not reached — claiming Apple accepted them
@@ -156,6 +163,7 @@ store_notary_credentials() {
 prepare_signing() {
   local check_only="${1:-}"
   SIGN_MODE="unsigned"
+  NOTARY_AGREEMENT=""
 
   # ── Deliberately off ──────────────────────────────────────────
   if [ "$FILO_SKIP_SIGN" = "1" ]; then
@@ -228,6 +236,20 @@ prepare_signing() {
       echo "  a signed build rather than failing."
       [ -n "$NOTARY_ERROR" ] && echo "  ($NOTARY_ERROR)"
     fi
+    return 0
+  fi
+
+  # Refused by Apple for a missing agreement: say what to do, and do not try
+  # (a submission would only fail the same way, minutes later).
+  if [ -n "$NOTARY_AGREEMENT" ]; then
+    echo -e "${YELLOW}⚠ Apple refuses notarization: a developer agreement must be accepted.${NC}"
+    echo "  1. Sign in at https://developer.apple.com/account with the account holder"
+    echo "     and accept the agreement shown at the top of the page (also check"
+    echo "     https://appstoreconnect.apple.com → Agreements, Tax, and Banking)."
+    echo "  2. Open Xcode once, then quit it (it often unblocks it)."
+    echo "  3. Check, until it lists your submissions instead of a 403 error:"
+    echo "       xcrun notarytool history --keychain-profile $NOTARY_AGREEMENT"
+    echo -e "${YELLOW}  This build goes on signed but NOT notarized: do not publish it.${NC}"
     return 0
   fi
 

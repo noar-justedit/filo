@@ -32,9 +32,12 @@ const EventEmitter = require('events');
 const path = require('path');
 const posix = path.posix;
 const { dropPart } = require('./transfer');
+const { PART } = require('./ownfiles');
 const { RemoteError } = require('./errors');
 const { AutoTuner, SEGMENT_START, SEGMENT_UP_START } = require('./autotune');
 const { createLane } = require('./lane');
+const { fieldsFor, cleanSync, syncForLane } = require('./itemfields');
+const SAVED_FIELDS = fieldsFor('saved'), LANE_FIELDS = fieldsFor('lane'), META_FIELDS = fieldsFor('meta');
 
 const RETRY_DELAYS_S = [5, 15, 30, 60, 120];
 const IDLE_CLOSE_MS = 20000;
@@ -65,6 +68,14 @@ class TransferQueue extends EventEmitter {
     this.lanes = [];
     this.units = new Set();
     this.state = 'stopped';
+    // Who may start the queue. held: the user paused or stopped it, so only
+    // the user starts it again (START, or a file they add); startAt: a start
+    // scheduled for later, before which nothing starts it on its own.
+    // Everything that starts it without the user (LIVE SYNC, the segment
+    // relay) goes through wake(), which obeys both.
+    this.held = false;
+    this.startAt = 0;
+    this._schedTimer = null;
     this.sessionRules = {};          // 'up' / 'down' → rule chosen with "apply to all"
     this.asks = new Map();
     this.blocked = null;
@@ -137,9 +148,7 @@ class TransferQueue extends EventEmitter {
         endpointId: s.endpointId,
         endpointLabel: s.endpointLabel || '',
         existing: s.existing || null,
-        // LIVE SYNC: which pair and which relative path this item serves.
-        // trash: the session's local .filo-trash, where a replaced file goes.
-        sync: s.sync && typeof s.sync === 'object' ? Object.assign({ pairId: String(s.sync.pairId), rel: String(s.sync.rel) }, typeof s.sync.trash === 'string' && path.isAbsolute(s.sync.trash) ? { trash: s.sync.trash } : {}) : undefined,
+        sync: cleanSync(s.sync, path.isAbsolute),       // LIVE SYNC (see itemfields.js)
         // Segment relay: an upload that announces its segments (relayOut),
         // or a download that takes them as they are announced (relay).
         relayOut: s.relayOut ? true : undefined,
@@ -184,7 +193,7 @@ class TransferQueue extends EventEmitter {
     if (!it) {
       const ids = this.add([{ dir: 'down', type: 'file', local: o.local, remote: o.remote, size: r.size, endpointId: o.endpointId, endpointLabel: o.endpointLabel, existing: 'skip', sync: o.sync, relay: r }]);
       it = ids.length ? this.items.get(ids[0]) : null;
-      if (this.state === 'stopped' && it) this.start();
+      if (it) this.wake();
       return it;
     }
     if (!it.relay || it.relay.id !== r.id) return it;          // still letting go of an earlier attempt
@@ -199,8 +208,7 @@ class TransferQueue extends EventEmitter {
     }
     if (['failed', 'stopped'].includes(it.status) && !this._unitsOf(it).length) this.retry([it.id], 'resume');
     this._changed();
-    if (this.state === 'running') this._pump();
-    else if (this.state === 'stopped') this.start();
+    this.wake();
     return it;
   }
 
@@ -263,12 +271,20 @@ class TransferQueue extends EventEmitter {
     return { n: ch.length, segSize: ch.length > 1 ? ch[0].e - ch[0].s : (ch[0] ? ch[0].e : 0), size: it.seg.size || it.size, st, f };
   }
 
+  // The .filopart an item removed from the queue leaves behind. Here: deleted
+  // at once. On the server: the queue holds no connection for that, so it
+  // asks for it ('drop-remote'), and main deletes it on a connection of its own.
+  _dropPart(it) {
+    if (it.dir === 'up') this.emit('drop-remote', { endpointId: it.endpointId, path: it.remote + PART });
+    else dropPart(it, null);
+  }
+
   remove(ids) {
     for (const id of ids) {
       const it = this.items.get(id);
       if (!it) continue;
       if (this._unitsOf(it).length) { it.removed = true; this._abortItem(it); continue; }
-      if (it.status !== 'done' && it.status !== 'skipped' && it.type === 'file') dropPart(it, null);
+      if (it.status !== 'done' && it.status !== 'skipped' && it.type === 'file') this._dropPart(it);
       this.items.delete(id);
     }
     this.order = this.order.filter(id => this.items.has(id));
@@ -330,7 +346,9 @@ class TransferQueue extends EventEmitter {
   }
   pauseItems(ids) { this._hold(ids, 'paused'); }
   stopItems(ids) { this._hold(ids, 'stopped'); }
-  resumeItems(ids) {
+  // byUser false: filo resuming what it held itself (LIVE SYNC), which never
+  // lifts a pause the user put on the whole queue.
+  resumeItems(ids, byUser = true) {
     let any = false;
     for (const id of ids || []) {
       const it = this.items.get(id);
@@ -338,7 +356,7 @@ class TransferQueue extends EventEmitter {
       it.status = 'queued'; it._hold = null; any = true;
     }
     this._changed();
-    if (any) this.start();
+    if (any) { if (byUser) this.start(); else this.wake(); }
   }
   // The whole queue: everything still to do is stopped (to the Failed tab,
   // retryable), and the queue stops.
@@ -346,11 +364,49 @@ class TransferQueue extends EventEmitter {
     const ids = [...this.items.values()].filter(it => PENDING.has(it.status) || ACTIVE.has(it.status) || HELD.has(it.status) || this._unitsOf(it).length).map(it => it.id);
     this._hold(ids, 'stopped');
     this.pause();
+    this.held = true;
+  }
+
+  // Started without the user (LIVE SYNC, the segment relay): never against a
+  // pause or before the scheduled time.
+  wake() {
+    if (this.state === 'running') { this._pump(); return; }
+    if (this.held || this.startAt) return;
+    this.start();
+  }
+
+  // ── Start later (Noar, 12/10/2026): at a time of the day, while filo is
+  // open. 0 cancels. The timer checks the clock again rather than trusting
+  // one long wait (a machine asleep delays it; setTimeout tops out at ~24 days).
+  schedule(at) {
+    clearTimeout(this._schedTimer); this._schedTimer = null;
+    const t = Number(at) || 0;
+    this.startAt = t > Date.now() ? t : 0;
+    if (this.startAt) {
+      const fire = () => {
+        if (!this.startAt) return;
+        if (Date.now() < this.startAt - 500) { this._schedTimer = setTimeout(fire, Math.min(this.startAt - Date.now(), 60000)); return; }
+        this.startAt = 0; this._schedTimer = null;
+        this.emit('scheduled', { at: 0, fired: true });
+        this.log('info', 'Scheduled start: the queue starts');
+        // The files paused one by one stay paused: the schedule starts the
+        // queue, it does not override a choice made on a file.
+        this.start();
+      };
+      this._schedTimer = setTimeout(fire, Math.min(this.startAt - Date.now(), 60000));
+      this.log('info', `Scheduled start: ${new Date(this.startAt).toLocaleString()}`);
+    }
+    this.emit('scheduled', { at: this.startAt });
+    return this.startAt;
   }
 
   // ── Running ─────────────────────────────────────────────────────────────
+  // Started by the user (START, files they add, the command line): lifts
+  // their pause and any scheduled start.
   start() {
     this.blocked = null;
+    this.held = false;
+    if (this.startAt) this.schedule(0);
     if (this.state === 'running') { this._pump(); return; }
     this.state = 'running';
     this.learnedCap = null;                       // each Start asks the server again
@@ -369,7 +425,9 @@ class TransferQueue extends EventEmitter {
     this._pump();
   }
 
+  // PAUSE by the user: the queue stays paused until the user starts it.
   pause() {
+    this.held = true;
     if (this.state !== 'running') return;
     this.state = 'stopped';
     for (const u of [...this.units]) this._abortUnit(u);
@@ -424,7 +482,7 @@ class TransferQueue extends EventEmitter {
       if (this.items.has(it.id)) {
         this.items.delete(it.id);
         this._compactOrder();
-        if (it.type === 'file' && it.status !== 'done' && it.status !== 'skipped') dropPart(it, null);
+        if (it.type === 'file' && it.status !== 'done' && it.status !== 'skipped') this._dropPart(it);
       }
       return;
     }
@@ -622,7 +680,7 @@ class TransferQueue extends EventEmitter {
       const err = RemoteError.from(e, ep.protocol);
       // One connection too many: the others to this server are fine, this one
       // was turned away. That is a limit, not a fault.
-      if (sameServer > 0 && !['TRUST_NEEDED', 'NEEDS_PASSWORD', 'HOST_KEY_CHANGED'].includes(err.code) && !(err.fatal && /login|password|authentication/i.test(err.message)) && (err.network || /too many|421|max(imum)? (number of )?(connections|sessions|users)/i.test(err.raw || err.message))) {
+      if (sameServer > 0 && !['TRUST_NEEDED', 'NEEDS_PASSWORD', 'HOST_KEY_CHANGED'].includes(err.code) && !err.auth && (err.network || /too many|421|max(imum)? (number of )?(connections|sessions|users)/i.test(err.raw || err.message))) {
         err.serverLimit = sameServer;
       }
       this._closeLane(lane);
@@ -652,6 +710,7 @@ class TransferQueue extends EventEmitter {
   }
 
   closeAll() {
+    clearTimeout(this._schedTimer);
     for (const l of [...this.lanes]) this._closeLane(l);
     clearInterval(this._idleTimer);
     this._flushSave();
@@ -693,7 +752,7 @@ class TransferQueue extends EventEmitter {
         // so a crash before its end still resumes.
         onMeta: m => {
           if (!m || it.removed) return;
-          for (const k of ['resume', 'restartFromZero', 'ownTarget', 'remote', 'local']) if (m[k] !== undefined) it[k] = m[k];
+          for (const k of META_FIELDS) if (m[k] !== undefined) it[k] = m[k];
           if (m.seg === null && u.kind === 'item') it.seg = null;
           this._changed();
         },
@@ -779,7 +838,7 @@ class TransferQueue extends EventEmitter {
         it.phase = '';
         if (it.removed) {
           this.items.delete(it.id); this._compactOrder();
-          if (it.type === 'file') dropPart(it, null);
+          if (it.type === 'file') this._dropPart(it);
           return;
         }
         if (it._hold) {
@@ -792,9 +851,11 @@ class TransferQueue extends EventEmitter {
     }
 
     // Nothing for this server can work until someone acts.
-    if (err.code === 'TRUST_NEEDED' || err.code === 'NEEDS_PASSWORD' || err.code === 'HOST_KEY_CHANGED' || (err.fatal && /login|password|authentication/i.test(err.message) && u.phase === 'connect')) {
+    if (err.code === 'TRUST_NEEDED' || err.code === 'NEEDS_PASSWORD' || err.code === 'HOST_KEY_CHANGED' || (err.auth && u.phase === 'connect')) {
       if (u.kind === 'item') { it.status = 'queued'; it.phase = ''; }
-      this.blocked = { endpointId: it.endpointId, endpointLabel: it.endpointLabel, code: err.code || 'AUTH', message: err.message, trust: err.trust || null };
+      // A key refused: its passphrase is asked for, like a missing one.
+      const code = err.auth === 'key' ? 'NEEDS_PASSWORD' : err.code || 'AUTH';
+      this.blocked = { endpointId: it.endpointId, endpointLabel: it.endpointLabel, code, what: err.what || (err.auth === 'key' ? 'passphrase' : null), message: err.message, trust: err.trust || null };
       this.log('error', `${it.endpointLabel}: ${err.message}`);
       this.pause();
       this.emit('blocked', this.blocked);
@@ -1038,7 +1099,7 @@ class TransferQueue extends EventEmitter {
     // offset and done: how much of a stopped file is already in place,
     // so that after a relaunch "resume or start again?" is still asked, and
     // START AGAIN still applies.
-    const keep = ['id', 'dir', 'type', 'local', 'remote', 'size', 'endpointId', 'endpointLabel', 'existing', 'status', 'attempts', 'error', 'note', 'verify', 'resume', 'restartFromZero', 'mismatchCount', 'addedAt', 'finishedAt', 'seg', 'ownTarget', 'offset', 'done', 'sync', 'relayOut', 'relay'];
+    const keep = SAVED_FIELDS;
     let list = this.order.map(id => this.items.get(id)).filter(Boolean);
     const finished = list.filter(i => i.status === 'done' || i.status === 'skipped');
     if (finished.length > KEEP_FINISHED) {
@@ -1096,10 +1157,10 @@ function cleanRelay(r) {
 // What a lane needs to know about an item: plain data, no timers or samples.
 function plainItem(it) {
   const o = {};
-  for (const k of ['id', 'dir', 'type', 'local', 'remote', 'size', 'existing', 'resume', 'restartFromZero', 'offset', 'seg', 'ownTarget', 'relayOut', 'relay']) if (it[k] !== undefined) o[k] = it[k];
+  for (const k of LANE_FIELDS) if (it[k] !== undefined) o[k] = it[k];
   if (o.relay) o.relay = JSON.parse(JSON.stringify(o.relay));
-  // LIVE SYNC: where a local file it replaces goes (.filo-trash).
-  if (it.sync && it.sync.trash) o.sync = { rel: it.sync.rel, trash: it.sync.trash };
+  const sync = syncForLane(it.sync);
+  if (sync) o.sync = sync;
   if (o.seg) o.seg = JSON.parse(JSON.stringify(o.seg));
   return o;
 }
@@ -1108,8 +1169,10 @@ function displayName(it) {
   return posix.basename(it.dir === 'up' ? it.remote : String(it.local).replace(/\\/g, '/'));
 }
 
+// The checksums, as people know them (also sent to the window, at init).
+const HASH_LABEL = { xxh64: 'xxHash64', sha256: 'SHA-256', sha1: 'SHA-1', md5: 'MD5', crc32: 'CRC32' };
 function verifyText(v) {
-  const L = { xxh64: 'xxHash64', sha256: 'SHA-256', sha1: 'SHA-1', md5: 'MD5', crc32: 'CRC32' };
+  const L = HASH_LABEL;
   if (v.level === 'server') return `verified (${L[v.algo]} computed by the server)`;
   if (v.level === 'readback') return 'verified (read back, xxHash64)';
   if (v.level === 'received') return 'verified (copy = bytes received, xxHash64)';
@@ -1117,4 +1180,4 @@ function verifyText(v) {
   return 'size checked';
 }
 
-module.exports = { TransferQueue, verifyText, RETRY_DELAYS_S };
+module.exports = { TransferQueue, verifyText, RETRY_DELAYS_S, HASH_LABEL };

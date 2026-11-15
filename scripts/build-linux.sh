@@ -137,6 +137,9 @@ fi
 echo
 echo "Done. Packages are in dist/:"
 ls -1 dist/*.AppImage dist/*.deb 2>/dev/null || true
+# The Rust transfer engine (scripts/engine-build.js, run during the build), said
+# out loud like on macOS and Windows: without it filo still works, slower.
+if [ -x dist/linux-unpacked/resources/filo-engine ]; then echo "Rust engine: included."; else echo "Rust engine: NOT included (see the [engine] lines above): filo works, with its built-in engine."; fi
 if [ -x dist/linux-unpacked/resources/syncthing/syncthing ]; then echo "SYNCTHING: included."; else echo "SYNCTHING: NOT included (see the [direct] lines above)."; fi
 echo
 echo "Install the deb:   sudo apt install ./dist/filo_*_amd64.deb"

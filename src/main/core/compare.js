@@ -12,8 +12,8 @@ const { Writable } = require('stream');
 
 // filo's own work files are never compared; the litter of the systems is
 // what the "ignored files" setting says (ignore(name, isFolder), from main).
-const OWN = /^(.*\.filopart|.*\.filoold)$/i;
-const skipper = ignore => (name, isFolder) => OWN.test(name) || !!(ignore && ignore(name, isFolder));
+const { isOwnName } = require('./ownfiles');
+const skipper = ignore => (name, isFolder) => isOwnName(name) || !!(ignore && ignore(name, isFolder));
 
 // Every file under the selected names, on one side: rel → size.
 async function walkLocal(root, names, token, ignore) {

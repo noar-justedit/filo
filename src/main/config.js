@@ -46,7 +46,7 @@ const DEFAULT_SETTINGS = {
 // Short: the system's own litter. filo's own work files are always left out,
 // without being listed (SYNC_ALWAYS_EXCLUDE).
 const DEFAULT_SYNC_EXCLUDE = '.DS_Store, ._*, Thumbs.db, *.tmp';
-const SYNC_ALWAYS_EXCLUDE = '*.filopart, *.filoold, .*.filoparts';
+const SYNC_ALWAYS_EXCLUDE = require('./core/ownfiles').OWN_PATTERNS.join(', ');
 function normalizeSyncPair(p) {
   const o = p && typeof p === 'object' ? p : {};
   const id = /^[0-9a-f]{16}$/.test(o.id) ? o.id : require('crypto').randomBytes(8).toString('hex');
