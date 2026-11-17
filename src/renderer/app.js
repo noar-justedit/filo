@@ -145,6 +145,23 @@ function isHiddenName(n) {
   return n.startsWith('.') || OS_HIDDEN.has(n.toLowerCase());
 }
 const isDirEntry = e => e.type === 'folder' || (e.type === 'symlink' && e.linkTo === 'folder');
+// A row of a list that is a file, a folder or a drive: not "..", and not the
+// blank row that synchronized browsing puts in front of a name the other side
+// has alone.
+const GAP = Object.freeze({ type: 'gap', name: '', size: 0, mtime: 0 });
+const isItem = e => !!e && e.type !== 'up' && e.type !== 'gap';
+// The order of a list: folders first, then the column chosen (name, size or
+// date), names in natural order (2 before 10) to break ties.
+const NAME_ORDER = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+function entryOrder({ key, asc }) {
+  return (a, b) => {
+    const d = (isDirEntry(b) ? 1 : 0) - (isDirEntry(a) ? 1 : 0);
+    if (d) return d;
+    let r = key === 'size' ? a.size - b.size : key === 'mtime' ? a.mtime - b.mtime : 0;
+    if (!r) r = NAME_ORDER.compare(a.name, b.name);
+    return asc ? r : -r;
+  };
+}
 
 // ── Toast, tooltips ────────────────────────────────────────────────────────
 let toastTimer = null;
@@ -417,6 +434,7 @@ class Panel {
   }
 
   get remote() { return this.side === 'remote'; }
+  get other() { return this.remote ? panels.local : panels.remote; }
   get enabled() { return !this.remote || !!state.conn; }
 
   join(name) {
@@ -477,28 +495,31 @@ class Panel {
     if (select) { const i = this.view.findIndex(e => e.name === select); if (i >= 0) { this.cursor = i; this.ensureVisible(i); } }
     this.render();
     // Synchronized browsing: the other side's marks depend on this listing.
-    if (state.sync) { const other = this.remote ? panels.local : panels.remote; other.compute(); other.render(); }
+    // (lined up, compute() above already did both lists)
+    if (state.sync) { if (!aligned()) this.other.compute(); this.other.render(); }
   }
 
+  // this.view: the rows shown. In synchronized browsing both sides are
+  // computed together, row for row (alignViews).
   compute() {
+    if (aligned()) return alignViews();
+    const was = this.atCursor();
     const hidden = state.settings.showHidden;
     const f = this.filter.toLowerCase();
-    this.diff = diffWith(this);
-    let list = this.entries.filter(e => (hidden || !isHiddenName(e.name)) && (!f || e.name.toLowerCase().includes(f)) && (!this.diff || !this.diffOnly || this.diff.has(e.name)));
-    const { key, asc } = this.sort;
-    const dirFirst = (a, b) => (isDirEntry(b) ? 1 : 0) - (isDirEntry(a) ? 1 : 0);
-    const coll = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
-    list.sort((a, b) => {
-      const d = dirFirst(a, b);
-      if (d) return d;
-      let r = key === 'size' ? a.size - b.size : key === 'mtime' ? a.mtime - b.mtime : 0;
-      if (!r) r = coll.compare(a.name, b.name);
-      return asc ? r : -r;
-    });
-    const up = this.parent != null && this.dir ? [{ name: '..', type: 'up', size: 0, mtime: 0 }] : [];
+    this.diff = null;
+    const list = this.entries.filter(e => (hidden || !isHiddenName(e.name)) && (!f || e.name.toLowerCase().includes(f)));
+    list.sort(entryOrder(this.sort));
+    const up = this.hasUp() ? [UP] : [];
     this.view = up.concat(list);
-    // A filter or a deletion can shorten the list: keep the cursor and the
-    // shift-click anchor inside it.
+    this.keepCursor(was);
+  }
+  hasUp() { return this.parent != null && !!this.dir; }
+  atCursor() { const e = this.view[this.cursor]; return e && e.type !== 'gap' ? e : null; }
+  // The rows moved (another order, rows lined up or not): the cursor stays on
+  // the row it was on. A filter or a deletion can shorten the list: keep the
+  // cursor and the shift-click anchor inside it.
+  keepCursor(was) {
+    if (was) { const i = this.view.findIndex(e => e === was || (e.type === was.type && e.name === was.name)); if (i >= 0) this.cursor = i; }
     if (this.cursor >= this.view.length) this.cursor = this.view.length - 1;
     if (this.anchor >= this.view.length) this.anchor = -1;
   }
@@ -540,7 +561,7 @@ class Panel {
     if (this.error && !this.entries.length) {
       this.empty.style.display = '';
       this.empty.innerHTML = `${I.alert}<b>Cannot open this folder</b><span>${esc(this.error)}</span>`;
-    } else if (!this.view.filter(e => e.type !== 'up').length) {
+    } else if (!this.view.some(isItem)) {
       this.empty.style.display = '';
       this.empty.innerHTML = this.filter ? `<span>Nothing matches “${esc(this.filter)}”.</span>` : `${I.folder}<span>${this.remote ? 'This folder is empty.<br>Drop files here to upload them.' : 'This folder is empty.'}</span>`;
     } else this.empty.style.display = 'none';
@@ -559,10 +580,15 @@ class Panel {
       const i = first + k, e = this.view[i], r = this.rowEls[k];
       r.style.top = i * rh + 'px';
       r.dataset.i = i;
+      if (e.type === 'gap') {
+        if (r._key !== 'gap') { r._key = 'gap'; r.className = 'row gap'; r.draggable = false; r.innerHTML = ''; }
+        continue;
+      }
+      r.draggable = e.type !== 'up';
       const cls = ['row'];
       if (e.type === 'up') cls.push('up');
       else if (isDirEntry(e)) cls.push('folder');
-      if (this.sel.has(e.name) && e.type !== 'up') cls.push('sel');
+      if (this.sel.has(e.name) && isItem(e)) cls.push('sel');
       if (i === this.cursor) cls.push('cur');
       if (e.type !== 'up' && isHiddenName(e.name)) cls.push('hidden-f');
       if (e.name.endsWith('.filopart')) cls.push('part');
@@ -602,7 +628,7 @@ class Panel {
       const sel = new Set(base);
       for (let k = Math.max(0, a); k <= Math.min(this.view.length - 1, b); k++) {
         const e = this.view[k];
-        if (e && e.type !== 'up' && !e.drive) sel.add(e.name);
+        if (isItem(e) && !e.drive) sel.add(e.name);
       }
       this.sel = sel;
       this.render();
@@ -672,7 +698,7 @@ class Panel {
   }
 
   updateFoot() {
-    const items = this.view.filter(e => e.type !== 'up');
+    const items = this.view.filter(isItem);
     const files = items.filter(e => !isDirEntry(e));
     const selItems = this.selected();
     const selBytes = selItems.filter(e => !isDirEntry(e)).reduce((a, e) => a + e.size, 0);
@@ -692,7 +718,7 @@ class Panel {
     this.xferBtn.disabled = !(selItems.length && state.conn);
   }
 
-  selected() { return this.view.filter(e => e.type !== 'up' && !e.drive && this.sel.has(e.name)); }
+  selected() { return this.view.filter(e => isItem(e) && !e.drive && this.sel.has(e.name)); }
 
   ensureVisible(i) {
     const rh = 26, top = i * rh, sc = this.scroll;
@@ -705,11 +731,11 @@ class Panel {
   clickRow(i, ev) {
     const e = this.view[i];
     if (!e) return;
-    if (e.type === 'up') { this.sel.clear(); this.cursor = i; this.render(); return; }
+    if (!isItem(e)) { this.sel.clear(); this.cursor = i; this.render(); return; }
     if (ev.shiftKey && this.anchor >= 0) {
       const [a, b] = [Math.min(this.anchor, i), Math.max(this.anchor, i)];
       if (!modKey(ev)) this.sel.clear();
-      for (let k = a; k <= b; k++) if (this.view[k].type !== 'up') this.sel.add(this.view[k].name);
+      for (let k = a; k <= b; k++) if (isItem(this.view[k])) this.sel.add(this.view[k].name);
     } else if (modKey(ev)) {
       if (this.sel.has(e.name)) this.sel.delete(e.name); else this.sel.add(e.name);
       this.anchor = i;
@@ -727,7 +753,7 @@ class Panel {
   // the menu.
   open(i, ev) {
     const e = this.view[i];
-    if (!e) return;
+    if (!e || e.type === 'gap') return;
     if (e.type === 'up') return this.goUp();
     if (isDirEntry(e) || e.drive) { if (syncing()) return syncMove(this, { into: e.name }); return this.load(this.join(e.name)); }
     this.sel = new Set([e.name]); this.cursor = i; this.anchor = i; this.render();
@@ -874,7 +900,7 @@ class Panel {
 
   menu(ev, i) {
     const e = i >= 0 ? this.view[i] : null;
-    if (e && e.type !== 'up' && !this.sel.has(e.name)) { this.sel = new Set([e.name]); this.cursor = i; this.render(); }
+    if (isItem(e) && !this.sel.has(e.name)) { this.sel = new Set([e.name]); this.cursor = i; this.render(); }
     const s = this.selected();
     const n = s.length;
     const conn = !!state.conn;
@@ -906,7 +932,11 @@ class Panel {
   }
 
   bind() {
-    this.scroll.addEventListener('scroll', () => this.render(), { passive: true });
+    this.scroll.addEventListener('scroll', () => {
+      this.render();
+      // Lined-up lists scroll together.
+      if (aligned() && this.other.scroll.scrollTop !== this.scroll.scrollTop) this.other.scroll.scrollTop = this.scroll.scrollTop;
+    }, { passive: true });
     new ResizeObserver(() => this.render()).observe(this.scroll);
     this.scroll.addEventListener('mousedown', ev => {
       clearTimeout(this._slowT);
@@ -944,6 +974,7 @@ class Panel {
       this.filter = this.filterIn.value.trim();
       this.filterIn.classList.toggle('on', !!this.filter);
       this.compute(); this.render();
+      if (aligned()) this.other.render();
     });
     this.filterIn.addEventListener('keydown', ev => { if (ev.key === 'Escape') { this.filterIn.value = ''; this.filterIn.dispatchEvent(new Event('input')); this.scroll.focus(); } });
     this.bindColumns();
@@ -951,9 +982,13 @@ class Panel {
       if (ev.target.closest('.rz')) return;
       const k = d.dataset.sort;
       this.sort = { key: k, asc: this.sort.key === k ? !this.sort.asc : k === 'name' };
-      state.ui.sort = Object.assign({}, state.ui.sort, { [this.side]: this.sort });
+      const both = aligned();
+      // Lined-up lists share one order: the other side takes this one.
+      if (both) { state.syncLead = this.side; this.other.sort = { ...this.sort }; }
+      state.ui.sort = Object.assign({}, state.ui.sort, { [this.side]: this.sort }, both ? { [this.other.side]: this.sort } : {});
       API.saveUi({ sort: state.ui.sort });
       this.compute(); this.render();
+      if (both) this.other.render();
     }));
     this.el.querySelector('.p-tools').addEventListener('click', async ev => {
       const b = ev.target.closest('button');
@@ -963,7 +998,7 @@ class Panel {
       if (act === 'refresh') { this.cache.delete(this.dir); this.load(this.dir, { keepSel: true }); }
       if (act === 'mkdir') this.mkdir();
       if (act === 'hidden') saveSettings({ showHidden: !state.settings.showHidden });
-      if (act === 'diff') { this.diffOnly = !this.diffOnly; b.classList.toggle('on', this.diffOnly); this.compute(); this.render(); }
+      if (act === 'diff') { this.diffOnly = !this.diffOnly; b.classList.toggle('on', this.diffOnly); this.compute(); this.render(); if (aligned()) this.other.render(); }
       if (act === 'home' && state.conn && this.dir !== state.conn.home) { syncOff('you jumped to another folder'); this.load(state.conn.home); }
       if (act === 'fav' && state.conn) favMenu(this, b);
     });
@@ -992,7 +1027,7 @@ class Panel {
       clearTimeout(this._slowT);
       const i = this.rowAt(ev);
       const e = this.view[i];
-      if (!e || e.type === 'up' || e.drive) { ev.preventDefault(); return; }
+      if (!isItem(e) || e.drive) { ev.preventDefault(); return; }
       if (!this.sel.has(e.name)) { this.sel = new Set([e.name]); this.render(); }
       const items = this.selected();
       dragSrc = { side: this.side, dir: this.dir, items };
@@ -1040,7 +1075,7 @@ class Panel {
       ev.dataTransfer.dropEffect = 'copy';
       const r = ev.target.closest('.row');
       const e = r ? this.view[+r.dataset.i] : null;
-      const onFolder = e && e.type !== 'up' && isDirEntry(e);
+      const onFolder = isItem(e) && isDirEntry(e);
       if (overRow !== (onFolder ? r : null)) { if (overRow) overRow.classList.remove('drop'); overRow = onFolder ? r : null; if (overRow) overRow.classList.add('drop'); }
       this.el.classList.toggle('dragover', !onFolder);
     });
@@ -1060,7 +1095,7 @@ class Panel {
       ev.preventDefault();
       const r = ev.target.closest('.row');
       const e = r ? this.view[+r.dataset.i] : null;
-      const target = e && e.type !== 'up' && isDirEntry(e) ? this.join(e.name) : this.dir;
+      const target = isItem(e) && isDirEntry(e) ? this.join(e.name) : this.dir;
       clearOver();
       if (dragSrc) {
         const src = dragSrc.side === 'local' ? panels.local : panels.remote;
@@ -1092,12 +1127,19 @@ class Panel {
     clearTimeout(this._slowT);                 // a key pressed: no late rename
     const n = this.view.length;
     const mod = modKey(ev);
+    // The cursor steps over blank rows (synchronized browsing): on to the next
+    // row in the same direction, or back if there is none.
+    const landing = (i, step) => {
+      for (let k = i; k >= 0 && k < n; k += step) if (this.view[k].type !== 'gap') return k;
+      for (let k = i; k >= 0 && k < n; k -= step) if (this.view[k].type !== 'gap') return k;
+      return i;
+    };
     const move = d => {
-      const i = Math.max(0, Math.min(n - 1, (this.cursor < 0 ? -1 : this.cursor) + d));
+      const i = landing(Math.max(0, Math.min(n - 1, (this.cursor < 0 ? -1 : this.cursor) + d)), d < 0 ? -1 : 1);
       if (ev.shiftKey && this.anchor >= 0) {
         this.sel.clear();
-        for (let k = Math.min(this.anchor, i); k <= Math.max(this.anchor, i); k++) if (this.view[k].type !== 'up') this.sel.add(this.view[k].name);
-      } else { const e = this.view[i]; this.sel = e && e.type !== 'up' ? new Set([e.name]) : new Set(); this.anchor = i; }
+        for (let k = Math.min(this.anchor, i); k <= Math.max(this.anchor, i); k++) if (isItem(this.view[k])) this.sel.add(this.view[k].name);
+      } else { const e = this.view[i]; this.sel = isItem(e) ? new Set([e.name]) : new Set(); this.anchor = i; }
       this.cursor = i; this.ensureVisible(i); this.render();
     };
     if (ev.key === 'ArrowDown') { ev.preventDefault(); move(1); }
@@ -1113,22 +1155,23 @@ class Panel {
     // Space: Quick Look on a local file, as in the Finder (Mac; Noar, 12/10/2026).
     else if (ev.key === ' ' && !mod && !this.remote && isMac() && this.cursor >= 0) {
       const e = this.view[this.cursor];
-      if (e && e.type !== 'up' && !isDirEntry(e)) { ev.preventDefault(); API.localPreview(this.join(e.name)); }
+      if (isItem(e) && !isDirEntry(e)) { ev.preventDefault(); API.localPreview(this.join(e.name)); }
     }
-    else if (mod && ev.key.toLowerCase() === 'a') { ev.preventDefault(); this.sel = new Set(this.view.filter(e => e.type !== 'up').map(e => e.name)); this.render(); }
+    else if (mod && ev.key.toLowerCase() === 'a') { ev.preventDefault(); this.sel = new Set(this.view.filter(isItem).map(e => e.name)); this.render(); }
     else if (ev.key === 'Tab') { ev.preventDefault(); (this.remote ? panels.local : panels.remote).scroll.focus(); }
     else if (ev.key.length === 1 && !mod && /\S/.test(ev.key)) {
       // Type-ahead: jump to the first name starting with what was typed.
       clearTimeout(this._taTimer);
       this._ta = (this._ta || '') + ev.key.toLowerCase();
       this._taTimer = setTimeout(() => { this._ta = ''; }, 800);
-      const i = this.view.findIndex(e => e.type !== 'up' && e.name.toLowerCase().startsWith(this._ta));
+      const i = this.view.findIndex(e => isItem(e) && e.name.toLowerCase().startsWith(this._ta));
       if (i >= 0) { this.cursor = i; this.anchor = i; this.sel = new Set([this.view[i].name]); this.ensureVisible(i); this.render(); }
     }
   }
 }
 
 let panels = null;
+const UP = Object.freeze({ name: '..', type: 'up', size: 0, mtime: 0 });
 
 // ── Queue: adding ──────────────────────────────────────────────────────────
 async function queueAdd(dir, sources, target, start) {
@@ -2542,13 +2585,17 @@ function sameStamp(a, b) {
   // A listing that only gives minutes (FTP LIST): within the same minute.
   return (a % 60000 === 0 || b % 60000 === 0) && Math.abs(a - b) < 60000;
 }
+// Synchronized browsing with a folder open on each side: the two lists are
+// compared and lined up. Not during a synchronized move: one side already
+// shows its new folder and the other one not yet, comparing them would mark
+// wrong differences.
+function aligned() {
+  if (!state.sync || !state.conn || !panels || !panels.local || !panels.remote || state.syncMoving) return false;
+  const l = panels.local.dir, r = panels.remote.dir;
+  return !!l && !!r && l !== '::drives';
+}
 function diffWith(panel) {
-  if (!state.sync || !state.conn || !panels.local || !panels.remote) return null;
-  // During a synchronized move, one side already shows its new folder and the
-  // other one not yet: comparing them would mark wrong differences.
-  if (state.syncMoving) return null;
-  const other = panel.remote ? panels.local : panels.remote;
-  if (!other.dir || other.dir === '::drives' || panel.dir === '::drives') return null;
+  const other = panel.other;
   const them = new Map(other.entries.map(e => [e.name, e]));
   const out = new Map();
   for (const e of panel.entries) {
@@ -2562,6 +2609,46 @@ function diffWith(panel) {
   }
   return out;
 }
+// Both lists, row for row: one row per name found on either side (a folder
+// and a file of the same name are two rows), a blank row where a side does not
+// have it. One order for both, the one last chosen on either side; for the
+// size and date columns, a name on both sides is placed by the value on that
+// side. The name filter, hidden files and "differences only" of either side
+// apply to both, or the rows would no longer face each other.
+function alignViews() {
+  const L = panels.local, R = panels.remote;
+  const wasL = L.atCursor(), wasR = R.atCursor();
+  const lead = state.syncLead === 'remote' ? R : L;
+  lead.other.sort = { ...lead.sort };
+  L.diff = diffWith(L); R.diff = diffWith(R);
+  const rows = new Map();
+  const keyOf = e => (isDirEntry(e) ? 'd:' : 'f:') + e.name;
+  for (const [p, k] of [[L, 'l'], [R, 'r']]) for (const e of p.entries) {
+    let row = rows.get(keyOf(e));
+    if (!row) rows.set(keyOf(e), row = {});
+    row[k] = e;
+  }
+  const hidden = state.settings.showHidden;
+  const words = [L.filter, R.filter].map(f => f.toLowerCase()).filter(Boolean);
+  const diffOnly = L.diffOnly || R.diffOnly;
+  const keep = row => {
+    const name = (row.l || row.r).name, low = name.toLowerCase();
+    if (!hidden && isHiddenName(name)) return false;
+    if (words.some(w => !low.includes(w))) return false;
+    return !diffOnly || (!!row.l && L.diff.has(name)) || (!!row.r && R.diff.has(name));
+  };
+  const [mine, theirs] = lead === L ? ['l', 'r'] : ['r', 'l'];
+  const order = entryOrder(lead.sort);
+  const list = [...rows.values()].filter(keep).map(row => ({ row, by: row[mine] || row[theirs] }));
+  list.sort((a, b) => order(a.by, b.by));
+  const up = L.hasUp() || R.hasUp();
+  L.view = (up ? [L.hasUp() ? UP : GAP] : []).concat(list.map(x => x.row.l || GAP));
+  R.view = (up ? [R.hasUp() ? UP : GAP] : []).concat(list.map(x => x.row.r || GAP));
+  L.keepCursor(wasL); R.keepCursor(wasR);
+}
+// Lined-up lists start at the same row: the other side takes this side's
+// scroll position.
+function matchScroll(from) { if (aligned()) from.other.scroll.scrollTop = from.scroll.scrollTop; }
 function refreshDiff() {
   document.body.classList.toggle('syncb', !!state.sync);
   for (const pn of [panels.local, panels.remote]) { if (!pn) continue; if (!state.sync) { pn.diffOnly = false; pn.el.querySelector('.p-dif').classList.remove('on'); } pn.compute(); pn.render(); }
@@ -2579,8 +2666,10 @@ function syncToggle() {
   if (state.sync) return syncOff();
   if (panels.local.dir === '::drives' || !panels.local.dir || !panels.remote.dir) { toast('Open a folder on both sides first.', true); return; }
   state.sync = true;
+  state.syncLead = 'local';
   renderSync();
   refreshDiff();
+  matchScroll(panels.local);
   toast(`Synchronized browsing on: ${localBase(panels.local.dir) || panels.local.dir} ⇄ ${posixBase(panels.remote.dir) || '/'}`);
 }
 function syncOff(why) {
@@ -2615,7 +2704,12 @@ async function syncMove(src, move) {
     document.body.classList.remove('syncmove');
   }
   if (!okOther) syncOff(move.up ? 'the other side could not follow' : `“${move.into}” does not exist ${other.remote ? 'on the server' : 'on this computer'}`);
-  else refreshDiff();
+  else {
+    refreshDiff();
+    // Back up: the folder just left is shown and selected, on the side clicked.
+    if (src.cursor >= 0) src.ensureVisible(src.cursor);
+    matchScroll(src);
+  }
 }
 
 // ══ Queue view ═════════════════════════════════════════════════════════════

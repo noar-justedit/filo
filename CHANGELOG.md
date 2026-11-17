@@ -4,6 +4,15 @@ All notable changes to filo are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/lang/fr/).
 
+## [1.0.3] — 2026-11-17
+
+### Added
+
+- **Synchronized browsing lines the two sides up.** Each name sits on the same
+  row on both sides; where one side does not have it, the other shows a blank
+  row. Sorting one side sorts the other, both lists scroll together, and the
+  name filter, hidden files and DIFFERENCES ONLY apply to both sides.
+
 ## [1.0.2] — 2026-11-15
 
 ### Fixed

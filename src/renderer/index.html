@@ -247,6 +247,8 @@ body.syncmove .p-scroll{cursor:progress;}
 .row .ic svg{width:15px;height:15px;}
 .row.folder .ic{color:var(--folder);}
 .row.up .ic{color:var(--text3);}
+/* Synchronized browsing: the blank row facing a name the other side has alone. */
+.row.gap{pointer-events:none;background:color-mix(in srgb,var(--text3) 5%,transparent);}
 .row .nm{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .ren{position:absolute;z-index:3;height:22px;padding:0 4px;border:1px solid var(--blue);border-radius:5px;background:var(--ins);color:var(--text);font-family:var(--font);font-size:12.5px;outline:none;box-shadow:0 0 0 3px color-mix(in srgb,var(--blue) 25%,transparent);}
 .ren:disabled{opacity:.6;}
