@@ -38,6 +38,9 @@ const DEFAULT_SETTINGS = {
   // systems leave behind (Noar, 13/11/2026). A name chosen by hand still goes.
   // Same patterns as the LIVE SYNC file filter, separated by commas.
   ignore: 'Thumbs.db, desktop.ini, .DS_Store, ._*',
+  // MY SERVERS shared with the other filo of the local network, without
+  // passwords (share.js). Off: nothing listens.
+  shareSites: false,
 };
 
 // LIVE SYNC pairs. Excluded by default: system clutter and the temporary
@@ -146,7 +149,7 @@ function normalizeSettings(s) {
   for (const k of ['limitUp', 'limitDown']) { const v = Number(o[k]); o[k] = Number.isFinite(v) && v > 0 ? Math.min(100000, Math.round(v * 10) / 10) : 0; }
   if (!EXISTING.includes(o.existingUp)) o.existingUp = 'ask';
   if (!EXISTING.includes(o.existingDown)) o.existingDown = 'ask';
-  for (const k of ['verify', 'serverHash', 'readBack', 'tempNames', 'segments', 'keepDates', 'showHidden', 'confirmDelete']) o[k] = !!o[k];
+  for (const k of ['verify', 'serverHash', 'readBack', 'tempNames', 'segments', 'keepDates', 'showHidden', 'confirmDelete', 'shareSites']) o[k] = !!o[k];
   // The settings have one verification switch (server checksum, or read the
   // file back): a server that cannot compute a checksum is always read back.
   // An older "never read back" choice is no longer visible, so it goes.
@@ -195,6 +198,12 @@ class Prefs {
       // hold folders emptied long ago, pruned once here so they do not come
       // back as empty folders.
       siteFoldersOwn: d.siteFoldersOwn === true,
+      // This computer, for the other filo of the network (share.js): random,
+      // kept, so a computer is not listed twice and never lists itself.
+      shareId: /^[0-9a-f]{16}$/.test(d.shareId) ? d.shareId : require('crypto').randomBytes(8).toString('hex'),
+      // The PIN of the shared passwords, kept from one run to the next,
+      // encrypted by the system keychain like a password (secrets.js).
+      sharePinEnc: typeof d.sharePinEnc === 'string' && d.sharePinEnc ? d.sharePinEnc : null,
     };
     if (!this.data.siteFoldersOwn) {
       const used = new Set();

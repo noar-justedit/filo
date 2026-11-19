@@ -217,9 +217,9 @@ SEC('sites', async () => {
   eq((await sites.importFilo(filoOut)).map(x => x.site.name), list.map(x => x.site.name), 'filo round trip');
   ok((await sites.importFilo(filoOut)).every(x => !x.site.passwordEnc), 'imported filo sites have no password');
 
-  // Export with passwords (0.9.0): encrypted by a passphrase, tied to the hosts.
+  // Export with passwords: encrypted by a passphrase (5 characters at least), tied to the hosts.
   const keep = list.map((x, i) => ({ password: i === 0 ? 'S3cret-pw!' : '', passphrase: i === 3 ? 'key-pass-77' : '' }));
-  const PASS = 'correct horse battery';
+  const PASS = 'pa55!';
   const encOut = await sites.exportFilo(list.map(x => x.site), { secrets: keep, passphrase: PASS });
   ok(!encOut.includes('S3cret-pw!') && !encOut.includes('key-pass-77'), 'encrypted export: no password in clear in the file');
   ok(sites.isEncrypted(encOut) && !sites.isEncrypted(filoOut), 'isEncrypted tells them apart');
@@ -227,14 +227,18 @@ SEC('sites', async () => {
   const back = await sites.importFilo(encOut, PASS);
   eq([back[0].password, back[1].password, back[3].passphrase], ['S3cret-pw!', '', 'key-pass-77'], 'right passphrase: passwords and key passphrase come back');
   ok((await sites.importFilo(encOut)).every(x => !x.password && !x.passphrase), 'no passphrase given: sites only, no password');
-  let code = null; try { await sites.importFilo(encOut, 'wrong passphrase!'); } catch (e) { code = e.code; }
+  let code = null; try { await sites.importFilo(encOut, 'pa55?'); } catch (e) { code = e.code; }
   eq(code, 'BAD_PASSPHRASE', 'wrong passphrase refused');
   const tampered = JSON.parse(encOut); tampered.sites[0].host = 'evil.example.com';
   code = null; try { await sites.importFilo(JSON.stringify(tampered), PASS); } catch (e) { code = e.code; }
   eq(code, 'BAD_PASSPHRASE', 'a host edited after the export: refused, no password goes to another server');
-  let short = null; try { await sites.exportFilo([list[0].site], { secrets: [{ password: 'x' }], passphrase: 'short' }); } catch (e) { short = e.message; }
-  ok(/at least 10/.test(short || ''), 'passphrase under 10 characters refused');
+  let short = null; try { await sites.exportFilo([list[0].site], { secrets: [{ password: 'x' }], passphrase: 'abcd' }); } catch (e) { short = e.message; }
+  ok(/at least 5/.test(short || ''), 'passphrase under 5 characters refused');
+  for (const fine of ['12345', 'abcde', '     ']) ok(JSON.parse(await sites.exportFilo([list[0].site], { secrets: [{ password: 'x' }], passphrase: fine })).secrets, `"${fine}": 5 characters, nothing else asked`);
   ok(JSON.parse(await sites.exportFilo([list[0].site], { secrets: [{ password: '' }], passphrase: PASS })).secrets === undefined, 'nothing to protect: plain export, no secrets block');
+  // An export made with the 10-character rule still opens with its passphrase.
+  const oldFile = fs.readFileSync(path.join(__dirname, 'fixtures', 'export-passphrase-1.0.json'), 'utf8');
+  eq((await sites.importFilo(oldFile, 'correct horse battery'))[0].password, 'old-Secret-1', 'an older export opens with its passphrase');
   eq(JSON.parse(encOut).version, 2, 'encrypted export is version 2');
   eq((await sites.importFilo(encOut.replace('"version": 2', '"version": 1'))).length, list.length, 'an older filo, which ignores the block, still reads the sites');
 
@@ -2554,6 +2558,111 @@ SEC('1.0.2: filo\'s own work files, one list', () => {
   for (const n of ['clip.mov.filopart', 'clip.mov.filoold', '.clip.mov.filoparts']) ok(own.isOwnName(n), `${n}: filo's`);
   for (const n of ['clip.mov', 'filopart', 'notes.filoparts']) ok(!own.isOwnName(n), `${n}: not filo's`);
   eq(SYNC_ALWAYS_EXCLUDE, own.OWN_PATTERNS.join(', '), 'LIVE SYNC leaves out exactly those');
+});
+
+SEC('servers shared on the local network', async () => {
+  const share = require('../src/main/share');
+  const http = require('http');
+  // Only a local network talks.
+  for (const a of ['192.168.1.20', '10.0.0.5', '172.16.3.4', '172.31.255.1', '169.254.10.1', '127.0.0.1', '100.64.0.9', '::1', 'fe80::1', 'fd12::4', '::ffff:192.168.0.2']) ok(share.isLocalAddress(a), `${a}: local`);
+  for (const a of ['8.8.8.8', '172.32.0.1', '100.128.0.1', '2a01:cb00::1', '::ffff:1.2.3.4', '', 'nonsense']) ok(!share.isLocalAddress(a), `${a || '(empty)'}: not local`);
+  // The question goes to each network's broadcast address.
+  const b = share.broadcastAddresses({ en0: [{ family: 'IPv4', address: '192.168.1.37', netmask: '255.255.255.0', internal: false }, { family: 'IPv6', address: 'fe80::1', netmask: 'ffff::', internal: false }], en1: [{ family: 'IPv4', address: '10.2.3.4', netmask: '255.255.0.0', internal: false }], lo0: [{ family: 'IPv4', address: '127.0.0.1', netmask: '255.0.0.0', internal: true }] });
+  eq(b.sort(), ['10.2.255.255', '192.168.1.255', '255.255.255.255'], 'broadcast addresses');
+  // One computer shares; another finds it and reads its list: never a password.
+  const secretSite = sites.normalizeSite({ name: 'NAS rushes', folder: 'Client X / Event', protocol: 'sftp', host: 'nas.local', user: 'noar', logon: 'key', keyPath: '/Users/noar/.ssh/id_ed25519', remoteDir: '/volume1/rushes', passwordEnc: 'SECRETBLOB', passphraseEnc: 'PASSBLOB' });
+  const ftpSite = sites.normalizeSite({ name: 'Agency', protocol: 'ftps', host: 'ftp.agency.example', user: 'x', transferMode: 'active', maxConnections: 3, passwordEnc: 'OTHERSECRET' });
+  const getList = () => share.listText([secretSite, ftpSite], ['Client X']);
+  const sharer = await new share.Sharer(getList, () => ({ id: 'aaaaaaaaaaaaaaaa', name: 'MacStudio', count: 2 }), { port: 0, udpPort: 0, host: '127.0.0.1' }).start();
+  try {
+    const found = await share.discover({ targets: ['127.0.0.1'], port: sharer.udpPort, waitMs: 400 });
+    eq(found.map(p => [p.id, p.name, p.count, p.address, p.port]), [['aaaaaaaaaaaaaaaa', 'MacStudio', 2, '127.0.0.1', sharer.port]], 'the sharing computer is found');
+    eq((await share.discover({ targets: ['127.0.0.1'], port: sharer.udpPort, waitMs: 300, selfId: 'aaaaaaaaaaaaaaaa' })).length, 0, 'a computer never lists itself');
+    const text = await share.fetchList('127.0.0.1', sharer.port);
+    for (const secret of ['SECRETBLOB', 'PASSBLOB', 'OTHERSECRET', 'passwordEnc', 'passphraseEnc', 'id_ed25519']) ok(!text.includes(secret), `the list does not carry ${secret}`);
+    const got = await sites.importFilo(text);
+    eq(got.map(x => [x.site.name, x.site.folder, x.site.host, x.site.logon, x.site.remoteDir, x.password]), [['NAS rushes', 'Client X / Event', 'nas.local', 'key', '/volume1/rushes', ''], ['Agency', '', 'ftp.agency.example', 'normal', '', '']], 'the list read back, without passwords');
+    eq([got[1].site.transferMode, got[1].site.maxConnections], ['active', 3], 'FTP settings kept');
+    eq(JSON.parse(text).siteFolderOrder, ['Client X'], 'the folder order comes along');
+    // Anything but the list: nothing.
+    const status = await new Promise(r => http.get({ host: '127.0.0.1', port: sharer.port, path: '/' }, res => { res.resume(); r(res.statusCode); }).on('error', () => r(0)));
+    eq(status, 404, 'another path answers nothing');
+    // A list read from a public address is refused before any request.
+    let err = '';
+    try { await share.fetchList('8.8.8.8', sharer.port); } catch (e) { err = e.message; }
+    ok(/not on the local network/.test(err), 'no list from outside the local network');
+  } finally { await sharer.stop(); }
+  let gone = '';
+  try { await share.fetchList('127.0.0.1', sharer.port, 1500); } catch (e) { gone = e.message; }
+  ok(/no longer shares|does not answer/.test(gone), 'sharing turned off: the list is gone');
+  eq((await share.discover({ targets: ['127.0.0.1'], port: sharer.udpPort, waitMs: 300 })).length, 0, 'sharing turned off: nobody answers');
+  // The passwords, with a PIN.
+  const stored = { s1: 'Rush-pw-1', s2: 'Agency-pw-2' };
+  let given = 0, usedBy = null, cancelledFrom = null;
+  const pinSharer = await new share.Sharer(() => share.listText([], []), () => ({ id: 'bbbbbbbbbbbbbbbb', name: 'MacStudio', count: 0 }), {
+    port: 0, udpPort: 0, host: '127.0.0.1',
+    getSecrets: () => { given++; return stored; },
+    onPinUsed: i => { usedBy = i; },
+    onPinCancelled: i => { cancelledFrom = i; },
+  }).start();
+  try {
+    const at = (pin, name) => share.unlock('127.0.0.1', pinSharer.port, pin, name || 'MacBook');
+    const ask = async () => (await share.discover({ targets: ['127.0.0.1'], port: pinSharer.udpPort, waitMs: 300 }))[0];
+    eq((await ask()).pin, false, 'no PIN set: the others are told no password goes');
+    ok((await at('1234')).noPin, 'no PIN set: no password');
+    let threw = ''; try { pinSharer.setPin('12a4'); } catch (e) { threw = e.message; }
+    ok(/4 digits/.test(threw), 'a PIN is 4 digits');
+    pinSharer.setPin('2580');
+    eq((await ask()).pin, true, 'PIN set: the others are told');
+    const w1 = await at('1111');
+    eq([w1.ok, w1.left], [false, 4], 'a wrong PIN: refused, tries left said');
+    eq(given, 0, 'a wrong PIN: the passwords are not even read');
+    const right = await at('2580', 'Mac of Martin');
+    eq([right.ok, right.secrets], [true, stored], 'the right PIN: the passwords arrive');
+    eq(usedBy && usedBy.name, 'Mac of Martin', 'the sharing computer knows which computer used its PIN');
+    eq((await at('2580', 'PC of Lea')).ok, true, 'the PIN stays good for the next computer');
+    eq(usedBy.name, 'PC of Lea', '…and the sharing computer knows it');
+    eq((await ask()).pin, true, 'still set: the others are still told');
+    pinSharer.setPin('1357');
+    ok(!(await at('2580')).ok && (await at('1357')).ok, 'a new PIN replaces the old one');
+    // 5 wrong in a row: a wait, even for the right PIN.
+    pinSharer.setPin('2580');
+    let last;
+    for (let k = 0; k < 5; k++) last = await at('0000');
+    ok(last.wait === 30, '5 wrong PINs in a row: 30 s of wait');
+    const during = await at('2580');
+    ok(!during.ok && during.wait > 0, 'during the wait, even the right PIN waits');
+    // 20 wrong in all: the PIN is cancelled.
+    let end;
+    for (let k = 0; k < 20 && !(end && end.cancelled); k++) { pinSharer.waitUntil = 0; end = await at('9999'); }
+    ok(end && end.cancelled && !pinSharer.pin, '20 wrong PINs in all: the PIN is cancelled');
+    ok(cancelledFrom && cancelledFrom.address, 'the sharing computer is told');
+    pinSharer.waitUntil = 0;
+    ok((await at('2580')).noPin, 'cancelled: the right PIN no longer works');
+    // A key exchange serves once: replaying a recorded right answer gets nothing.
+    pinSharer.setPin('2580');
+    const http2 = (p, body) => new Promise((resolve, reject) => {
+      const b = Buffer.from(JSON.stringify(body));
+      const rq = http.request({ host: '127.0.0.1', port: pinSharer.port, path: p, method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': b.length } }, res => { const parts = []; res.on('data', c => parts.push(c)); res.on('end', () => resolve({ status: res.statusCode, text: Buffer.concat(parts).toString() })); });
+      rq.on('error', reject); rq.end(b);
+    });
+    const crypto = require('crypto');
+    const raw = crypto.generateKeyPairSync('x25519').publicKey.export({ format: 'der', type: 'spki' }).subarray(12);
+    const h = JSON.parse((await http2('/filo-share/hello', { pub: raw.toString('base64') })).text);
+    const bogus = await http2('/filo-share/unlock', { sid: h.sid, proof: Buffer.alloc(32).toString('base64') });
+    const again = await http2('/filo-share/unlock', { sid: h.sid, proof: Buffer.alloc(32).toString('base64') });
+    eq([bogus.status, again.status], [403, 400], 'a key exchange serves once, right or wrong');
+    ok(!bogus.text.includes('Rush-pw') && !again.text.includes('Rush-pw'), 'no password in a refused answer');
+  } finally { await pinSharer.stop(); }
+  // Which passwords go with the PIN: stored ones, for a password login.
+  eq([sites.normalizeSite({ logon: 'normal', passwordEnc: 'x' }), sites.normalizeSite({ logon: 'normal' }), sites.normalizeSite({ logon: 'ask', passwordEnc: 'x' }), sites.normalizeSite({ protocol: 'sftp', logon: 'key', passwordEnc: 'x' }), sites.normalizeSite({ logon: 'anonymous', passwordEnc: 'x' })].map(share.sharesPassword), [true, false, false, false, false], 'only a stored password for a password login goes with the PIN');
+  const refs = JSON.parse(await share.listText([Object.assign(sites.normalizeSite({ name: 'A', logon: 'normal' }), { id: 'aa11', passwordEnc: 'x' }), Object.assign(sites.normalizeSite({ name: 'B' }), { id: 'bb22' })], []));
+  eq(refs.sites.map(s => [s.ref, s.pw]), [['aa11', true], ['bb22', false]], 'the list says which server has a password, by its id');
+  ok(!JSON.stringify(refs).includes('"x"'), 'still no password blob in the list');
+
+  // The setting: off by default.
+  const { normalizeSettings } = require('../src/main/config');
+  if (normalizeSettings) { eq(normalizeSettings({}).shareSites, false, 'off by default'); eq(normalizeSettings({ shareSites: 1 }).shareSites, true, 'a boolean'); }
 });
 
 // ══ Run ══════════════════════════════════════════════════════════════════

@@ -1204,6 +1204,7 @@ async function queueAdd(dir, sources, target, start) {
 // ══ Connection ═════════════════════════════════════════════════════════════
 // Ports and names of the protocols: main's (proto/index.js), given at init.
 let DEFAULT_PORT = {}, PROTO_LABEL = {};
+let PASSPHRASE_MIN = 5;                  // an export's passphrase, at least (main's rule, given at start)
 
 const PROTO_INFO = {
   sftp: ['SFTP', 'over SSH, encrypted', 'SFTP — over SSH, encrypted.'],
@@ -1891,6 +1892,7 @@ async function openSites(selectId) {
   state.sites = r.sites; state.vault = r.vaultAvailable;
   if (r.siteFolderOrder) state.siteFolderOrder = r.siteFolderOrder;
   sm.search = ''; $('sm-search').value = '';
+  sm.shared = null; renderSmChrome();
   $('ov-sites').classList.add('open');
   const last = sm.selId || (state.ui && state.ui.sitesSel);
   const pick = selectId || last;
@@ -1946,39 +1948,40 @@ function smToggle(path) {
   state.ui.sitesOpen = [...o];
   renderSiteList();
 }
+const PROTO_SHORT = { sftp: 'SFTP', ftps: 'FTPS', 'ftps-implicit': 'FTPS-i', ftp: 'FTP' };
+const siteSearch = (list, q) => list.filter(s => !q || `${s.name} ${s.host} ${s.user} ${s.folder}`.toLowerCase().includes(q));
+// The folder tree of a list of servers: { dirs: Map name → node, sites,
+// count }. The sites keep the order of the list (the one the user gave them
+// by dragging), not A to Z. Folders of `ownFolders` exist even when empty.
+function siteTree(list, ownFolders) {
+  const root = { dirs: new Map(), sites: [], count: 0 };
+  const walk = (folder, count) => {
+    let node = root, path = '';
+    if (count) node.count++;
+    for (const p of String(folder || '').split(' / ').map(x => x.trim()).filter(Boolean)) {
+      path = path ? path + ' / ' + p : p;
+      if (!node.dirs.has(p)) node.dirs.set(p, { name: p, path, dirs: new Map(), sites: [], count: 0 });
+      node = node.dirs.get(p);
+      if (count) node.count++;
+    }
+    return node;
+  };
+  for (const s of list) walk(s.folder, true).sites.push(s);
+  for (const fp of ownFolders || []) walk(fp, false);
+  return root;
+}
 function renderSiteList() {
+  if (sm.shared) return renderSharedList();
   const q = sm.search.toLowerCase();
   // The form's unsaved edits show in the list without touching state.sites (which
   // the connections history and the quick connect read).
   const dr = sm.draft;
   const view = dr && dr.id ? state.sites.map(s => (s.id === dr.id ? Object.assign({}, s, { name: dr.name, host: dr.host, user: dr.user, protocol: dr.protocol }) : s)) : state.sites;
-  const list = view.filter(s => !q || `${s.name} ${s.host} ${s.user} ${s.folder}`.toLowerCase().includes(q));
-  const root = { dirs: new Map(), sites: [], count: 0 };
-  // The sites keep the order the user gave them (drag and drop), not A to Z.
-  for (const s of list) {
-    const parts = String(s.folder || '').split(' / ').map(x => x.trim()).filter(Boolean);
-    let node = root; node.count++;
-    let path = '';
-    for (const p of parts) {
-      path = path ? path + ' / ' + p : p;
-      if (!node.dirs.has(p)) node.dirs.set(p, { name: p, path, dirs: new Map(), sites: [], count: 0 });
-      node = node.dirs.get(p); node.count++;
-    }
-    node.sites.push(s);
-  }
-  // Folders of their own (an empty one too): they live in the order list.
-  if (!q) for (const fp of state.siteFolderOrder || []) {
-    let node = root, path = '';
-    for (const p of String(fp).split(' / ').map(x => x.trim()).filter(Boolean)) {
-      path = path ? path + ' / ' + p : p;
-      if (!node.dirs.has(p)) node.dirs.set(p, { name: p, path, dirs: new Map(), sites: [], count: 0 });
-      node = node.dirs.get(p);
-    }
-  }
+  const list = siteSearch(view, q);
+  const root = siteTree(list, q ? [] : state.siteFolderOrder);
   const open = smOpen();
   const ren = sm.renaming;
   let html = '';
-  const short = { sftp: 'SFTP', ftps: 'FTPS', 'ftps-implicit': 'FTPS-i', ftp: 'FTP' };
   // LIVE SYNC (Noar, 13/10/2026): every session is a bookmark here, in a
   // folder of its own, always first. Made from the sessions themselves (not
   // stored): a session renamed or deleted is so here at once. Double-click:
@@ -2005,7 +2008,7 @@ function renderSiteList() {
     }
     for (const s of node.sites) {
       const editing = ren && ren.kind === 'site' && ren.key === s.id;
-      html += `<div class="sm-item${s.id === sm.selId || sm.multi.has(s.id) ? ' sel' : ''}" data-id="${esc(s.id)}"${q || editing ? '' : ' draggable="true"'} style="padding-left:${9 + pad + (depth ? 8 : 0)}px"><span class="ic ${s.protocol}">${short[s.protocol]}</span><div class="t">${editing ? `<input class="sm-ren" id="sm-ren" value="${esc(s.name)}" aria-label="Site name" spellcheck="false">` : `<div class="a">${esc(s.name)}</div>`}<div class="b">${esc(s.user ? s.user + '@' : '')}${esc(s.host)}</div></div>${editing ? '' : `<button class="ibtn sm-spd${s.speed ? ' has' : ''}" data-spd="${esc(s.id)}" aria-label="Speed test" data-tip="${esc(speedTip(s))}">${I.gauge}</button>`}</div>`;
+      html += `<div class="sm-item${s.id === sm.selId || sm.multi.has(s.id) ? ' sel' : ''}" data-id="${esc(s.id)}"${q || editing ? '' : ' draggable="true"'} style="padding-left:${9 + pad + (depth ? 8 : 0)}px"><span class="ic ${s.protocol}">${PROTO_SHORT[s.protocol]}</span><div class="t">${editing ? `<input class="sm-ren" id="sm-ren" value="${esc(s.name)}" aria-label="Site name" spellcheck="false">` : `<div class="a">${esc(s.name)}</div>`}<div class="b">${esc(s.user ? s.user + '@' : '')}${esc(s.host)}</div></div>${editing ? '' : `<button class="ibtn sm-spd${s.speed ? ' has' : ''}" data-spd="${esc(s.id)}" aria-label="Speed test" data-tip="${esc(speedTip(s))}">${I.gauge}</button>`}</div>`;
     }
   };
   draw(root, 0);
@@ -2164,14 +2167,16 @@ function smModClick(id, ev) {
 
 // Folders among their siblings: the order the user dragged them into, then the
 // ones never placed, A to Z.
-function folderCmp(a, b) {
-  const o = state.siteFolderOrder || [];
+function folderCmp(a, b) { return folderCmpIn(state.siteFolderOrder)(a, b); }
+// The folders in the order of `order` (their paths), then A to Z.
+const folderCmpIn = order => (a, b) => {
+  const o = order || [];
   const ia = o.indexOf(a.path), ib = o.indexOf(b.path);
   if (ia >= 0 && ib >= 0) return ia - ib;
   if (ia >= 0) return -1;
   if (ib >= 0) return 1;
   return a.name.localeCompare(b.name, undefined, { numeric: true });
-}
+};
 
 // ── Arranging the sites by drag and drop ───────────────────────────────────
 // A site dropped on the upper or lower half of another site goes before or
@@ -2301,6 +2306,7 @@ function newSite() {
 }
 
 function renderSiteForm() {
+  if (sm.shared) return renderSharedForm();
   const d = sm.draft;
   const f = $('sm-form');
   ['sm-save', 'sm-connect'].forEach(id => { $(id).disabled = !d; });
@@ -2369,6 +2375,178 @@ function renderSiteForm() {
   $('sf-ldir-pick').onclick = async () => { const p = await API.pickFolder(d.localDir || panels.local.dir); if (p) { d.localDir = p; $('sf-ldir').value = p; } };
 }
 
+// ══ SHARED SERVERS ═════════════════════════════════════════════════════════
+// The MY SERVERS of another filo on this network (its setting "Share my
+// servers" on), read-only and without passwords: browse its folders, connect
+// to one (the password is asked), or copy one into MY SERVERS. Main finds the
+// computers and reads their lists (share.js).
+// sm.shared: null on MY SERVERS; otherwise { scanning, peers, peer, loading,
+// error, sites, order, selId, open }.
+function smSetShared(on) {
+  sm.shared = on ? { scanning: false, peers: [], peer: null, loading: false, error: '', sites: [], order: [], selId: null, open: new Set() } : null;
+  sm.lastClick = null;
+  renderSmChrome(); renderSiteList(); renderSiteForm();
+  if (on) sharedScan();
+}
+function renderSmChrome() {
+  const on = !!sm.shared;
+  $('ov-sites').classList.toggle('shared', on);
+  $('sm-title').textContent = on ? 'SHARED SERVERS' : 'MY SERVERS';
+  const b = $('sm-shared');
+  b.textContent = on ? 'MY SERVERS' : 'SHARED';
+  b.dataset.tip = on ? 'Back to MY SERVERS' : 'SHARED SERVERS: the servers other filo share on this network';
+  $('sm-save').textContent = on ? 'COPY TO MY SERVERS' : 'SAVE';
+  $('sm-connect').textContent = on ? 'CONNECT' : 'SAVE & CONNECT';
+}
+async function sharedScan() {
+  const sh = sm.shared;
+  if (!sh || sh.scanning) return;
+  sh.scanning = true; renderSiteList();
+  const peers = await API.shareDiscover().catch(() => []);
+  if (sm.shared !== sh) return;
+  sh.scanning = false;
+  sh.peers = peers.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+  if (sh.peer) {
+    const p = sh.peers.find(x => x.id === sh.peer.id);
+    if (p) return sharedOpenPeer(p.id);            // its list read again
+    Object.assign(sh, { peer: null, sites: [], selId: null, error: '' });
+  }
+  renderSiteList(); renderSiteForm();
+}
+async function sharedOpenPeer(id) {
+  const sh = sm.shared, p = sh && sh.peers.find(x => x.id === id);
+  if (!p) return;
+  const same = sh.peer && sh.peer.id === id;
+  Object.assign(sh, { peer: p, loading: true, error: '' });
+  if (!same) Object.assign(sh, { sites: [], order: [], selId: null, open: new Set(), unlocked: false });
+  renderSiteList(); renderSiteForm();
+  const r = await API.shareFetch(id);
+  if (sm.shared !== sh || sh.peer !== p) return;
+  sh.loading = false;
+  if (r.ok) {
+    sh.sites = r.sites; sh.order = r.siteFolderOrder || []; sh.unlocked = !!r.unlocked;
+    if (!sh.sites.some(s => s.id === sh.selId)) sh.selId = null;
+  } else sh.error = r.error;
+  renderSiteList(); renderSiteForm();
+}
+const sharedSel = () => { const sh = sm.shared; return sh && sh.peer ? sh.sites.find(s => s.id === sh.selId) || null : null; };
+function renderSharedList() {
+  const sh = sm.shared, q = sm.search.toLowerCase();
+  const all = $('sm-copy-all');
+  all.style.display = sh.peer && sh.sites.length ? '' : 'none';
+  all.dataset.tip = sh.peer ? `Copy the ${plural(sh.sites.length, 'server')} of ${sh.peer.name} to MY SERVERS, in their folders` : '';
+  const note = t => `<div class="sm-empty" style="padding:30px 10px">${t}</div>`;
+  let html = '';
+  if (!sh.peer) {
+    const peers = sh.peers.filter(p => !q || p.name.toLowerCase().includes(q));
+    if (!sh.peers.length) html = note(sh.scanning ? 'Looking for filo on this network…' : 'No filo shares its servers here.<br>On the other one: Settings › Share my servers.');
+    else if (!peers.length) html = note('No match.');
+    for (const p of peers) html += `<div class="sm-item sm-peer" data-peer="${esc(p.id)}"><span class="ic peer">${I.server}</span><div class="t"><div class="a">${esc(p.name)}</div><div class="b">${plural(p.count, 'server')} · ${esc(p.address)}</div></div>${p.unlocked ? '<span class="pin ok">PASSWORDS</span>' : p.pin ? '<span class="pin" data-tip="Its passwords come with a PIN shown on that computer">PIN</span>' : ''}</div>`;
+  } else {
+    html += `<div class="sm-folder sm-back" data-back="1" data-tip="Back to the list of computers"><span class="chev">${I.chev}</span><span class="nm">All computers</span></div>`;
+    html += `<div class="sm-peer-head">${I.server}<span>${esc(sh.peer.name)}</span></div>`;
+    if (sh.unlocked) html += `<div class="sh-pw ok"><span>Passwords received.</span></div>`;
+    else if (sh.peer.pin) html += `<div class="sh-pw"><span>Passwords with its PIN.</span><button class="btn sm go" data-unlock="1">ENTER PIN</button></div>`;
+    if (sh.error) html += note(esc(sh.error));
+    else if (sh.loading && !sh.sites.length) html += note('Reading its servers…');
+    else {
+      const list = siteSearch(sh.sites, q);
+      if (!list.length) html += note(q ? 'No match.' : 'This computer shares no server.');
+      const cmp = folderCmpIn(sh.order);
+      const draw = (node, depth) => {
+        const pad = depth * 14;
+        for (const d of [...node.dirs.values()].sort(cmp)) {
+          const isOpen = !!q || sh.open.has(d.path);
+          html += `<div class="sm-folder${isOpen ? ' open' : ''}" data-spath="${esc(d.path)}" style="padding-left:${6 + pad}px"><span class="chev">${I.chev}</span>${I.folder}<span class="nm">${esc(d.name)}</span><span class="n">${d.count}</span></div>`;
+          if (isOpen) draw(d, depth + 1);
+        }
+        for (const s of node.sites) html += `<div class="sm-item${s.id === sh.selId ? ' sel' : ''}" data-sid="${esc(s.id)}" style="padding-left:${9 + pad + (depth ? 8 : 0)}px"><span class="ic ${s.protocol}">${PROTO_SHORT[s.protocol]}</span><div class="t"><div class="a">${esc(s.name)}</div><div class="b">${esc(s.user ? s.user + '@' : '')}${esc(s.host)}</div></div></div>`;
+      };
+      draw(siteTree(list, q ? [] : sh.order), 0);
+    }
+  }
+  $('sm-list').innerHTML = html;
+}
+function sharedClick(ev) {
+  const sh = sm.shared;
+  if (ev.target.closest('[data-unlock]')) return sharedUnlock();
+  if (ev.target.closest('[data-back]')) { Object.assign(sh, { peer: null, sites: [], selId: null, error: '' }); renderSiteList(); renderSiteForm(); return; }
+  const pe = ev.target.closest('[data-peer]');
+  if (pe) return sharedOpenPeer(pe.dataset.peer);
+  const f = ev.target.closest('[data-spath]');
+  if (f) { const p = f.dataset.spath; if (sh.open.has(p)) sh.open.delete(p); else sh.open.add(p); renderSiteList(); return; }
+  const it = ev.target.closest('[data-sid]');
+  if (!it) return;
+  // Double-click = connect (detected here: the first click redraws the list).
+  const id = it.dataset.sid, now = Date.now();
+  if (sm.lastClick && sm.lastClick.sid === id && now - sm.lastClick.t < 450) { sm.lastClick = null; sharedConnect(); return; }
+  sm.lastClick = { sid: id, t: now };
+  sh.selId = id;
+  renderSiteList(); renderSiteForm();
+}
+const SHARED_LOGON = { normal: 'Password, asked at connection', ask: 'Password, asked at connection', anonymous: 'Anonymous', key: 'Key file' };
+const sharedLogon = s => s.pwHere ? 'Password received with the PIN' : s.pw && sm.shared.peer.pin ? 'Password with the PIN, or asked' : SHARED_LOGON[s.logon];
+// The passwords of the computer open on the left, with the PIN set there.
+async function sharedUnlock() {
+  const sh = sm.shared, p = sh && sh.peer;
+  if (!p) return;
+  const pin = await pinPad({
+    title: `PIN of ${p.name}`,
+    sub: 'Set in Settings on that computer.',
+    check: async pinTyped => {
+      const r = await API.shareUnlock(p.id, pinTyped);
+      if (r.ok) return null;
+      if (r.noPin || r.cancelled) return { fail: r.error };
+      return r.error + (r.left ? ` ${r.left} ${r.left === 1 ? 'try' : 'tries'} left.` : '');
+    },
+  });
+  if (!pin || sm.shared !== sh) return;
+  p.pin = false; p.unlocked = true;
+  toast(`Passwords of ${p.name} received`);
+  sharedOpenPeer(p.id);
+}
+function renderSharedForm() {
+  const sh = sm.shared, f = $('sm-form'), s = sharedSel();
+  $('sm-save').disabled = !s;
+  $('sm-connect').disabled = !s || s.logon === 'key';
+  if (!s) {
+    f.innerHTML = `<div class="sm-empty">${I.server.replace('<svg', '<svg width="40" height="40"')}<div>${sh.peer ? 'Pick a server on the left.' : 'Pick a computer on the left.'}</div><div class="hint">Read-only. COPY TO MY SERVERS makes one yours.</div></div>`;
+    return;
+  }
+  const val = (label, v, grow) => `<div class="field"${grow ? ` style="flex:${grow}"` : ''}><label>${label}</label><div class="ro">${esc(v) || '&nbsp;'}</div></div>`;
+  f.innerHTML = `
+    <div class="sh-from">${I.server}<span>Shared by <b>${esc(sh.peer.name)}</b> · read-only</span></div>
+    <div class="frow">${val('Name', s.name, 2)}${val('Folder', s.folder)}</div>
+    <div class="frow">${val('Protocol', PROTO_INFO[s.protocol][0])}${val('Login', sharedLogon(s))}</div>
+    <div class="frow">${val('Host', s.host, 3)}${val('Port', String(s.port))}</div>
+    ${s.logon !== 'anonymous' ? `<div class="frow">${val('User', s.user)}</div>` : ''}
+    <div class="frow">${val('Server folder at login', s.remoteDir || 'the login folder')}${s.maxConnections ? val('Maximum connections', String(s.maxConnections)) : ''}</div>
+    ${s.protocol !== 'sftp' ? `<div class="frow">${val('FTP data connection', s.transferMode === 'active' ? 'ACTIVE' : 'PASSIVE')}</div>` : ''}
+    ${s.comment ? `<div class="field"><label>Notes</label><div class="ro ro-notes">${esc(s.comment)}</div></div>` : ''}
+    ${s.logon === 'key' ? `<div class="hint" style="color:var(--orange)">Its key file stays on ${esc(sh.peer.name)}: copy it, then choose your key.</div>` : ''}`;
+}
+// One server (the one selected) or all of them (all: true) into MY SERVERS.
+async function sharedCopy(all) {
+  const sh = sm.shared, s = sharedSel();
+  const list = all ? sh.sites : s ? [s] : [];
+  if (!list.length) return;
+  const r = await API.shareCopy(sh.peer.id, list);
+  state.sites = r.sites;
+  if (r.siteFolderOrder) state.siteFolderOrder = r.siteFolderOrder;
+  const there = r.there ? `${r.added ? ', ' : ''}${r.there} already there` : '';
+  if (!all) toast(r.added ? `“${s.name}” copied to MY SERVERS${s.logon === 'key' ? ': choose your key there' : r.withPassword ? ', with its password' : ''}` : `“${s.name}” is already in MY SERVERS`);
+  else toast(`${r.added ? `${plural(r.added, 'server')} copied to MY SERVERS${r.withPassword ? `, ${r.withPassword} with the password` : ''}` : ''}${there}`);
+}
+function sharedConnect() {
+  const s = sharedSel();
+  if (!s) return;
+  if (s.logon === 'key') return toast('Its key file stays on the other computer: copy it, then choose your key.', true);
+  const peer = sm.shared.peer.id;
+  closeSites();
+  const user = s.logon === 'anonymous' ? s.user || 'anonymous' : s.user;
+  connectInTab({ quick: { protocol: s.protocol, host: s.host, port: s.port, user, label: s.name, transferMode: s.transferMode, maxConnections: s.maxConnections }, startDir: s.remoteDir || undefined, shared: { peer, ref: s.ref } }, s.name);
+}
+
 function renderSiteListLive() { if (sm.draft && sm.draft.id) renderSiteList(); }
 
 async function saveSite() {
@@ -2393,6 +2571,7 @@ function bindSites() {
   $('sm-new').onclick = newSite;
   $('sm-search').addEventListener('input', () => { sm.search = $('sm-search').value.trim(); renderSiteList(); });
   $('sm-list').addEventListener('click', ev => {
+    if (sm.shared) return sharedClick(ev);
     if (ev.target.closest('.sm-ren')) return;
     const f = ev.target.closest('.sm-folder');
     if (f) { sm.selFolder = f.dataset.path; if (sm.multi.size) { sm.multi.clear(); sm.anchor = null; renderSiteForm(); } if (ev.altKey) smFoldAll(!f.classList.contains('open')); else smToggle(f.dataset.path); return; }
@@ -2423,7 +2602,7 @@ function bindSites() {
   const smList = $('sm-list');
   smList.addEventListener('dragstart', ev => {
     const el = ev.target.closest('.sm-item, .sm-folder');
-    if (!el || sm.search) { ev.preventDefault(); return; }
+    if (!el || sm.search || sm.shared) { ev.preventDefault(); return; }
     sm.drag = el.classList.contains('sm-item') ? { type: 'site', id: el.dataset.id } : { type: 'folder', path: el.dataset.path };
     ev.dataTransfer.effectAllowed = 'move';
     ev.dataTransfer.setData('text/plain', 'filo-site');
@@ -2450,7 +2629,7 @@ function bindSites() {
   // Right-click (Noar, 0.6.4): the empty space, a folder, a site.
   $('sm-list').addEventListener('contextmenu', ev => {
     ev.preventDefault();
-    if (sm.search) return;
+    if (sm.search || sm.shared) return;
     const lv = ev.target.closest('.sm-live');
     if (lv) {
       const p = sy.pairs.find(x => x.id === lv.dataset.live);
@@ -2502,8 +2681,11 @@ function bindSites() {
   $('sm-new-folder').onclick = () => smNewFolder('').catch(e => toast(e.message, true));
   let scrollT = null;
   $('sm-list').addEventListener('scroll', () => { clearTimeout(scrollT); scrollT = setTimeout(() => { state.ui.sitesScroll = $('sm-list').scrollTop; API.saveUi({ sitesScroll: state.ui.sitesScroll }); }, 300); });
-  $('sm-save').onclick = async () => { const s = await saveSite(); if (s) toast('Saved'); };
-  $('sm-connect').onclick = async () => { const s = await saveSite(); if (!s) return; closeSites(); connectInTab({ siteId: s.id }, s.name); };
+  $('sm-save').onclick = async () => { if (sm.shared) return sharedCopy(); const s = await saveSite(); if (s) toast('Saved'); };
+  $('sm-connect').onclick = async () => { if (sm.shared) return sharedConnect(); const s = await saveSite(); if (!s) return; closeSites(); connectInTab({ siteId: s.id }, s.name); };
+  $('sm-shared').onclick = () => smSetShared(!sm.shared);
+  $('sm-rescan').onclick = () => sharedScan();
+  $('sm-copy-all').onclick = () => sharedCopy(true);
   $('sm-import').onclick = importSites;
   $('sm-export').onclick = () => {
     const r = $('sm-export').getBoundingClientRect();
@@ -2519,18 +2701,18 @@ function bindSites() {
   };
 }
 
-// The passphrase that locks an export's passwords: typed twice, 10 characters
-// minimum. filo never stores it: lost, the passwords cannot be recovered.
+// The passphrase that locks an export's passwords: typed twice, PASSPHRASE_MIN
+// characters at least (from main). filo never stores it: lost, the passwords cannot be recovered.
 function newPassphraseBox() {
   return dialog({
     title: 'Passphrase for the export',
-    sub: 'It encrypts the passwords inside the file. <b>filo does not keep it: without it, the passwords cannot be recovered.</b> You will be asked for it when importing.',
-    html: `<div class="field"><label>Passphrase (10 characters minimum)</label><input id="dlg-p1" type="password" autocomplete="off" spellcheck="false"></div>
+    sub: 'It encrypts the passwords. <b>filo does not keep it.</b><br>Send it apart from the file: a short one is quickly guessed.',
+    html: `<div class="field"><label>Passphrase (${PASSPHRASE_MIN} characters minimum)</label><input id="dlg-p1" type="password" autocomplete="off" spellcheck="false"></div>
       <div class="field"><label>Again</label><input id="dlg-p2" type="password" autocomplete="off" spellcheck="false"></div>
       <div class="hint" id="dlg-perr" style="color:var(--orange);min-height:1.2em"></div>`,
     buttons: [{ label: 'CANCEL', value: null }, { label: 'EXPORT', cls: 'go', value: c => {
       const a = c.querySelector('#dlg-p1').value, b = c.querySelector('#dlg-p2').value, err = c.querySelector('#dlg-perr');
-      if (a.length < 10) { err.textContent = 'At least 10 characters.'; return undefined; }
+      if (a.length < PASSPHRASE_MIN) { err.textContent = `At least ${PASSPHRASE_MIN} characters.`; return undefined; }
       if (a !== b) { err.textContent = 'The two passphrases differ.'; return undefined; }
       return a;
     } }],
@@ -3546,6 +3728,8 @@ async function openSettings() {
   $('st-serverhash').checked = s.serverHash !== false;
   $('st-hidden-desc').textContent = `names starting with a dot (${isMac() ? '⇧⌘.' : 'Ctrl+Shift+.'})`;
   $('st-hidden').checked = s.showHidden; $('st-confirmdel').checked = s.confirmDelete;
+  $('st-share').checked = !!s.shareSites;
+  renderShareDesc(await API.shareStatus());
   $('st-ignore').innerHTML = filterChips(s.ignore, false);
   bindFilterChips($('st-ignore'), saveIgnore);
   $('st-ntfy-en').checked = state.ntfy.enabled; $('st-ntfy-server').value = state.ntfy.server || ''; $('st-ntfy-topic').value = state.ntfy.topic || '';
@@ -3638,6 +3822,75 @@ function filterKnown() {
     return `<div class="k"><span class="badge ${kind === 'sftp' ? 'g' : 'b'}">${kind === 'sftp' ? 'SSH key' : 'Certificate'}</span><div class="a"><div>${esc(host)}:${esc(port)}</div><div>${esc(k.fp)}</div></div><button class="btn sm" data-k="${esc(k.key)}">FORGET</button></div>`;
   }).join('') : '<div class="set-desc">No server yet. Each server you trust is listed here, with its fingerprint.</div>';
 }
+// ══ PIN pad ═══════════════════════════════════════════════════════════════
+// As in ingesto's kiosk mode: 4 dots, a keypad, the keyboard's digits too.
+// o.set: the PIN is typed twice → resolves it (null: cancelled).
+// o.check(pin) (typing one): resolves null when it is right (the pad closes
+// and resolves the PIN), a text to show and try again, or { fail: text } to
+// close and resolve null.
+function pinPad(o) {
+  return new Promise(resolve => {
+    const ov = $('pin-ov'), title = $('kp-title'), err = $('kp-err');
+    let buf = '', first = '', busy = false;
+    const dots = () => document.querySelectorAll('#kp-dots span').forEach((d, i) => d.classList.toggle('on', i < buf.length));
+    const head = () => { title.textContent = o.set && first ? 'Type the PIN again' : o.title; };
+    const close = v => { ov.classList.remove('on'); document.removeEventListener('keydown', onKey, true); $('kp-pad').onclick = null; resolve(v); };
+    const complete = async () => {
+      if (o.set) {
+        if (!first) { first = buf; buf = ''; err.textContent = ''; head(); dots(); return; }
+        if (buf === first) return close(buf);
+        first = ''; buf = ''; err.textContent = 'The two PINs differ. Start again.'; head(); dots(); return;
+      }
+      busy = true;
+      const r = await o.check(buf).catch(e => ({ fail: e.message }));
+      busy = false;
+      if (r === null) return close(buf);
+      if (r && r.fail) { close(null); toast(r.fail, true); return; }
+      err.textContent = r; buf = ''; dots();
+    };
+    const key = k => {
+      if (busy) return;
+      if (k === 'x') return close(null);
+      if (k === 'del') { buf = buf.slice(0, -1); dots(); return; }
+      if (!/^\d$/.test(k) || buf.length >= 4) return;
+      buf += k; dots();
+      if (buf.length === 4) setTimeout(complete, 120);
+    };
+    const onKey = ev => {
+      const k = ev.key === 'Escape' ? 'x' : ev.key === 'Backspace' ? 'del' : ev.key;
+      if (k === 'x' || k === 'del' || /^\d$/.test(k)) { ev.preventDefault(); ev.stopPropagation(); key(k); }
+    };
+    $('kp-pad').onclick = ev => { const b = ev.target.closest('[data-k]'); if (b) key(b.dataset.k); };
+    document.addEventListener('keydown', onKey, true);
+    $('kp-sub').innerHTML = o.sub || '';
+    err.textContent = ''; head(); dots();
+    ov.classList.add('on');
+  });
+}
+
+// Under "Share my servers": one short sentence on what the others get now.
+function renderShareDesc(st) {
+  const el = $('st-share-desc');
+  document.body.classList.toggle('sharing', !!st.on);
+  el.classList.toggle('err', !!st.error);
+  const name = `“${st.name}”`;
+  el.textContent = st.error
+    || (!st.on ? 'The filo of this network see your servers.'
+    : st.pin ? `Shared as ${name}. Passwords with your PIN.`
+    : st.note ? `Shared as ${name}. PIN ${st.note}.`
+    : `Shared as ${name}, without passwords.`);
+}
+const SET_PIN = {
+  title: 'Set a 4-digit PIN',
+  sub: 'It gives your passwords to the other computers.',
+};
+async function newSharePin() {
+  const pin = await pinPad(Object.assign({ set: true }, SET_PIN));
+  if (!pin) return false;
+  const st = await API.sharePin(pin);
+  renderShareDesc(st);
+  return !st.error;
+}
 async function saveSettings(patch) {
   state.settings = await API.settingsSave(patch);
   renderConnPill();
@@ -3678,6 +3931,19 @@ function bindSettings() {
   const sw = (id, key) => { $(id).onchange = () => saveSettings({ [key]: $(id).checked }); };
   sw('st-dates', 'keepDates'); sw('st-temp', 'tempNames'); sw('st-segments', 'segments'); $('st-serverhash').onchange = () => { renderVerifyRows(); saveSettings({ serverHash: $('st-serverhash').checked, readBack: true }); };
   sw('st-hidden', 'showHidden'); sw('st-confirmdel', 'confirmDelete');
+  // Turning sharing on asks for the PIN first: cancelled, nothing is shared.
+  $('st-share').onchange = async () => {
+    const on = $('st-share').checked;
+    let pin = null;
+    if (on) {
+      pin = await pinPad(Object.assign({ set: true }, SET_PIN));
+      if (!pin) { $('st-share').checked = false; return; }
+    }
+    await saveSettings({ shareSites: on });
+    renderShareDesc(on ? await API.sharePin(pin) : await API.shareStatus());
+  };
+  $('st-share-pin').onclick = () => newSharePin();
+  API.on('share-status', st => renderShareDesc(st));
   // After the queue: the command.
   $('st-hook-en').addEventListener('change', () => saveSettings({ hookEnabled: $('st-hook-en').checked }));
   $('st-hook-cmd').addEventListener('change', () => saveSettings({ hookCommand: $('st-hook-cmd').value.trim() }));
@@ -5196,7 +5462,7 @@ async function init() {
     ui: d.ui || {}, vault: d.vaultAvailable, qstate: d.queueState, qcounts: d.queueCounts, logs: d.log || [], existingLabels: d.existingLabels,
     ownPatterns: new Set(d.ownPatterns || []),
   });
-  DEFAULT_PORT = d.protocols.ports; PROTO_LABEL = d.protocols.labels; VLABEL = d.hashLabels;
+  DEFAULT_PORT = d.protocols.ports; PROTO_LABEL = d.protocols.labels; VLABEL = d.hashLabels; PASSPHRASE_MIN = d.passphraseMin;
   $('ver').textContent = 'v' + d.version;
   panels = { local: new Panel('local'), remote: new Panel('remote') };
   setProto(state.ui.lastProto || 'sftp');

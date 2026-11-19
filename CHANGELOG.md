@@ -4,6 +4,28 @@ All notable changes to filo are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/lang/fr/).
 
+## [1.1.0] — 2026-11-19
+
+### Added
+
+- **Shared servers on the local network.** Settings → Share my servers (off
+  by default) lets the other filo of the local network see your MY SERVERS,
+  read-only. Turning it on asks for a 4-digit PIN: the passwords go only to a
+  computer that types it (5 wrong in a row: 30 s of wait; 20 wrong: the PIN
+  is cancelled). The PIN stays until it is changed (NEW PIN), from one run of
+  filo to the next. On the other computers, MY SERVERS → SHARED lists the
+  computers that share; pick one, browse its folders, ENTER PIN, then CONNECT,
+  COPY TO MY SERVERS (one server) or COPY ALL (every server, in its folders;
+  one already there is not copied twice). No passphrase or key ever leaves; a
+  server that logs in with a key file is copied without the key. The list is
+  only handed out on a local network (private addresses), on port 47731 (UDP
+  to find the computers, TCP for the list); the passwords travel encrypted.
+
+### Changed
+
+- **Export with passwords: the passphrase needs 5 characters** (it was 10).
+  Exports made before still open with their passphrase.
+
 ## [1.0.3] — 2026-11-17
 
 ### Added

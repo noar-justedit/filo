@@ -1,0 +1,33 @@
+{
+  "format": "filo-sites",
+  "version": 2,
+  "exported": "2026-11-01T10:00:00.000Z",
+  "sites": [
+    {
+      "name": "Old NAS",
+      "folder": "",
+      "protocol": "sftp",
+      "host": "nas.example",
+      "port": 22,
+      "user": "noar",
+      "logon": "normal",
+      "keyPath": "",
+      "transferMode": "passive",
+      "maxConnections": 0,
+      "remoteDir": "",
+      "localDir": "",
+      "comment": ""
+    }
+  ],
+  "secrets": {
+    "kdf": "scrypt",
+    "N": 65536,
+    "r": 8,
+    "p": 1,
+    "cipher": "aes-256-gcm",
+    "salt": "mgT5kruBJ4cDXf+9CXfLoQ==",
+    "iv": "BLEebtv2RUq27eQa",
+    "tag": "Y+ocIl1mIan7wCWKtIym4Q==",
+    "data": "hoVV6vrK/iB6CyJvyPkLFZr97RrUB12Uv010GbTQx85p8ARGR7Lz9ojLm5b+"
+  }
+}

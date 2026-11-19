@@ -129,12 +129,18 @@ const api = {
   sitesDeleteFolder: (path)   => inv('sites-delete-folder', path),
   sitesDuplicateFolder: (from, to) => inv('sites-duplicate-folder', from, to),
   sitesFromQuick: (q, name)   => inv('sites-from-quick', q, name),
+  shareStatus : ()            => inv('share-status'),
+  shareDiscover: ()           => inv('share-discover'),
+  shareFetch  : (id)          => inv('share-fetch', id),
+  shareCopy   : (peer, list)  => inv('share-copy', peer, list),
+  sharePin    : (pin)         => inv('share-pin', pin),
+  shareUnlock : (id, pin)     => inv('share-unlock', id, pin),
   sitesImport : (withPasswords, opts) => inv('sites-import', withPasswords, opts),
   sitesExport : (opts, ids) => inv('sites-export', opts, ids),
 
   on: (channel, cb) => {
     const allowed = ['queue-progress', 'queue-changed', 'queue-state', 'queue-ask', 'queue-ask-closed', 'queue-blocked',
-      'queue-finished', 'log', 'scan-progress', 'delete-progress', 'menu', 'update-available', 'sync-status', 'sync-pairs', 'direct-pending', 'live-queue', 'hook-start', 'queue-scheduled', 'compare-progress', 'connect-step', 'speedtest-event'];
+      'queue-finished', 'log', 'scan-progress', 'delete-progress', 'menu', 'update-available', 'sync-status', 'sync-pairs', 'direct-pending', 'live-queue', 'hook-start', 'queue-scheduled', 'compare-progress', 'connect-step', 'speedtest-event', 'share-status'];
     if (!allowed.includes(channel)) throw new Error('Unknown channel ' + channel);
     const h = (_, payload) => cb(payload);
     ipcRenderer.on(channel, h);

@@ -46,6 +46,7 @@ const ignorer = () => nameIgnorer(prefs.data.settings.ignore);
 // A listing for the panels: each entry the setting ignores says so.
 const markIgnored = entries => { const ig = ignorer(); for (const e of entries) if (ig(e.name, e.type === 'folder' || e.linkTo === 'folder')) e.ignored = true; return entries; };
 const sites = require('./core/sites');
+const share = require('./share');
 const netid = require('./core/netid');
 const { runSpeedTest } = require('./core/speedtest');
 const { LABELS: EXISTING_LABELS, ACTIONS: EXISTING_ACTIONS } = require('./core/existing');
@@ -498,6 +499,7 @@ app.whenReady().then(() => {
   };
   setHostKeyPolicy(policy);
   setCertPolicy(policy);
+  applySharing().catch(() => {});             // MY SERVERS shared, if the setting is on
 
   queue = new TransferQueue({
     getEndpoint: resolveEndpoint,
@@ -597,6 +599,7 @@ app.on('will-quit', e => {
   try { if (syncer) syncer.stopAll(); } catch (_) {}
   try { if (queue) { queue.pause(); queue.closeAll(); } } catch (_) {}
   try { closeAllBrowsers(); } catch (_) {}
+  try { if (sharer) sharer.stop(); } catch (_) {}
   try { if (logFile) { log('info', 'filo quits'); logFile.flushSync(); } } catch (_) {}
 });
 app.on('window-all-closed', () => { if (!IS_MAC) app.quit(); });
@@ -1281,12 +1284,137 @@ ipcMain.handle('init', () => ({
   // Written once, here: the window shows the same names and ports.
   protocols: { ports: DEFAULT_PORT, labels: LABEL },
   hashLabels: require('./core/queue').HASH_LABEL,
+  passphraseMin: sites.PASSPHRASE_MIN,   // an export's passphrase, at least
 }));
 ipcMain.handle('save-ui', (_, ui) => { prefs.save({ ui: Object.assign({}, prefs.data.ui, ui || {}) }); return true; });
-ipcMain.handle('settings-save', (_, patch) => {
+ipcMain.handle('settings-save', async (_, patch) => {
   const s = prefs.saveSettings(patch);
   if (queue) { queue.applyLimits(); if (queue.state === 'running') queue._pump(); }
+  if (patch && 'shareSites' in patch) await applySharing();
   return s;
+});
+
+// ── MY SERVERS shared on the local network (share.js) ─────────────────────
+// This computer's half: on while the setting is on. The other half (looking,
+// reading a list, copying a server from it) answers the window.
+let sharer = null, shareError = '';
+// The passwords' PIN, on this computer: kept until it is changed, from one
+// run of filo to the next (prefs.sharePinEnc, through the keychain). shareNote
+// says who used it last, or that it was cancelled.
+let shareNote = '';
+const peersSeen = new Map();                  // id → { address, port }: only what discovery found is read
+const unlocked = new Map();                   // id → Map(ref → password): what a PIN gave, for this run of filo
+// The stored passwords that go with the PIN: ref (the site id) → password.
+function sharedSecrets() {
+  const out = {};
+  for (const s of prefs.data.sites) {
+    if (!share.sharesPassword(s)) continue;
+    const pw = secrets.decrypt(s.passwordEnc);
+    if (pw) out[s.id] = pw;
+  }
+  return out;
+}
+function sendShareStatus() { send('share-status', shareStatus()); }
+async function applySharing() {
+  const want = !!prefs.data.settings.shareSites;
+  if (want && !sharer) {
+    const s = new share.Sharer(() => share.listText(prefs.data.sites, prefs.data.siteFolderOrder), () => ({ id: prefs.data.shareId, name: share.machineName(), count: prefs.data.sites.length }), {
+      getSecrets: sharedSecrets,
+      onPinUsed: ({ name, address }) => { shareNote = `last used by ${name}`; log('info', `Passwords of MY SERVERS sent to ${name} (${address}) with the PIN`); sendShareStatus(); },
+      onPinCancelled: ({ address }) => { shareNote = 'cancelled after too many wrong tries'; prefs.save({ sharePinEnc: null }); log('warn', `PIN of MY SERVERS cancelled: too many wrong PINs (last from ${address})`); sendShareStatus(); },
+    });
+    const kept = prefs.data.sharePinEnc && secrets.decrypt(prefs.data.sharePinEnc);
+    if (kept && share.PIN_RE.test(kept)) s.setPin(kept);
+    try {
+      await s.start(); sharer = s; shareError = '';
+      log('info', `MY SERVERS shared on this network as “${share.machineName()}” (${prefs.data.sites.length} servers, no password)`);
+    } catch (e) {
+      await s.stop();
+      shareError = e.code === 'EADDRINUSE' ? `Port ${share.SHARE_PORT} is already taken on this computer: your servers are not shared.` : `Your servers could not be shared: ${e.message}`;
+      log('error', shareError);
+    }
+  } else if (!want && sharer) {
+    const s = sharer; sharer = null; shareError = ''; shareNote = '';
+    prefs.save({ sharePinEnc: null });          // turned on again: a PIN is asked again
+    await s.stop();
+    log('info', 'MY SERVERS no longer shared on this network');
+  } else if (!want) shareError = '';
+  return shareStatus();
+}
+function shareStatus() { return { on: !!sharer, error: shareError, name: share.machineName(), pin: !!(sharer && sharer.pin), note: shareNote }; }
+ipcMain.handle('share-status', () => shareStatus());
+ipcMain.handle('share-pin', (_, pin) => {
+  if (!sharer) return Object.assign(shareStatus(), { error: shareError || 'Your servers are not shared.' });
+  try { sharer.setPin(pin); shareNote = ''; log('info', 'New PIN for the passwords of MY SERVERS'); }
+  catch (e) { return Object.assign(shareStatus(), { error: e.message }); }
+  // Kept for the next run, encrypted by the keychain; without a keychain, for this run only.
+  prefs.save({ sharePinEnc: secrets.encrypt(String(pin)) || null });
+  return shareStatus();
+});
+// The passwords of a sharing computer, with the PIN shown there.
+ipcMain.handle('share-unlock', async (_, id, pin) => {
+  const p = peersSeen.get(String(id));
+  if (!p) return { ok: false, error: 'Look for the computers again: this one is no longer listed.' };
+  try {
+    const r = await share.unlock(p.address, p.port, String(pin || ''), share.machineName());
+    if (!r.ok) return r;
+    const m = new Map(Object.entries(r.secrets).filter(([k, v]) => typeof v === 'string' && v && k.length <= 64));
+    unlocked.set(String(id), m);
+    log('info', `Passwords received from ${p.address} with its PIN (${m.size})`);
+    return { ok: true, count: m.size };
+  } catch (e) { return { ok: false, error: e.message }; }
+});
+// The password a PIN gave for a shared server, if any.
+function sharedPassword(sh) {
+  const m = sh && unlocked.get(String(sh.peer));
+  return m ? m.get(String(sh.ref)) || '' : '';
+}
+ipcMain.handle('share-discover', async () => {
+  const peers = await share.discover({ selfId: prefs.data.shareId });
+  for (const p of peers) peersSeen.set(p.id, { address: p.address, port: p.port });
+  return peers.map(({ id, name, count, address, pin }) => ({ id, name, count, address, pin, unlocked: unlocked.has(id) }));
+});
+ipcMain.handle('share-fetch', async (_, id) => {
+  const p = peersSeen.get(String(id));
+  if (!p) return { ok: false, error: 'Look for the computers again: this one is no longer listed.' };
+  try {
+    const text = await share.fetchList(p.address, p.port);
+    const list = await sites.importFilo(text);            // no passphrase: never a password
+    const d = JSON.parse(text);
+    const order = Array.isArray(d.siteFolderOrder) ? d.siteFolderOrder.filter(x => typeof x === 'string').slice(0, 2000) : [];
+    const m = unlocked.get(String(id));
+    // importFilo keeps every site in order: d.sites[i] is list[i].
+    return { ok: true, unlocked: !!m, siteFolderOrder: order, sites: list.map((x, i) => {
+      const raw = d.sites[i] || {}, ref = typeof raw.ref === 'string' ? raw.ref.slice(0, 64) : '';
+      return Object.assign(sites.publicSite(x.site), { ref, pw: raw.pw === true, pwHere: !!(m && m.get(ref)) });
+    }) };
+  } catch (e) { return { ok: false, error: e.message }; }
+});
+// A shared server copied into MY SERVERS: a new server of this computer, no
+// key (the other computer's key file is not here), and its password in this
+// computer's keychain when a PIN gave it. A server already there (same name,
+// folder, protocol, host, port and user) is not copied twice: its password
+// is added if it had none. → 'added' | 'there'
+function copyShared(s, peer) {
+  const o = Object.assign({}, s || {}, { id: null, keyPath: '', speed: null, passwordEnc: null, passphraseEnc: null });
+  delete o.ref; delete o.pw; delete o.pwHere;
+  const n = sites.normalizeSite(o);
+  const pw = sharedPassword({ peer, ref: s && s.ref });
+  const blob = pw ? secrets.encrypt(pw) : null;
+  const same = prefs.data.sites.find(x => ['name', 'folder', 'protocol', 'host', 'port', 'user'].every(k => x[k] === n[k]));
+  if (same) {
+    if (blob && !same.passwordEnc && same.logon === 'normal') prefs.saveSite({ id: same.id }, { passwordEnc: blob });
+    return 'there';
+  }
+  prefs.saveSite(o, blob ? { passwordEnc: blob } : {});
+  return 'added';
+}
+// One shared server, or every server of a sharing computer (`list`).
+ipcMain.handle('share-copy', (_, peer, list) => {
+  const got = (Array.isArray(list) ? list : []).slice(0, 5000).map(s => ({ r: copyShared(s, peer), pw: !!sharedPassword({ peer, ref: s && s.ref }) }));
+  const added = got.filter(x => x.r === 'added');
+  if (added.length) log('info', `${added.length} shared server${added.length === 1 ? '' : 's'} copied to MY SERVERS`);
+  return { added: added.length, withPassword: added.filter(x => x.pw).length, there: got.length - added.length, sites: prefs.listSites(), siteFolderOrder: prefs.data.siteFolderOrder };
 });
 ipcMain.handle('after-action-set', (_, v) => { prefs.save({ afterAction: ['none', 'quit', 'sleep', 'shutdown'].includes(v) ? v : 'none' }); return prefs.data.afterAction; });
 ipcMain.handle('after-action-run', async (_, action, clean) => {
@@ -1525,8 +1653,17 @@ ipcMain.handle('connect', async (_, tab, req) => {
       q.port = Number(q.port) || DEFAULT_PORT[q.protocol];
       q.user = String(q.user || '').trim();
       endpointId = quickId(q);
-      quickEndpoints.set(endpointId, { protocol: q.protocol, host: q.host, port: q.port, user: q.user });
+      // A server of another computer's shared list comes as a quick
+      // connection, with its name and its own FTP settings.
+      const extra = {};
+      if (typeof q.label === 'string' && q.label.trim()) extra.label = q.label.trim().slice(0, 120);
+      if (q.transferMode === 'active' && q.protocol !== 'sftp') extra.transferMode = 'active';
+      const mc = parseInt(q.maxConnections, 10);
+      if (mc > 0) extra.maxConnections = Math.min(10, mc);
+      quickEndpoints.set(endpointId, Object.assign({ protocol: q.protocol, host: q.host, port: q.port, user: q.user }, extra));
     } else return { ok: false, error: 'Nothing to connect to.' };
+    // A shared server whose password a PIN gave: never through the window.
+    if (req.shared && !req.password) { const pw = sharedPassword(req.shared); if (pw) req.password = pw; }
 
     if (req.password !== undefined && req.password !== null && req.password !== '') {
       const m = memSecrets.get(endpointId) || {};

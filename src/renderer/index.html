@@ -806,6 +806,44 @@ body.live-st #queue .q-head,body.live-st #q-blocked,body.live-st #q-tabs,body.li
 .sm-right{flex:1;min-width:0;display:flex;flex-direction:column;}
 .sm-form{flex:1;overflow-y:auto;padding:22px 24px 4px;}
 .sm-right .m-btns{padding:14px 24px 18px;}
+/* PIN pad (as in ingesto's kiosk mode). */
+#pin-ov{display:none;position:fixed;inset:0;z-index:3000;background:rgba(0,0,0,.72);align-items:center;justify-content:center;}
+#pin-ov.on{display:flex;}
+.kp-card{background:var(--card);border-radius:16px;padding:26px;width:300px;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.5);}
+.kp-title{font-size:16px;font-weight:700;color:var(--text);margin-bottom:7px;}
+.kp-sub{font-size:12px;color:var(--text3);line-height:1.45;margin:0 auto 15px;max-width:260px;}
+.kp-dots{display:flex;justify-content:center;gap:14px;margin-bottom:8px;}
+.kp-dots span{width:13px;height:13px;border-radius:50%;border:1.5px solid var(--text3);}
+.kp-dots span.on{background:var(--blue);border-color:var(--blue);}
+.kp-err{font-size:12px;color:var(--red);min-height:16px;margin-bottom:8px;}
+.kp-pad{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;}
+.kp-pad button{background:var(--ins);border:none;border-radius:12px;padding:14px 0;font-size:20px;font-weight:600;color:var(--text);cursor:pointer;font-family:inherit;}
+.kp-pad button:hover{box-shadow:inset 0 0 0 1px var(--blue);}
+.kp-pad button.kp-x{background:transparent;font-size:16px;color:var(--text3);}
+.kp-pad button:disabled{opacity:.4;cursor:default;}
+#st-share-pin{display:none;flex:none;margin-left:8px;}
+body.sharing #st-share-pin{display:inline-flex;}
+.sh-pw{display:flex;align-items:center;gap:8px;margin:4px 6px 8px;padding:8px 10px;border-radius:10px;background:var(--ins);font-size:12px;color:var(--text2);}
+.sh-pw span{flex:1;min-width:0;}
+.sh-pw.ok{color:var(--green);}
+.sm-item .pin{font-size:10px;font-weight:700;letter-spacing:.06em;color:var(--violet);margin-left:auto;flex:none;}
+.sm-item .pin.ok{color:var(--green);}
+
+/* SHARED SERVERS: another filo's list, read-only. */
+#sm-rescan,#sm-copy-all{display:none;}
+#ov-sites.shared #sm-rescan,#ov-sites.shared #sm-copy-all{display:inline-flex;}
+#ov-sites.shared #sm-new,#ov-sites.shared #sm-new-folder,#ov-sites.shared #sm-import,#ov-sites.shared #sm-export{display:none;}
+.sm-item .ic.peer{background:var(--violet-d);color:var(--violet);}
+.sm-item .ic.peer svg{width:15px;height:15px;}
+.sm-back .chev{transform:rotate(180deg);}
+.sm-peer-head{display:flex;align-items:center;gap:8px;padding:10px 9px 6px;font-size:12px;font-weight:700;color:var(--text);}
+.sm-peer-head svg{width:14px;height:14px;color:var(--violet);flex:none;}
+.sh-from{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text2);margin-bottom:4px;}
+.sh-from svg{width:14px;height:14px;color:var(--violet);flex:none;}
+.sm-form .ro{background:var(--ins);border-radius:var(--r-field);padding:9px 10px;font-size:13px;min-width:0;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;user-select:text;}
+.sm-form .ro-notes{white-space:pre-wrap;word-break:break-word;max-height:140px;overflow:auto;}
+.set-desc.err{color:var(--orange);}
+#st-share-desc{white-space:normal;}
 .sm-empty{flex:1;display:flex;flex-direction:column;gap:10px;align-items:center;justify-content:center;color:var(--text3);text-align:center;padding:30px;}
 .pw-kept{font-size:11.5px;color:var(--green);display:flex;align-items:center;gap:8px;}
 .pw-kept button{border:none;background:transparent;color:var(--text3);font-size:11.5px;text-decoration:underline;}
@@ -1162,7 +1200,8 @@ body.live-st #queue .q-head,body.live-st #q-blocked,body.live-st #q-tabs,body.li
 <div class="ov" id="ov-sites">
   <div class="mcard">
     <div class="sm-left">
-      <div class="hd"><div class="m-h1">MY SERVERS</div>
+      <div class="hd"><div class="m-h1" id="sm-title">MY SERVERS</div>
+        <button class="btn sm" id="sm-shared" data-tip="SHARED SERVERS: the servers other filo share on this network">SHARED</button>
         <button class="ibtn ins" id="sm-new" aria-label="New server" data-tip="New server"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg></button>
         <button class="ibtn ins" id="sm-new-folder" aria-label="New folder" data-tip="New folder"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 10v6"/><path d="M9 13h6"/><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg></button>
       </div>
@@ -1171,6 +1210,8 @@ body.live-st #queue .q-head,body.live-st #q-blocked,body.live-st #q-tabs,body.li
       <div class="ft">
         <button class="btn sm" id="sm-import">IMPORT</button>
         <button class="btn sm" id="sm-export">EXPORT</button>
+        <button class="btn sm" id="sm-rescan" data-tip="Look again for the filo that share their servers on this network">REFRESH</button>
+        <button class="btn sm" id="sm-copy-all">COPY ALL</button>
       </div>
     </div>
     <div class="sm-right">
@@ -1256,6 +1297,13 @@ body.live-st #queue .q-head,body.live-st #q-blocked,body.live-st #q-tabs,body.li
           <span class="set-desc">on the server, deleting is final</span></div>
       </div>
       <div class="set-section">
+        <div class="set-sec-title">Local network</div>
+        <div class="set-row"><label>Share my servers</label>
+          <label class="switch"><input type="checkbox" id="st-share"><span class="slider"></span></label>
+          <span class="set-desc" id="st-share-desc"></span>
+          <button class="btn sm" id="st-share-pin" data-tip="Change the PIN that gives your passwords">NEW PIN</button></div>
+      </div>
+      <div class="set-section">
         <div class="set-sec-title">Verification <span class="set-sec-note">(turned on or off with SAFE COPY, in the queue)</span></div>
         <div class="set-row"><label id="st-verify-label">Ask the server for a checksum</label>
           <label class="switch"><input type="checkbox" id="st-serverhash"><span class="slider"></span></label>
@@ -1327,5 +1375,20 @@ body.live-st #queue .q-head,body.live-st #q-blocked,body.live-st #q-tabs,body.li
 <div id="scan"><div class="spin"></div><span id="scan-txt">Listing folders…</span><button class="btn sm" id="scan-cancel">CANCEL</button></div>
 </div>
 <script src="app.js"></script>
+<!-- PIN pad: setting a PIN (typed twice) or typing one -->
+<div id="pin-ov" role="dialog" aria-modal="true">
+  <div class="kp-card">
+    <div class="kp-title" id="kp-title"></div>
+    <div class="kp-sub" id="kp-sub"></div>
+    <div class="kp-dots" id="kp-dots"><span></span><span></span><span></span><span></span></div>
+    <div class="kp-err" id="kp-err"></div>
+    <div class="kp-pad" id="kp-pad">
+      <button data-k="1">1</button><button data-k="2">2</button><button data-k="3">3</button>
+      <button data-k="4">4</button><button data-k="5">5</button><button data-k="6">6</button>
+      <button data-k="7">7</button><button data-k="8">8</button><button data-k="9">9</button>
+      <button data-k="x" class="kp-x" aria-label="Cancel">✕</button><button data-k="0">0</button><button data-k="del" class="kp-x" aria-label="Delete the last digit">⌫</button>
+    </div>
+  </div>
+</div>
 </body>
 </html>

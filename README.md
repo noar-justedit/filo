@@ -13,7 +13,7 @@ Licensed under the **GNU General Public License v3.0** (see [`LICENSE`](./LICENS
 
 ## Screenshots
 
-![filo 1.0.3 — connected to a site, three downloads, the first ones in segments](docs/screenshots/screenshot.png)
+![filo 1.1.0 — connected to a site, three downloads, the first ones in segments](docs/screenshots/screenshot.png)
 
 | My servers | Settings |
 |---|---|
@@ -49,7 +49,8 @@ Licensed under the **GNU General Public License v3.0** (see [`LICENSE`](./LICENS
 | **SAFE COPY** | every file verified after its transfer — by the server (SHA-256, MD5…) when it can compute one, otherwise by reading the file back (xxHash64). Off by default (it can make transfers slower), one switch in the queue to turn it on. A delivery already on both sides can be checked again without transferring anything (right-click → Check against the other side) |
 | **Safe names** | written as `name.filopart`, renamed only once complete and verified |
 | **File already there** | ask, overwrite, overwrite if newer, if the size differs, resume, keep both, skip |
-| **My servers** | your servers in folders (a tree that folds), notes, per-site connection limit; select several at once (⌘/Ctrl+click, Shift+click) to duplicate or delete; import FileZilla's `sitemanager.xml`; export to a filo file, with the passwords encrypted by a passphrase if you want them |
+| **My servers** | your servers in folders (a tree that folds), notes, per-site connection limit; select several at once (⌘/Ctrl+click, Shift+click) to duplicate or delete; import FileZilla's `sitemanager.xml`; export to a filo file, with the passwords encrypted by a passphrase (5 characters at least) if you want them |
+| **Shared servers** | on a job with several computers, the one where filo is set up shares its servers on the local network (Settings → Share my servers, with a 4-digit PIN); the others see them in MY SERVERS → SHARED, read-only: connect from there, copy one server or all of them into their own servers. The passwords go only with the PIN, encrypted; no passphrase or key ever leaves; the list stays on the local network |
 | **Speed test** | the gauge icon on a server measures the server sending and receiving, with 1, 2, 4 and 8 connections (and segments in SFTP), then suggests the starting settings. Saved with the date and the network: Auto starts from them on that network, and a faster real transfer improves them. Temporary files are removed at the end |
 | **Connection** | each step of a connection (address, connection, secure handshake, login, folder) is shown with a clock and a CANCEL that really cuts it; a slow server is said to be slow |
 | **Passwords** | in the system keychain (Keychain, Windows Credential Manager, libsecret) — never in clear |

@@ -1,6 +1,6 @@
 {
   "name": "filo",
-  "version": "1.0.3",
+  "version": "1.1.0",
   "desktopName": "filo.desktop",
   "description": "FTP, FTPS and SFTP client for video professionals",
   "main": "src/main/main.js",

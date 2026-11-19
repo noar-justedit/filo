@@ -105,7 +105,10 @@ function publicSite(s) {
 // protocol, host, port and user of each site (GCM's additional data): a file
 // whose hosts were edited afterwards is refused, so nobody can make filo send
 // a password to another server.
-const PASSPHRASE_MIN = 10;
+// The passphrase that locks them: 5 characters at least, nothing else asked
+// (Noar, 19/11/2026: 10 was too much for his users). A short one is quick to
+// guess for whoever gets the file: the export dialog says so.
+const PASSPHRASE_MIN = 5;
 const SCRYPT = { N: 65536, r: 8, p: 1, maxmem: 256 * 1024 * 1024 };
 const bound = list => Buffer.from(JSON.stringify(list.map(s => [s.protocol, s.host, s.port, s.user])));
 // Async (0.9.1): the derivation takes a fraction of a second and must not freeze the window.
